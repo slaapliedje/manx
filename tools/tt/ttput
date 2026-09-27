@@ -1,0 +1,5 @@
+#!/bin/sh
+# ttput LOCAL REMOTE - copy a file to the TT (ftp as dev; REMOTE must be
+# writable by dev, e.g. /work/dev/ub/...).
+: "${ASV_TOOLS:=$HOME/dev/OpenUA/data/work/asv}"
+exec python3 "$ASV_TOOLS/asvput.py" "$@"

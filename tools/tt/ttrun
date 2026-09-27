@@ -1,0 +1,20 @@
+#!/bin/sh
+# ttrun LOCAL-BINARY [args...] - push a binary to /work/dev/ub on the TT and
+# run it in the background, output to /work/dev/ub/NAME.out; poll with
+#   tools/tt/ttsh 'cat /work/dev/ub/NAME.out'
+# (the telnet helper can't take a trailing & or long command lines, so the
+# job is launched from a pushed script)
+set -e
+here=$(dirname "$0")
+bin=$1; shift
+name=$(basename "$bin")
+d=/work/dev/ub
+"$here/ttsh" "mkdir $d 2>/dev/null; chown dev $d; true" >/dev/null
+"$here/ttput" "$bin" "$d/$name" >/dev/null
+tmp=$(mktemp)
+printf '#!/bin/sh\ncd %s\nexec ./%s %s > %s.out 2>&1\n' "$d" "$name" "$*" "$name" > "$tmp"
+"$here/ttput" "$tmp" "$d/$name.sh" >/dev/null
+rm -f "$tmp"
+"$here/ttsh" "chmod 755 $d/$name $d/$name.sh; /usr/bin/setpgrp sh $d/$name.sh </dev/null >/dev/null 2>&1 &
+true"
+echo "started $name on the TT; output in $d/$name.out"

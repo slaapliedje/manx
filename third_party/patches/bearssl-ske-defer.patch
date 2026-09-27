@@ -1,0 +1,60 @@
+# unix-browser: deferred ServerKeyExchange verification hook (see tls/xdefer.c).
+# Apply to BearSSL v0.6 with: patch -p1 -d third_party/bearssl < this file
+diff -ru a/inc/bearssl_ssl.h b/inc/bearssl_ssl.h
+--- a/inc/bearssl_ssl.h	2026-09-27 13:53:40.901536870 -0600
++++ b/inc/bearssl_ssl.h	2026-09-27 13:53:40.921987027 -0600
+@@ -2736,6 +2736,20 @@
+ 	const br_x509_trust_anchor *trust_anchors, size_t trust_anchors_num);
+ 
+ /**
++ * \brief unix-browser patch: deferred ServerKeyExchange verification.
++ *
++ * When set, the client does not check the ServerKeyExchange signature
++ * itself: it calls this with the signed hash value (`hv`), the signature,
++ * whether it is RSA (and then the hash OID, NULL for MD5+SHA-1) or ECDSA.
++ * Return non-zero to continue the handshake. The application must check
++ * the signature against the server's key before trusting the connection.
++ */
++extern int (*br_ssl_client_ske_defer)(br_ssl_client_context *ctx,
++	int use_rsa, const unsigned char *hash_oid,
++	const unsigned char *hv, size_t hv_len,
++	const unsigned char *sig, size_t sig_len);
++
++/**
+  * \brief Clear the complete contents of a SSL client context.
+  *
+  * Everything is cleared, including the reference to the configured buffer,
+diff -ru a/src/ssl/ssl_hs_client.c b/src/ssl/ssl_hs_client.c
+--- a/src/ssl/ssl_hs_client.c	2026-09-27 13:53:40.909177165 -0600
++++ b/src/ssl/ssl_hs_client.c	2026-09-27 13:53:40.932761737 -0600
+@@ -187,6 +187,12 @@
+  *
+  * Returned value is 0 on success, or an error code.
+  */
++/* unix-browser patch */
++int (*br_ssl_client_ske_defer)(br_ssl_client_context *ctx,
++	int use_rsa, const unsigned char *hash_oid,
++	const unsigned char *hv, size_t hv_len,
++	const unsigned char *sig, size_t sig_len);
++
+ static int
+ verify_SKE_sig(br_ssl_client_context *ctx,
+ 	int hash, int use_rsa, size_t sig_len)
+@@ -226,6 +232,17 @@
+ 		}
+ 		hv_len = 36;
+ 	}
++	/* unix-browser patch: hand the check to the application to run
++	 * after the handshake (see br_ssl_client_ske_defer) */
++	if (br_ssl_client_ske_defer != NULL) {
++		const unsigned char *oid = NULL;
++
++		if (use_rsa && hash) {
++			oid = HASH_OID[hash - 2];
++		}
++		return br_ssl_client_ske_defer(ctx, use_rsa, oid, hv, hv_len,
++			ctx->eng.pad, sig_len) ? 0 : BR_ERR_BAD_SIGNATURE;
++	}
+ 	if (use_rsa) {
+ 		unsigned char tmp[64];
+ 		const unsigned char *hash_oid;

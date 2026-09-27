@@ -1,0 +1,6 @@
+#!/bin/sh
+# ttsh 'command' [timeout] - run a command on the TT over telnet.
+# Uses the helpers (and credentials, which stay out of this repo) in
+# ASV_TOOLS; ASV_HOST names the machine.
+: "${ASV_TOOLS:=$HOME/dev/OpenUA/data/work/asv}"
+exec python3 "$ASV_TOOLS/asvsh.py" "$@"
