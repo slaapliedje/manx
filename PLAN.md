@@ -90,7 +90,8 @@ transputer spike; see `docs/phase0-results.md`)
   AES-GCM 17 KB/s. ✔
 - `ufetch`: own DNS + TCP + TLS 1.2 fetched google.com and example.com from
   the TT, using **deferred validation**. ✔
-- Transputer round trip: pending (tools are ready, see results).
+- Transputer spike: BearSSL i15 runs correctly on the T800 but 1.5-3.7x
+  slower than the 68030 (icc has no optimiser, C has no `lmul`). ✔
 
 **Phase 1 — network core:**
 - TLS, driven by the Phase 0 numbers:
@@ -106,8 +107,9 @@ transputer spike; see `docs/phase0-results.md`)
   (the clock jitter is nearly worthless on the TT).
 - URL parse/resolve, DNS (cache, timeouts), HTTP/1.1 (Content-Length,
   chunked, redirects, keep-alive), `file:` and `gopher:`.
-- Speed-ups when needed: 68030 assembly bignum for public-key verification;
-  transputer signature verification in parallel with the key exchange.
+- Speed-ups when needed: 68030 assembly bignum for public-key verification.
+  Transputers only via hand-written `lmul` assembly, and only if it
+  measurably beats the 68030.
 - Exit: `ufetch https://...` reliable on the common sites, on both OSes,
   under a 1 MB cap.
 

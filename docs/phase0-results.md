@@ -104,7 +104,53 @@ whole validation has to fit inside that.
 
 ## Not done in Phase 0
 
-- The transputer spike. The tools exist: sp1 `iserver` and `icc` run on the
-  slot-1 T800, and `/dev/link0`/`link1` work. Next step: compile BearSSL's
-  `ec_prime_i31`/`rsa_i31_pub` with `icc -t800` and time a P-384 verify.
+- ~~The transputer spike~~: done, see "Transputer spike" below.
 - AMIX itself: everything so far ran on ASV through `amx`, not on an Amiga.
+
+## Transputer spike (2026-09-27)
+
+BearSSL's 15-bit public-key code (`i15`/`m15`, the only variant with no
+64-bit integers) compiled **on the slot-1 T800 itself** with INMOS icc
+2.01 through sp1's `iserver`, then booted over `/dev/link0` and run against
+answers computed on the host (`spikes/transputer/`: `mkbundle.sh` builds a
+flat C89 bundle, `tp-build.sh` builds and runs it on the TT).
+
+| Operation (same i15/m15 C code) | T800 | 68030 | 68030 best (m31/i31/i32) |
+|---|---|---|---|
+| X25519 mul | 3.5 s | 2.4 s | 1.0 s |
+| P-256 mul | 11.3 s | 4.6 s | 3.1 s |
+| ECDSA P-256 verify | 21.4 s | 8.5 s | 5.8 s |
+| RSA-2048 public | 11.3 s | 3.0 s | 2.3 s |
+| ECDSA P-384 verify | 161 s | 52.6 s | 45.6 s |
+
+All results are correct, once `BR_NO_ARITH_SHIFT` is set: icc's signed
+`>>` is logical unless `-FS` is passed, which silently broke the m15
+curves on the first run.
+
+**Verdict:** as compiled C, the T800 is 1.5-3.7× slower than the 68030 on
+the same code, and 3-7× slower than the 68030's best. icc 2.01 has no
+optimiser, and C can't express the transputer's 32×32→64 `lmul`. So
+offloading compiled BearSSL is not worth it for speed. Its only value would
+be parallelism: 2 TRAMs + the T425 verifying signatures while the 68030
+does the key exchange. Even then, one P-256 verify at 21 s is longer than
+servers wait.
+
+The remaining transputer option is **hand-written assembly** for Montgomery
+multiplication using `lmul`/`lsum` on 32-bit limbs (variable time is fine
+for public-key verification). Whether that beats the 68030's `mulu.l` has to be
+measured. Until then Phase 1 relies on the 68030 measures: intermediate
+cache, RSA first, deferred validation, session resumption, and 68030
+assembly bignum.
+
+Practical findings:
+- `iserver` link errors ("protocol error, timed out ...") hit about one in
+  3-4 compiles, sometimes several in a row. A real offload protocol needs
+  framing, checksums and retries.
+- iserver's command line is short: link through an indirect file
+  (`-f tpbench.lnk`).
+- A killed script can leave an orphaned `iserver` holding `/dev/link0`
+  ("Device busy").
+- Scripts on the TT: AMIX bash died silently in the retry function
+  (`unwind_frame_discard` warnings); plain ASV `sh` works, without `test -nt`.
+- Compiling one BearSSL file on the T800 takes about 1.3 minutes; the whole
+  bundle takes about 45 minutes.
