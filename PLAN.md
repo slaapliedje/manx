@@ -93,25 +93,17 @@ transputer spike; see `docs/phase0-results.md`)
 - Transputer spike: BearSSL i15 runs correctly on the T800 but 1.5-3.7x
   slower than the 68030 (icc has no optimiser, C has no `lmul`). ✔
 
-**Phase 1 — network core:**
-- TLS, driven by the Phase 0 numbers:
-  - deferred validation by default (never send before validation passes);
-  - persistent cache of TT-verified intermediates, plus a preload list
-    verified at install;
-  - RSA-certificate suites first with ECDSA fallback; X25519 preferred;
-    ChaCha20 first;
-  - binary trust-anchor cache (PEM load: 52 s);
-  - session resumption;
-  - find out why letsencrypt.org closes after our Finished.
-- Entropy: seed file + keystroke/network timing; refuse TLS until seeded
-  (the clock jitter is nearly worthless on the TT).
-- URL parse/resolve, DNS (cache, timeouts), HTTP/1.1 (Content-Length,
-  chunked, redirects, keep-alive), `file:` and `gopher:`.
-- Speed-ups when needed: 68030 assembly bignum for public-key verification.
-  Transputers only via hand-written `lmul` assembly, and only if it
-  measurably beats the 68030.
-- Exit: `ufetch https://...` reliable on the common sites, on both OSes,
-  under a 1 MB cap.
+**Phase 1 — network core** (done 2026-09-27; see `docs/phase1-results.md`)
+- URL, HTTP/1.1, DNS, keep-alive, redirects, gopher, file:. ✔
+- TLS: deferred validation, early requests for requests with nothing
+  private, the fast/full-x25519/full offer ladder, a binary trust store
+  (0.3 s load), learned intermediates, known leaves, session resumption. ✔
+- Entropy pool with an estimate; `ubtrust seed`. ✔
+- Every site in the campaign loads on the TT, cold and repeat; ~650 KB
+  footprint. ✔
+- Left for later: a preload bundle of common intermediates (`ubtrust
+  learn`); 68030 assembly for RSA/ECDSA verification; testing on a real
+  AMIX machine.
 
 **Phase 2 — HTML engine:** streaming tokenizer, entity table, tolerant tree
 builder, UTF-8 → Latin-1/ASCII transliteration. Exit: a corpus of ~50 saved
