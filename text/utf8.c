@@ -305,3 +305,28 @@ int translit(unsigned long cp, int latin1, char *out)
 		return (int)n;
 	}
 }
+
+/* --- display width ----------------------------------------------------- */
+
+int ucs_width(unsigned long cp)
+{
+	if (cp < 0x300)
+		return cp == 0xAD ? 0 : 1;
+	/* combining marks and zero-width characters */
+	if ((cp >= 0x300 && cp <= 0x36F) || (cp >= 0x483 && cp <= 0x489)
+		|| (cp >= 0x591 && cp <= 0x5BD) || (cp >= 0x610 && cp <= 0x61A)
+		|| (cp >= 0x64B && cp <= 0x65F) || (cp >= 0x1AB0 && cp <= 0x1AFF)
+		|| (cp >= 0x1DC0 && cp <= 0x1DFF) || (cp >= 0x200B && cp <= 0x200F)
+		|| (cp >= 0x20D0 && cp <= 0x20FF) || (cp >= 0xFE00 && cp <= 0xFE0F)
+		|| (cp >= 0xFE20 && cp <= 0xFE2F) || cp == 0x2060 || cp == 0xFEFF)
+		return 0;
+	/* East Asian wide and fullwidth, emoji */
+	if ((cp >= 0x1100 && cp <= 0x115F) || (cp >= 0x2E80 && cp <= 0xA4CF
+		&& cp != 0x303F) || (cp >= 0xAC00 && cp <= 0xD7A3)
+		|| (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0xFE30 && cp <= 0xFE4F)
+		|| (cp >= 0xFF00 && cp <= 0xFF60) || (cp >= 0xFFE0 && cp <= 0xFFE6)
+		|| (cp >= 0x1F300 && cp <= 0x1F64F) || (cp >= 0x1F900 && cp <= 0x1F9FF)
+		|| (cp >= 0x20000 && cp <= 0x3FFFD))
+		return 2;
+	return 1;
+}

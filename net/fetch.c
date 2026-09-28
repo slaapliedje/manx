@@ -344,13 +344,25 @@ static int gopher_fetch(const struct url *u, const struct fetch_cb *cb,
 			sel[n++] = *p;
 	}
 	if (u->has_query && type == '7') {	/* search: selector TAB query */
-		size_t q = strlen(u->query);
+		const char *q = u->query;
 
-		if (n + 1 + q >= sizeof sel - 3)
-			return fail(res, "gopher search too long");
 		sel[n++] = '\t';
-		memcpy(sel + n, u->query, q);
-		n += q;
+		/* decoded too: "a%20b" is sent as "a b" */
+		for (; *q && n < sizeof sel - 3; q++) {
+			if (*q == '%' && isxdigit((unsigned char)q[1])
+				&& isxdigit((unsigned char)q[2])) {
+				char hx[3];
+
+				hx[0] = q[1];
+				hx[1] = q[2];
+				hx[2] = '\0';
+				sel[n++] = (char)strtol(hx, 0, 16);
+				q += 2;
+			} else
+				sel[n++] = *q == '+' ? ' ' : *q;
+		}
+		if (*q)
+			return fail(res, "gopher search too long");
 	}
 	sel[n++] = '\r';
 	sel[n++] = '\n';

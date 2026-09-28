@@ -20,6 +20,7 @@ OS      := os/host
 CFLAGS  := -std=c99 -O2 -g -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers
 BRFLAGS := -O2 -g
 LDLIBS  :=
+TERMLIB := -ltinfo
 else ifeq ($(TARGET),sysv4)
 AMIX_SYSROOT ?= $(HOME)/dev/OpenUA/data/work/asv/amix/sysroot
 export AMIX_SYSROOT
@@ -31,17 +32,19 @@ OS      := os/sysv4
 # -msoft-float: AMIX's libm returns doubles soft-float style, and nothing
 # here needs the FPU
 CPU     := -m68030 -msoft-float
-CFLAGS  := -DUB_SYSV4 $(CPU) -std=gnu99 -O2 -fomit-frame-pointer -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers
+OPT     ?= -O2
+CFLAGS  := -DUB_SYSV4 $(CPU) -std=gnu99 $(OPT) -fomit-frame-pointer -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers
 # BearSSL: no /dev/urandom, no 64-bit fast paths (the 68030 has none)
 BROPT   ?= -O2
 BRFLAGS := $(CPU) $(BROPT) -fomit-frame-pointer \
 	-DBR_USE_URANDOM=0 -DBR_USE_UNIX_TIME=1 -DBR_64=0 -DBR_INT128=0 -DBR_UMUL128=0
 LDLIBS  := -lsocket
+TERMLIB := -ltermlib
 else
 $(error TARGET must be host or sysv4)
 endif
 
-INC := -Ios -Inet -Itls -Itext -Ihtml -I$(BEARSSL)/inc
+INC := -Ios -Inet -Itls -Itext -Ihtml -Istyle -Ilayout -Ifrontend -I$(BEARSSL)/inc
 
 OS_SRC := $(wildcard os/*.c) $(wildcard $(OS)/*.c)
 OS_OBJ := $(OS_SRC:%.c=$(B)/%.o)
@@ -52,16 +55,20 @@ BR_LIB := $(B)/libbearssl.a
 
 NET_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard net/*.c))
 TLS_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard tls/*.c))
-HTML_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard text/*.c html/*.c))
+HTML_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard text/*.c html/*.c style/*.c layout/*.c))
 
 SPIKES := $(B)/tlsbench
-TOOLS  := $(B)/ufetch $(B)/ubtrust $(B)/uparse
+TOOLS  := $(B)/ub $(B)/ufetch $(B)/ubtrust $(B)/uparse
+FRONT_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard frontend/*.c))
 BENCH  := $(B)/bench_parse $(B)/bench_micro $(B)/bench_loops $(B)/bench_mem
 
 all: $(SPIKES) $(TOOLS) $(BENCH)
 
 $(B)/tlsbench: $(B)/spikes/tlsbench.o $(OS_OBJ) $(BR_LIB)
 	$(LD) -o $@ $^ $(LDLIBS)
+
+$(B)/ub: $(B)/src/ub.o $(FRONT_OBJ) $(HTML_OBJ) $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
+	$(LD) -o $@ $^ $(TERMLIB) $(LDLIBS)
 
 $(B)/ufetch: $(B)/src/ufetch.o $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
 	$(LD) -o $@ $^ $(LDLIBS)
@@ -120,10 +127,10 @@ test: $(TESTS) build/test/test_snprintf $(B)/tlsbench
 # (tests/fetch_corpus.sh first). FUZZ_ITERS, FUZZ_SEED to taste.
 FUZZ_ITERS ?= 20000
 FUZZ_SEED ?= 1
-build/fuzz/fuzz_html: tests/fuzz_html.c $(wildcard text/*.c html/*.c) os/mem.c
+build/fuzz/fuzz_html: tests/fuzz_html.c $(wildcard text/*.c html/*.c style/*.c layout/*.c) os/mem.c
 	@mkdir -p build/fuzz
 	cc -std=c99 -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=all \
-		-Ios -Itext -Ihtml -o $@ $^
+		-Ios -Itext -Ihtml -Istyle -Ilayout -o $@ $^
 
 fuzz: build/fuzz/fuzz_html
 	build/fuzz/fuzz_html $(FUZZ_ITERS) $(FUZZ_SEED) build/corpus/*.html

@@ -24,7 +24,7 @@ Text (curses) frontend first, then X11. HTTPS natively on the 68030.
 ## 2. Architecture
 
 ```
- frontend/   curses (terminfo)  |  x11 (Xlib)          <- input, drawing
+ frontend/   terminal (terminfo) |  x11 (Xlib)         <- input, drawing
  layout/     block/inline flow -> line boxes -> display list (cells or pixels)
  style/      built-in per-tag style table + tiny CSS subset (display:none, ...)
  html/       streaming tokenizer -> tolerant tree builder -> node pool
@@ -116,9 +116,17 @@ transputer spike; see `docs/phase0-results.md`)
   effective; the 68030 is simply this fast. AMIX libc memset/strcmp are
   slow and worth avoiding in hot paths.
 
-**Phase 3 — text frontend (first usable browser):** styles, block/inline
-layout, lists, `<pre>`, simple tables; curses UI with scrolling, link
-selection, history, URL prompt, find, status line (TLS state, progress).
+**Phase 3 — text frontend (first usable browser)** (done 2026-09-28; see
+`docs/phase3-results.md`)
+- Style table, block/inline layout, lists, `<pre>`, tables row by row,
+  form fields shown, anchors. ✔
+- Own terminfo screen layer instead of SVR4 curses (which can't do UTF-8);
+  scrolling, Lynx-style link selection, history, URL/search prompt, find,
+  status line, progressive display, stop. ✔
+- On the TT: Hacker News first screen in 6.5 s with a resumed session. ✔
+- Found and fixed: the compiler split every 32-bit stack access
+  (`-mno-strict-align`); parsing got 40% faster.
+- Left for later: grid tables; the parser on very large pages.
 
 **Phase 4 — forms, cookies, polish:** GET/POST forms, cookie jar, disk cache,
 config file, bookmarks, gzip (tiny inflate).

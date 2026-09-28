@@ -87,6 +87,9 @@ register with `spikes/asv/cachectl`):
 - Register-only loops run at roughly the expected 32 MHz 68030 speed.
 
 So BearSSL and the parser are simply as fast as a 68030 runs this C.
+(Not quite, it turned out in Phase 3: the compiler was splitting every
+32-bit stack access in two. With `-mno-strict-align` the parser is ~40%
+faster. See `docs/phase3-results.md`.)
 There's no kernel setting to fix. What is slow is AMIX libc's `memset`
 (byte by byte, 3.7x slower than a longword loop) and `strcmp` (~180
 cycles a call): hot paths should use their own.

@@ -6,6 +6,7 @@
 #include "tree.h"
 
 static int breaks_line(int tag);
+static int shows_content(int tag);
 
 void tree_init(struct tree *b, struct doc *d)
 {
@@ -426,6 +427,8 @@ void tree_tag(void *ctx, const struct tok_tag *t)
 
 	if (!b->skip_tag && breaks_line(t->tag))
 		b->line_start = 1;
+	else if (!b->skip_tag && shows_content(t->tag))
+		b->line_start = 0;	/* like text: a space after it counts */
 
 	if (b->skip_tag) {
 		if (t->tag == b->skip_tag) {
@@ -469,8 +472,19 @@ static int breaks_line(int tag)
 	case TAG_LI: case TAG_DD: case TAG_DT: case TAG_TD: case TAG_TH:
 	case TAG_TR: case TAG_TBODY: case TAG_THEAD: case TAG_TFOOT:
 	case TAG_CAPTION: case TAG_BR: case TAG_BODY: case TAG_HTML:
-	case TAG_HEAD: case TAG_TITLE: case TAG_OPTION: case TAG_SELECT:
-	case TAG_TEXTAREA: case TAG_LEGEND:
+	case TAG_HEAD: case TAG_TITLE: case TAG_OPTION: case TAG_LEGEND:
+		return 1;
+	}
+	return 0;
+}
+
+/* inline elements the layout shows something for (an image's alt, a form
+ * field): white space next to them separates them like text does */
+static int shows_content(int tag)
+{
+	switch (tag) {
+	case TAG_IMG: case TAG_IMAGE: case TAG_INPUT: case TAG_SELECT:
+	case TAG_TEXTAREA: case TAG_BUTTON:
 		return 1;
 	}
 	return 0;

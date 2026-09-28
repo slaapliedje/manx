@@ -10,6 +10,9 @@
  *   -c   feed the parser N bytes at a time (default: as read)
  *   -m   cap for the document's memory, in KB (default 1200)
  *   -C   the charset, as an HTTP header would give it
+ *   -w   lay the page out N columns wide and print it (-u: for a UTF-8
+ *        terminal, -a: ASCII; default Latin-1); -r repeats the layout
+ *        for timing
  * A URL is fetched with the network core, parsed as the bytes arrive.
  */
 #include <stdio.h>
@@ -24,6 +27,7 @@
 #include "tls.h"
 #include "conn.h"
 #include "fetch.h"
+#include "layout.h"
 
 static struct html_load g_load;
 static struct doc g_doc;
@@ -135,13 +139,14 @@ static void text_out(const struct doc *d, nodeid id, int *col)
 static void usage(void)
 {
 	fprintf(stderr, "usage: uparse [-d] [-l] [-t] [-s] [-c N] [-m cap_kb] "
-		"[-C charset] FILE|URL|-\n");
+		"[-C charset] [-w width [-u|-a] [-r N]] FILE|URL|-\n");
 	exit(2);
 }
 
 int main(int argc, char **argv)
 {
-	int dump = 0, links = 0, text = 0, stats = 0, a;
+	int dump = 0, links = 0, text = 0, stats = 0, a, width = 0, reps = 1;
+	enum term_cs tcs = TCS_LATIN1;
 	size_t cap = 0;
 	const char *src;
 	unsigned long t0;
@@ -158,13 +163,19 @@ int main(int argc, char **argv)
 			cap = (size_t)atol(argv[++a]) * 1024;
 		else if (strcmp(argv[a], "-C") == 0 && a + 1 < argc)
 			g_charset = argv[++a];
+		else if (strcmp(argv[a], "-w") == 0 && a + 1 < argc)
+			width = atoi(argv[++a]);
+		else if (strcmp(argv[a], "-r") == 0 && a + 1 < argc)
+			reps = atoi(argv[++a]);
+		else if (strcmp(argv[a], "-u") == 0) tcs = TCS_UTF8;
+		else if (strcmp(argv[a], "-a") == 0) tcs = TCS_ASCII;
 		else
 			usage();
 	}
 	if (a != argc - 1)
 		usage();
 	src = argv[a];
-	if (!dump && !links && !text)
+	if (!dump && !links && !text && !width)
 		stats = 1;
 	if (doc_init(&g_doc, cap) < 0) {
 		fprintf(stderr, "uparse: out of memory\n");
@@ -225,6 +236,31 @@ int main(int argc, char **argv)
 		text_out(&g_doc, g_doc.nodes[1].first, &col);
 		if (col)
 			putchar('\n');
+	}
+	if (width) {
+		static struct page pg;
+		unsigned long t1 = os_msec();
+		int i;
+
+		for (i = 0; i < reps; i++) {
+			if (i)
+				layout_free(&pg);
+			if (layout_run(&pg, &g_doc, width, tcs, 0, 0) < 0) {
+				fprintf(stderr, "uparse: layout: out of memory\n");
+				return 1;
+			}
+		}
+		t1 = os_msec() - t1;
+		if (reps == 1)
+			layout_print(&pg, stdout);
+		if (stats || reps > 1)
+			printf("layout %lu lines  %lu spans  %lu links  %lu KB%s  "
+				"%lu ms each\n", pg.nlines, pg.nspans, pg.nlinks,
+				(pg.text_cap + pg.lines_cap * sizeof(struct lline)
+				+ pg.spans_cap * sizeof(struct lspan)) / 1024,
+				pg.truncated ? " TRUNCATED" : "",
+				t1 / (unsigned long)(reps > 0 ? reps : 1));
+		layout_free(&pg);
 	}
 	if (stats) {
 		printf("bytes %lu  charset %s (%s)  nodes %lu  text %lu  attr %lu  "

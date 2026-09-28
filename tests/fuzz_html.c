@@ -14,6 +14,7 @@
 #include "os.h"
 #include "doc.h"
 #include "load.h"
+#include "layout.h"
 
 static unsigned long s_rng;
 
@@ -58,6 +59,27 @@ static char *dump_of(const unsigned char *s, size_t n, int chunked, size_t cap)
 	f = open_memstream(&out, &len);
 	doc_dump(&d, f);
 	fclose(f);
+	if (!chunked) {
+		/* and lay it out: any width, charset, cap, line limit */
+		static const enum term_cs cs[] = { TCS_ASCII, TCS_LATIN1, TCS_UTF8 };
+		struct page pg;
+
+		if (layout_run(&pg, &d, 1 + (int)rnd(200), cs[rnd(3)],
+			rnd(4) == 0 ? 1 + rnd(50) : 0,
+			rnd(4) == 0 ? 1 + rnd(20000) : 0) == 0) {
+			unsigned long i;
+
+			/* every line and span within the text */
+			for (i = 0; i < pg.nlines; i++)
+				if (pg.lines[i].off + pg.lines[i].len > pg.text_len)
+					abort();
+			for (i = 1; i < pg.nspans; i++)
+				if (pg.spans[i].off < pg.spans[i - 1].off
+					|| pg.spans[i].link > pg.nlinks)
+					abort();
+			layout_free(&pg);
+		}
+	}
 	doc_free(&d);
 	return out;
 }

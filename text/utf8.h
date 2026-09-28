@@ -54,4 +54,8 @@ unsigned long utf8_get(const char **p);
  */
 int translit(unsigned long cp, int latin1, char *out);
 
+/* Terminal cells a code point takes on a UTF-8 terminal: 0 (combining,
+ * zero width), 2 (East Asian wide) or 1. */
+int ucs_width(unsigned long cp);
+
 #endif /* UB_UTF8_H */
