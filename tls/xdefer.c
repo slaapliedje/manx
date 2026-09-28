@@ -163,7 +163,7 @@ void xdefer_install(struct xdefer *xd, br_ssl_client_context *sc)
 }
 
 int xdefer_verify(struct xdefer *xd, br_ssl_client_context *sc,
-	br_x509_minimal_context *xc)
+	br_x509_minimal_context *xc, int leaf_known_good, int *anchor_at)
 {
 	const br_x509_class **v = &xc->vtable;
 	const br_x509_pkey *pk;
@@ -171,17 +171,30 @@ int xdefer_verify(struct xdefer *xd, br_ssl_client_context *sc,
 	unsigned err;
 	int i;
 
+	if (anchor_at)
+		*anchor_at = -1;
 	if (xd->err)
 		return xd->err;
 	if (!xd->ske_seen)
 		return BR_ERR_BAD_SIGNATURE;	/* ECDHE suites always sign */
 
-	/* 1. the chain, replayed into the real validator */
+	if (leaf_known_good) {
+		/* the leaf was validated for this host before: its key is the
+		 * one recorded from the same bytes */
+		pk = &xd->leaf;
+		goto signature;
+	}
+
+	/* 1. the chain, replayed into the real validator; note where it
+	 * reached an anchor (x509_minimal sets err to OK there and ignores
+	 * the certificates after) */
 	(*v)->start_chain(v, xd->server_name[0] ? xd->server_name : NULL);
 	for (i = 0; i < xd->ncert; i++) {
 		(*v)->start_cert(v, (uint32_t)xd->cert_len[i]);
 		(*v)->append(v, xd->chain + xd->cert_off[i], xd->cert_len[i]);
 		(*v)->end_cert(v);
+		if (anchor_at && *anchor_at < 0 && xc->err == BR_ERR_X509_OK)
+			*anchor_at = i;
 	}
 	err = (*v)->end_chain(v);
 	if (err)
@@ -202,6 +215,7 @@ int xdefer_verify(struct xdefer *xd, br_ssl_client_context *sc,
 			|| memcmp(pk->key.ec.q, xd->leaf.key.ec.q, pk->key.ec.qlen))
 		return BR_ERR_X509_NOT_TRUSTED;
 
+signature:
 	/* 2. the ServerKeyExchange signature, with the validated key */
 	if (xd->ske_rsa) {
 		unsigned char tmp[64];

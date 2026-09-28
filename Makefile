@@ -43,7 +43,7 @@ endif
 
 INC := -Ios -Inet -Itls -I$(BEARSSL)/inc
 
-OS_SRC := $(wildcard $(OS)/*.c)
+OS_SRC := $(wildcard os/*.c) $(wildcard $(OS)/*.c)
 OS_OBJ := $(OS_SRC:%.c=$(B)/%.o)
 
 BR_SRC := $(wildcard $(BEARSSL)/src/*/*.c) $(BEARSSL)/src/settings.c
@@ -53,14 +53,18 @@ BR_LIB := $(B)/libbearssl.a
 NET_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard net/*.c))
 TLS_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard tls/*.c))
 
-SPIKES := $(B)/tlsbench $(B)/ufetch
+SPIKES := $(B)/tlsbench
+TOOLS  := $(B)/ufetch $(B)/ubtrust
 
-all: $(SPIKES)
+all: $(SPIKES) $(TOOLS)
 
 $(B)/tlsbench: $(B)/spikes/tlsbench.o $(OS_OBJ) $(BR_LIB)
 	$(LD) -o $@ $^ $(LDLIBS)
 
-$(B)/ufetch: $(B)/spikes/ufetch.o $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
+$(B)/ufetch: $(B)/src/ufetch.o $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
+	$(LD) -o $@ $^ $(LDLIBS)
+
+$(B)/ubtrust: $(B)/src/ubtrust.o $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
 	$(LD) -o $@ $^ $(LDLIBS)
 
 $(BR_LIB): $(BR_OBJ)

@@ -41,10 +41,18 @@ struct xdefer {
  * before br_ssl_client_reset(). */
 void xdefer_install(struct xdefer *xd, br_ssl_client_context *sc);
 
-/* After the handshake: validate the recorded chain with the configured
+/*
+ * After the handshake: validate the recorded chain with the configured
  * x509_minimal context and check the recorded signature. 0 when the
- * server is who it claims to be, otherwise a BR_ERR_* code. */
+ * server is who it claims to be, otherwise a BR_ERR_* code.
+ *
+ * leaf_known_good: this exact leaf certificate was validated for this
+ * host before (and hasn't expired): skip the chain, check only the
+ * signature. anchor_at (may be NULL) receives the index of the chain
+ * certificate at which validation reached a trust anchor: certificates
+ * 1..*anchor_at are then verified intermediates (-1 when not known).
+ */
 int xdefer_verify(struct xdefer *xd, br_ssl_client_context *sc,
-	br_x509_minimal_context *xc);
+	br_x509_minimal_context *xc, int leaf_known_good, int *anchor_at);
 
 #endif /* UB_XDEFER_H */

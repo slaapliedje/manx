@@ -331,7 +331,7 @@ int http_resp_eof(struct http_resp *r)
 int http_request(char *buf, size_t n, const char *method,
 	const struct url *u, const char *extra)
 {
-	char target[URL_MAX], host[URL_HOST_MAX + 8];
+	char target[URL_MAX], host[URL_HOST_MAX + 12];
 	int len;
 
 	if (url_target(u, target, sizeof target) != URL_OK)

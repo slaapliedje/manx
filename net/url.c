@@ -276,7 +276,7 @@ static int append(char *buf, size_t n, size_t *len, const char *s)
 int url_format(const struct url *u, char *buf, size_t n, int with_fragment)
 {
 	size_t len = 0;
-	char port[8];
+	char port[12];
 
 	if (n == 0)
 		return URL_TOOLONG;
