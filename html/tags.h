@@ -1,0 +1,72 @@
+/*
+ * tags.h - the HTML element and attribute names the browser knows, as
+ * small numbers, with the properties the tokenizer and tree builder need.
+ */
+#ifndef UB_TAGS_H
+#define UB_TAGS_H
+
+/* elements: TAG_UNKNOWN for any other name (kept, treated as inline) */
+enum tag {
+	TAG_UNKNOWN = 0,
+	TAG_A, TAG_ABBR, TAG_ACRONYM, TAG_ADDRESS, TAG_APPLET, TAG_AREA,
+	TAG_ARTICLE, TAG_ASIDE, TAG_AUDIO, TAG_B, TAG_BASE, TAG_BASEFONT,
+	TAG_BDI, TAG_BDO, TAG_BIG, TAG_BLINK, TAG_BLOCKQUOTE, TAG_BODY, TAG_BR,
+	TAG_BUTTON, TAG_CANVAS, TAG_CAPTION, TAG_CENTER, TAG_CITE, TAG_CODE,
+	TAG_COL, TAG_COLGROUP, TAG_DATA, TAG_DATALIST, TAG_DD, TAG_DEL,
+	TAG_DETAILS, TAG_DFN, TAG_DIALOG, TAG_DIR, TAG_DIV, TAG_DL, TAG_DT,
+	TAG_EM, TAG_EMBED, TAG_FIELDSET, TAG_FIGCAPTION, TAG_FIGURE, TAG_FONT,
+	TAG_FOOTER, TAG_FORM, TAG_FRAME, TAG_FRAMESET, TAG_H1, TAG_H2, TAG_H3,
+	TAG_H4, TAG_H5, TAG_H6, TAG_HEAD, TAG_HEADER, TAG_HGROUP, TAG_HR,
+	TAG_HTML, TAG_I, TAG_IFRAME, TAG_IMAGE, TAG_IMG, TAG_INPUT, TAG_INS,
+	TAG_KBD, TAG_LABEL, TAG_LEGEND, TAG_LI, TAG_LINK, TAG_LISTING,
+	TAG_MAIN, TAG_MAP, TAG_MARK, TAG_MARQUEE, TAG_MATH, TAG_MENU, TAG_META,
+	TAG_METER, TAG_NAV, TAG_NOBR, TAG_NOEMBED, TAG_NOFRAMES, TAG_NOSCRIPT,
+	TAG_OBJECT, TAG_OL, TAG_OPTGROUP, TAG_OPTION, TAG_OUTPUT, TAG_P,
+	TAG_PARAM, TAG_PICTURE, TAG_PLAINTEXT, TAG_PRE, TAG_PROGRESS, TAG_Q,
+	TAG_RB, TAG_RP, TAG_RT, TAG_RUBY, TAG_S, TAG_SAMP, TAG_SCRIPT,
+	TAG_SEARCH, TAG_SECTION, TAG_SELECT, TAG_SMALL, TAG_SOURCE, TAG_SPAN,
+	TAG_STRIKE, TAG_STRONG, TAG_STYLE, TAG_SUB, TAG_SUMMARY, TAG_SUP,
+	TAG_SVG, TAG_TABLE, TAG_TBODY, TAG_TD, TAG_TEMPLATE, TAG_TEXTAREA,
+	TAG_TFOOT, TAG_TH, TAG_THEAD, TAG_TIME, TAG_TITLE, TAG_TR, TAG_TRACK,
+	TAG_TT, TAG_U, TAG_UL, TAG_VAR, TAG_VIDEO, TAG_WBR, TAG_XMP,
+	TAG_COUNT
+};
+
+/* properties */
+#define TF_VOID		0x0001	/* no content, no end tag */
+#define TF_BLOCK	0x0002	/* closes an open <p> */
+#define TF_SKIPTEXT	0x0004	/* raw text, thrown away (script, style) */
+#define TF_RAWTEXT	0x0008	/* raw text, kept (xmp, listing?) */
+#define TF_RCDATA	0x0010	/* text with entities only (title, textarea) */
+#define TF_DROP		0x0020	/* the whole subtree is dropped (svg, math) */
+#define TF_HEAD		0x0040	/* belongs in <head> when it comes first */
+#define TF_SPECIAL	0x0080	/* stops a stray end tag's search (HTML5) */
+#define TF_SCOPE	0x0100	/* scope boundary: table, td, th, ... */
+#define TF_PRE		0x0200	/* white space kept */
+#define TF_ELEMONLY	0x0400	/* white space text inside is dropped */
+#define TF_HEADING	0x0800
+
+unsigned tag_flags(int tag);
+const char *tag_name(int tag);
+int tag_lookup(const char *lowercase_name);	/* TAG_UNKNOWN if not found */
+
+/* attributes kept on elements (others are dropped at parse time) */
+enum attr {
+	ATTR_NONE = 0,
+	ATTR_ACCEPT_CHARSET, ATTR_ACTION, ATTR_ALIGN, ATTR_ALT, ATTR_ARIA_HIDDEN,
+	ATTR_BGCOLOR, ATTR_BORDER, ATTR_CELLPADDING, ATTR_CELLSPACING,
+	ATTR_CHARSET, ATTR_CHECKED, ATTR_CLASS, ATTR_COLOR, ATTR_COLS,
+	ATTR_COLSPAN, ATTR_CONTENT, ATTR_DATETIME, ATTR_DIR, ATTR_DISABLED,
+	ATTR_ENCTYPE, ATTR_FACE, ATTR_FOR, ATTR_HEIGHT, ATTR_HIDDEN, ATTR_HREF,
+	ATTR_HTTP_EQUIV, ATTR_ID, ATTR_LABEL, ATTR_LANG, ATTR_MAXLENGTH,
+	ATTR_METHOD, ATTR_MULTIPLE, ATTR_NAME, ATTR_NOWRAP, ATTR_PLACEHOLDER,
+	ATTR_READONLY, ATTR_REL, ATTR_REVERSED, ATTR_ROWS, ATTR_ROWSPAN,
+	ATTR_SELECTED, ATTR_SIZE, ATTR_SRC, ATTR_START, ATTR_STYLE, ATTR_TARGET,
+	ATTR_TITLE, ATTR_TYPE, ATTR_VALIGN, ATTR_VALUE, ATTR_WIDTH,
+	ATTR_COUNT
+};
+
+const char *attr_name(int attr);
+int attr_lookup(const char *lowercase_name);	/* ATTR_NONE if not kept */
+
+#endif /* UB_TAGS_H */

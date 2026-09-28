@@ -1,2 +1,3 @@
 build/
 .ufetch-seed
+fuzz-fail-*.html

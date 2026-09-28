@@ -41,7 +41,7 @@ else
 $(error TARGET must be host or sysv4)
 endif
 
-INC := -Ios -Inet -Itls -I$(BEARSSL)/inc
+INC := -Ios -Inet -Itls -Itext -Ihtml -I$(BEARSSL)/inc
 
 OS_SRC := $(wildcard os/*.c) $(wildcard $(OS)/*.c)
 OS_OBJ := $(OS_SRC:%.c=$(B)/%.o)
@@ -52,16 +52,30 @@ BR_LIB := $(B)/libbearssl.a
 
 NET_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard net/*.c))
 TLS_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard tls/*.c))
+HTML_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard text/*.c html/*.c))
 
 SPIKES := $(B)/tlsbench
-TOOLS  := $(B)/ufetch $(B)/ubtrust
+TOOLS  := $(B)/ufetch $(B)/ubtrust $(B)/uparse
+BENCH  := $(B)/bench_parse $(B)/bench_micro $(B)/bench_loops
 
-all: $(SPIKES) $(TOOLS)
+all: $(SPIKES) $(TOOLS) $(BENCH)
 
 $(B)/tlsbench: $(B)/spikes/tlsbench.o $(OS_OBJ) $(BR_LIB)
 	$(LD) -o $@ $^ $(LDLIBS)
 
 $(B)/ufetch: $(B)/src/ufetch.o $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
+	$(LD) -o $@ $^ $(LDLIBS)
+
+$(B)/uparse: $(B)/src/uparse.o $(HTML_OBJ) $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
+	$(LD) -o $@ $^ $(LDLIBS)
+
+$(B)/bench_parse: $(B)/tests/bench_parse.o $(HTML_OBJ) $(OS_OBJ)
+	$(LD) -o $@ $^ $(LDLIBS)
+
+$(B)/bench_micro: $(B)/tests/bench_micro.o $(B)/html/tags.o $(OS_OBJ)
+	$(LD) -o $@ $^ $(LDLIBS)
+
+$(B)/bench_loops: $(B)/tests/bench_loops.o $(OS_OBJ)
 	$(LD) -o $@ $^ $(LDLIBS)
 
 $(B)/ubtrust: $(B)/src/ubtrust.o $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
@@ -84,7 +98,7 @@ $(B)/%.o: %.c
 TESTS := $(filter-out build/test/test_snprintf,\
 	$(patsubst tests/%.c,build/test/%,$(wildcard tests/test_*.c)))
 
-build/test/%: tests/%.c $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
+build/test/%: tests/%.c $(HTML_OBJ) $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
 	@mkdir -p build/test
 	$(CC) $(CFLAGS) $(INC) -o $@ $^ $(LDLIBS)
 
@@ -99,8 +113,20 @@ test: $(TESTS) build/test/test_snprintf $(B)/tlsbench
 	@for t in $(TESTS) build/test/test_snprintf; do $$t || exit 1; done
 	$(B)/tlsbench 50 kat
 
+# the HTML engine under AddressSanitizer + UBSan, fed mutated corpus pages
+# (tests/fetch_corpus.sh first). FUZZ_ITERS, FUZZ_SEED to taste.
+FUZZ_ITERS ?= 20000
+FUZZ_SEED ?= 1
+build/fuzz/fuzz_html: tests/fuzz_html.c $(wildcard text/*.c html/*.c) os/mem.c
+	@mkdir -p build/fuzz
+	cc -std=c99 -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=all \
+		-Ios -Itext -Ihtml -o $@ $^
+
+fuzz: build/fuzz/fuzz_html
+	build/fuzz/fuzz_html $(FUZZ_ITERS) $(FUZZ_SEED) build/corpus/*.html
+
 clean:
 	rm -rf build
 
-.PHONY: all clean test
+.PHONY: all clean test fuzz
 -include $(shell find build -name '*.d' 2>/dev/null)

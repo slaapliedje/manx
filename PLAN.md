@@ -105,9 +105,15 @@ transputer spike; see `docs/phase0-results.md`)
   learn`); 68030 assembly for RSA/ECDSA verification; testing on a real
   AMIX machine.
 
-**Phase 2 — HTML engine:** streaming tokenizer, entity table, tolerant tree
-builder, UTF-8 → Latin-1/ASCII transliteration. Exit: a corpus of ~50 saved
-pages parses within the caps; fuzzed on the host.
+**Phase 2 — HTML engine** (done 2026-09-28; see `docs/phase2-results.md`)
+- Streaming tokenizer, 285-entity table, tolerant tree builder, compact
+  document store, charset detection and UTF-8 decoding. ✔
+- 54 real pages agree with Python's parser (title, links) and are
+  chunking-invariant. 100k+ sanitizer fuzz iterations are clean. ✔
+- On the TT, parsing keeps up with the network: Wikipedia 1.9 s,
+  Hacker News 1.0 s, 1.1 MB pages 15-20 s. ✔
+- Found: data loads on the TT look uncached (4-5x slower than a 68030
+  should be); a kernel/sp1 question.
 
 **Phase 3 — text frontend (first usable browser):** styles, block/inline
 layout, lists, `<pre>`, simple tables; curses UI with scrolling, link
