@@ -70,18 +70,26 @@ Frankenstein went from 16 s to 3.3 s, Wikipedia from 8.4 s to 1.9 s.
 
 The binary grew to 289 KB of code (`uparse`, with the network core).
 
-## A finding about the TT itself
+## The TT's caches (corrected 2026-09-28)
 
-Micro-benchmarks (`tests/bench_micro.c`, `tests/bench_loops.c`) show
-register-only code running at about the expected 68030 speed. **Every data
-load, however, costs ~35-50 cycles, even from a 256-byte array that should
-sit in the 68030's data cache**: an empty call takes ~4 us, and memset
-manages ~2.6 MB/s. So user data on this ASV seems to be uncached: the data
-cache is off, the pages are cache-inhibited, or they live in ST-RAM. That
-would explain why the crypto and the parser run 4-5x slower than a 32 MHz
-68030 should. If ASV keeps the data cache off on purpose (DMA coherency
-is a common reason), turning it on is a kernel question for sp1, not the
-browser's. But everything here would gain from it.
+An earlier version of this section claimed the TT's data accesses were
+uncached. **That was wrong.** It came from counting whole loop iterations as
+load cost, and from a benchmark that read untouched `calloc` pages.
+
+Checked properly (read-only from the kernel, then an A/B of the cache
+register with `spikes/asv/cachectl`):
+- ASV boots with CACR = 0x3111: both caches, bursts and write-allocate on
+  (`cacheconfig` tunable; `sysm68k(SM68KCACHE)` sets it).
+- User pages are mapped cacheable: `hat_cache` = mode 0. `hat_nocache` = 2
+  is for devices.
+- With the cache on, a load that hits costs ~6 cycles and one that misses
+  ~16. With it off, every load costs ~13. **The data cache works.**
+- Register-only loops run at roughly the expected 32 MHz 68030 speed.
+
+So BearSSL and the parser are simply as fast as a 68030 runs this C.
+There's no kernel setting to fix. What is slow is AMIX libc's `memset`
+(byte by byte, 3.7x slower than a longword loop) and `strcmp` (~180
+cycles a call): hot paths should use their own.
 
 ## Next
 

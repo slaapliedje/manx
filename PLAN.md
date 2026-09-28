@@ -112,8 +112,9 @@ transputer spike; see `docs/phase0-results.md`)
   chunking-invariant. 100k+ sanitizer fuzz iterations are clean. ✔
 - On the TT, parsing keeps up with the network: Wikipedia 1.9 s,
   Hacker News 1.0 s, 1.1 MB pages 15-20 s. ✔
-- Found: data loads on the TT look uncached (4-5x slower than a 68030
-  should be); a kernel/sp1 question.
+- Checked (A/B of the cache register): the TT's caches are on and
+  effective; the 68030 is simply this fast. AMIX libc memset/strcmp are
+  slow and worth avoiding in hot paths.
 
 **Phase 3 — text frontend (first usable browser):** styles, block/inline
 layout, lists, `<pre>`, simple tables; curses UI with scrolling, link
