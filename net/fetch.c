@@ -16,6 +16,8 @@
 #include "http.h"
 #include "fetch.h"
 
+int fetch_early_requests = 1;
+
 static void status(const struct fetch_cb *cb, const char *fmt, const char *arg)
 {
 	char msg[URL_MAX + 64];
@@ -87,15 +89,28 @@ static int http_once(const struct url *u, const char *method,
 
 	*retry = 0;
 	status(cb, "Connecting to %s...", u->host);
-	c = conn_open(u->host, port, is_tls, err, sizeof err);
+	/* nothing private in these requests yet (no cookies, no forms): the
+	 * request may go before validation finishes (conn.h) */
+	c = conn_open(u->host, port, is_tls, fetch_early_requests, err, sizeof err);
 	if (c == NULL)
 		return fail(res, err);
 	res->reused = c->reused;
+	res->reconnected = c->reconnected;
 	if (!c->reused) {
 		res->t_dns = c->t_dns;
 		res->t_connect = c->t_connect;
 		res->tls = is_tls;
 		if (is_tls) {
+			const struct tls_info *ti = &c->tls->info;
+			char msg[200];
+
+			snprintf(msg, sizeof msg, "TLS %s%s%s%s: handshake %lu ms, "
+				"validation %lu ms, suite 0x%04x",
+				tls_profile_name(ti->profile), ti->resumed ? ", resumed" : "",
+				ti->leaf_memo ? ", known leaf" : "",
+				c->reconnected ? ", reconnected" : "", ti->t_handshake,
+				ti->t_verify, ti->suite);
+			status(cb, "%s", msg);
 			res->tls_resumed = c->tls->info.resumed;
 			res->tls_leaf_memo = c->tls->info.leaf_memo;
 			res->tls_learned = c->tls->info.learned;
@@ -144,6 +159,15 @@ static int http_once(const struct url *u, const char *method,
 	}
 	res->t_body = os_msec() - h.t0;
 	if (rc != HTTP_DONE) {
+		const char *why = conn_error(c);
+
+		if (why) {
+			snprintf(err, sizeof err, "%.60s: server not trusted: %s",
+				u->host, why);
+			conn_release(c, 0);
+			*retry = 0;
+			return fail(res, err);
+		}
 		conn_release(c, 0);
 		if (h.stopped)
 			return fail(res, "stopped");
@@ -310,7 +334,7 @@ static int gopher_fetch(const struct url *u, const struct fetch_cb *cb,
 	sel[n++] = '\n';
 
 	status(cb, "Connecting to %s...", u->host);
-	c = conn_open(u->host, url_port(u), 0, err, sizeof err);
+	c = conn_open(u->host, url_port(u), 0, 0, err, sizeof err);
 	if (c == NULL)
 		return fail(res, err);
 	res->t_dns = c->t_dns;

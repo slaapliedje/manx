@@ -227,7 +227,8 @@ signature:
 			return BR_ERR_BAD_SIGNATURE;
 	} else {
 		if (pk->key_type != BR_KEYTYPE_EC
-			|| !sc->eng.iecdsa(sc->eng.iec, xd->ske_hv, xd->ske_hvlen,
+			|| !sc->eng.iecdsa(xd->iec ? xd->iec : sc->eng.iec,
+				xd->ske_hv, xd->ske_hvlen,
 				&pk->key.ec, xd->ske_sig, xd->ske_siglen))
 			return BR_ERR_BAD_SIGNATURE;
 	}

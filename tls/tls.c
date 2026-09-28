@@ -7,7 +7,7 @@
  *               a host, until they expire
  *   sessions    TLS session parameters per host:port (mode 600: they hold
  *               master secrets), dropped after SESSION_MAX_AGE
- *   hosts       hosts that need the FULL profile
+ *   hosts       "host profile" for hosts that refused FAST
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,8 +45,12 @@ struct leaf {
 static struct leaf s_leaves[MAX_LEAVES];
 static int s_nleaves;
 
-static char s_full_hosts[MAX_HOSTPREFS][256];
-static int s_nfull;
+struct hostpref {
+	char host[256];
+	int profile;
+};
+static struct hostpref s_prefs[MAX_HOSTPREFS];
+static int s_nprefs;
 
 static char *datapath(const char *name)
 {
@@ -262,45 +266,65 @@ static void load_hostprefs(void)
 	char *path = datapath("hosts"), line[300];
 	FILE *f = path ? fopen(path, "r") : NULL;
 
-	s_nfull = 0;
+	s_nprefs = 0;
 	if (f == NULL)
 		return;
-	while (s_nfull < MAX_HOSTPREFS && fgets(line, sizeof line, f)) {
+	while (s_nprefs < MAX_HOSTPREFS && fgets(line, sizeof line, f)) {
 		char *h = strtok(line, " \n"), *what = strtok(NULL, " \n");
+		int p;
 
-		if (h && what && strcmp(what, "full") == 0 && strlen(h) < 256)
-			strcpy(s_full_hosts[s_nfull++], h);
+		if (!h || !what || strlen(h) >= 256)
+			continue;
+		p = strcmp(what, "full") == 0 ? TLS_FULL
+			: strcmp(what, "full-x25519") == 0 ? TLS_FULL_X : TLS_FAST;
+		strcpy(s_prefs[s_nprefs].host, h);
+		s_prefs[s_nprefs++].profile = p;
 	}
 	fclose(f);
+}
+
+const char *tls_profile_name(int profile)
+{
+	return profile == TLS_FULL ? "full" : profile == TLS_FULL_X
+		? "full-x25519" : "fast";
 }
 
 int tls_host_profile(const char *host)
 {
 	int i;
 
-	for (i = 0; i < s_nfull; i++)
-		if (strcmp(s_full_hosts[i], host) == 0)
-			return TLS_FULL;
+	for (i = 0; i < s_nprefs; i++)
+		if (strcmp(s_prefs[i].host, host) == 0)
+			return s_prefs[i].profile;
 	return TLS_FAST;
 }
 
-void tls_host_needs_full(const char *host)
+void tls_host_set_profile(const char *host, int profile)
 {
-	char *path, buf[MAX_HOSTPREFS * 270];
+	char *path, buf[MAX_HOSTPREFS * 280];
 	size_t n = 0;
 	int i;
 
-	if (tls_host_profile(host) == TLS_FULL || strlen(host) >= 256)
+	if (tls_host_profile(host) == profile || strlen(host) >= 256)
 		return;
-	if (s_nfull == MAX_HOSTPREFS) {
-		memmove(s_full_hosts[0], s_full_hosts[1], (MAX_HOSTPREFS - 1) * 256);
-		s_nfull--;
+	for (i = 0; i < s_nprefs; i++)
+		if (strcmp(s_prefs[i].host, host) == 0)
+			break;
+	if (i == s_nprefs) {
+		if (s_nprefs == MAX_HOSTPREFS) {
+			memmove(s_prefs, s_prefs + 1, (MAX_HOSTPREFS - 1) * sizeof *s_prefs);
+			s_nprefs--;
+		}
+		i = s_nprefs++;
+		strcpy(s_prefs[i].host, host);
 	}
-	strcpy(s_full_hosts[s_nfull++], host);
+	s_prefs[i].profile = profile;
 	if ((path = datapath("hosts")) == NULL)
 		return;
-	for (i = 0; i < s_nfull; i++)
-		n += (size_t)sprintf(buf + n, "%s full\n", s_full_hosts[i]);
+	for (i = 0; i < s_nprefs; i++)
+		if (s_prefs[i].profile != TLS_FAST)
+			n += (size_t)sprintf(buf + n, "%s %s\n", s_prefs[i].host,
+				tls_profile_name(s_prefs[i].profile));
 	os_write_file(path, buf, n, 0644);
 }
 
@@ -448,7 +472,7 @@ static const uint16_t suites_full[] = {
 	BR_TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
 };
 
-/* the m31 curves, but offering only X25519 (the FAST profile) */
+/* the m31 curves, but offering only X25519 (FAST and FULL_X) */
 static br_ec_impl s_ec_x25519;
 
 static unsigned long ms_since(unsigned long t0)
@@ -457,17 +481,19 @@ static unsigned long ms_since(unsigned long t0)
 }
 
 int tls_connect(struct tls_conn *c, int fd, const char *host, unsigned port,
-	int profile)
+	int profile, int early)
 {
-	unsigned char seed[32], hash[32];
+	unsigned char seed[32];
 	struct session *sess;
 	unsigned long t0;
-	int err, anchor_at, known;
+	int err;
 
 	memset(&c->info, 0, sizeof c->info);
 	c->info.profile = profile;
 	c->fd = fd;
 	c->open = 0;
+	c->verify_pending = 0;
+	c->verify_err = 0;
 	c->port = port;
 	if (strlen(host) >= sizeof c->host)
 		return BR_ERR_BAD_PARAM;
@@ -489,7 +515,12 @@ int tls_connect(struct tls_conn *c, int fd, const char *host, unsigned port,
 	} else {
 		br_ssl_engine_set_suites(&c->sc.eng, suites_full,
 			sizeof suites_full / sizeof suites_full[0]);
-		br_ssl_engine_set_ec(&c->sc.eng, &br_ec_all_m31);
+		if (profile == TLS_FULL_X) {
+			s_ec_x25519 = br_ec_all_m31;
+			s_ec_x25519.supported_curves = (uint32_t)1 << BR_EC_curve25519;
+			br_ssl_engine_set_ec(&c->sc.eng, &s_ec_x25519);
+		} else
+			br_ssl_engine_set_ec(&c->sc.eng, &br_ec_all_m31);
 	}
 	/* the fastest code measured on the TT: i32 RSA, m31 curves, i31 ECDSA */
 	br_ssl_engine_set_rsavrfy(&c->sc.eng, br_rsa_i32_pkcs1_vrfy);
@@ -498,6 +529,7 @@ int tls_connect(struct tls_conn *c, int fd, const char *host, unsigned port,
 	br_x509_minimal_set_ecdsa(&c->xc, &br_ec_all_m31, br_ecdsa_i31_vrfy_asn1);
 	br_ssl_engine_set_buffer(&c->sc.eng, c->iobuf, sizeof c->iobuf, 1);
 	xdefer_install(&c->xd, &c->sc);
+	c->xd.iec = &br_ec_all_m31;	/* not the key exchange's subset */
 	br_ssl_engine_inject_entropy(&c->sc.eng, seed, sizeof seed);
 	memset(seed, 0, sizeof seed);
 
@@ -530,7 +562,25 @@ int tls_connect(struct tls_conn *c, int fd, const char *host, unsigned port,
 		return 0;
 	}
 
-	/* a full handshake: validate before anything moves */
+	/* a full handshake: validate before anything moves, or, for an
+	 * early request, before the first byte is read */
+	c->open = 1;
+	if (early) {
+		c->verify_pending = 1;
+		return 0;
+	}
+	return tls_verify(c);
+}
+
+int tls_verify(struct tls_conn *c)
+{
+	unsigned char hash[32];
+	unsigned long t0;
+	int err, anchor_at, known;
+	const char *host = c->host;
+	unsigned port = c->port;
+
+	c->verify_pending = 0;
 	t0 = os_msec();
 	known = 0;
 	if (c->xd.ncert > 0) {
@@ -546,6 +596,8 @@ int tls_connect(struct tls_conn *c, int fd, const char *host, unsigned port,
 	c->info.leaf_memo = known;
 	if (err) {
 		session_drop(host, port);
+		c->open = 0;
+		c->verify_err = err;
 		return err;
 	}
 	if (!known) {
@@ -560,7 +612,6 @@ int tls_connect(struct tls_conn *c, int fd, const char *host, unsigned port,
 			c->info.learned = learn_chain(&c->xd, anchor_at);
 	}
 	session_store(host, port, &c->sc.eng.session);
-	c->open = 1;
 	return 0;
 }
 
@@ -568,6 +619,10 @@ int tls_read(struct tls_conn *c, void *buf, size_t len)
 {
 	int n;
 
+	/* an early request: nothing from the server is taken before the
+	 * server has been validated */
+	if (c->verify_pending && tls_verify(c) != 0)
+		return -1;
 	if (!c->open)
 		return -1;
 	n = br_sslio_read(&c->io, buf, len);

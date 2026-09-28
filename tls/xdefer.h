@@ -35,6 +35,9 @@ struct xdefer {
 	size_t ske_hvlen;
 	unsigned char ske_sig[512];
 	size_t ske_siglen;
+	/* curves for checking an ECDSA signature: all of them, whatever the
+	 * handshake's key exchange was limited to */
+	const br_ec_impl *iec;
 };
 
 /* Install on a client context set up by br_ssl_client_init_full(); call

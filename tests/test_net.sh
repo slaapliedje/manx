@@ -11,7 +11,7 @@ tmp=${TMPDIR:-/tmp}/ubnet.$$
 check() {
 	name=$1; want=$2; body=$3; shift 3
 	$U -o $tmp.body "$@" > $tmp.err 2>&1
-	if grep "$want" $tmp.err > /dev/null && { [ -z "$body" ] || [ "`tr -d "\\r" < $tmp.body`" = "$body" ]; }
+	if grep "$want" $tmp.err > /dev/null && { [ -z "$body" ] || [ "`tr -d '\\015' < $tmp.body`" = "$body" ]; }
 	then
 		echo "ok   $name"
 	else

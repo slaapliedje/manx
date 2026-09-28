@@ -12,6 +12,9 @@
 #define POOL_MAX	3		/* idle connections kept */
 #define IDLE_MAX_MS	60000		/* servers drop idle ones long before */
 #define READ_TIMEOUT_MS	30000
+/* servers drop a quiet connection after ~10-15 s: after a validation this
+ * long, reconnect (resuming the session just stored) before using it */
+#define STALE_AFTER_MS	8000
 
 static struct conn *s_pool[POOL_MAX];
 
@@ -79,7 +82,7 @@ static int tcp_open(struct conn *c, const unsigned char ip[4], char *err,
 }
 
 struct conn *conn_open(const char *host, unsigned port, int is_tls,
-	char *err, size_t errlen)
+	int early, char *err, size_t errlen)
 {
 	struct conn *c;
 	unsigned char ip[4];
@@ -124,25 +127,59 @@ struct conn *conn_open(const char *host, unsigned port, int is_tls,
 		conn_free(c);
 		return NULL;
 	}
+	/* climb the ladder of offers from where this host last worked */
 	profile = tls_host_profile(host);
-	rc = tls_connect(c->tls, c->fd, host, port, profile);
-	if (rc != 0 && profile == TLS_FAST && tls_retry_full(rc)) {
-		/* the server refused the cheap offer: once more with everything */
+	for (;;) {
+		rc = tls_connect(c->tls, c->fd, host, port, profile, early);
+		if (rc == 0 || profile == TLS_FULL || !tls_retry_full(rc))
+			break;
+		profile++;
 		tcp_close(c->fd);
 		if (tcp_open(c, ip, err, errlen) < 0) {
 			conn_free(c);
 			return NULL;
 		}
-		rc = tls_connect(c->tls, c->fd, host, port, TLS_FULL);
-		if (rc == 0)
-			tls_host_needs_full(host);
 	}
+	if (rc == 0)
+		tls_host_set_profile(host, profile);
 	if (rc != 0) {
 		snprintf(err, errlen, "%s: %s", host, tls_strerror(rc));
 		conn_free(c);
 		return NULL;
 	}
+	if (!early && c->tls->info.t_verify > STALE_AFTER_MS) {
+		/* the server has most likely given up on us meanwhile; now the
+		 * session is stored, the leaf known and the intermediates
+		 * learned, so a second handshake is cheap */
+		struct tls_info first = c->tls->info;
+
+		tls_close(c->tls);
+		tcp_close(c->fd);
+		if (tcp_open(c, ip, err, errlen) < 0) {
+			conn_free(c);
+			return NULL;
+		}
+		rc = tls_connect(c->tls, c->fd, host, port, first.profile, 0);
+		if (rc != 0) {
+			snprintf(err, errlen, "%s: %s (reconnecting)", host,
+				tls_strerror(rc));
+			conn_free(c);
+			return NULL;
+		}
+		/* report the whole cost */
+		c->tls->info.t_verify += first.t_verify;
+		c->tls->info.t_handshake += first.t_handshake;
+		c->tls->info.learned = first.learned;
+		c->reconnected = 1;
+	}
 	return c;
+}
+
+const char *conn_error(struct conn *c)
+{
+	if (c->is_tls && c->tls->verify_err)
+		return tls_strerror(c->tls->verify_err);
+	return NULL;
 }
 
 int conn_read(struct conn *c, void *buf, size_t len)
