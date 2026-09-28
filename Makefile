@@ -50,8 +50,8 @@ BR_SRC := $(wildcard $(BEARSSL)/src/*/*.c) $(BEARSSL)/src/settings.c
 BR_OBJ := $(BR_SRC:%.c=$(B)/%.o)
 BR_LIB := $(B)/libbearssl.a
 
-NET_OBJ := $(B)/net/dns.o $(B)/net/tcp.o
-TLS_OBJ := $(B)/tls/trust.o $(B)/tls/entropy.o $(B)/tls/xdefer.o
+NET_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard net/*.c))
+TLS_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard tls/*.c))
 
 SPIKES := $(B)/tlsbench $(B)/ufetch
 
@@ -75,14 +75,24 @@ $(B)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(INC) -MMD -c $< -o $@
 
-# host-only unit tests
-test: $(B)/tlsbench
+# host-only unit tests: each tests/test_NAME.c links with the modules
+# (test_snprintf is special: it tests the SVR4 snprintf against glibc's)
+TESTS := $(filter-out build/test/test_snprintf,\
+	$(patsubst tests/%.c,build/test/%,$(wildcard tests/test_*.c)))
+
+build/test/%: tests/%.c $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
+	@mkdir -p build/test
+	$(CC) $(CFLAGS) $(INC) -o $@ $^ $(LDLIBS)
+
+build/test/test_snprintf: tests/test_snprintf.c os/sysv4/snprintf.c
 	@mkdir -p build/test
 	cc -std=c99 -Wall -Dvsnprintf=ub_vsnprintf -Dsnprintf=ub_snprintf \
 		-c os/sysv4/snprintf.c -o build/test/snprintf.o
 	cc -std=c99 -Wall -Wno-format -Wno-format-truncation \
-		tests/test_snprintf.c build/test/snprintf.o -o build/test/test_snprintf
-	build/test/test_snprintf
+		tests/test_snprintf.c build/test/snprintf.o -o $@
+
+test: $(TESTS) build/test/test_snprintf $(B)/tlsbench
+	@for t in $(TESTS) build/test/test_snprintf; do $$t || exit 1; done
 	$(B)/tlsbench 50 kat
 
 clean:
