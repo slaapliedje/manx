@@ -15,6 +15,7 @@
 #include "doc.h"
 #include "load.h"
 #include "layout.h"
+#include "forms.h"
 
 static unsigned long s_rng;
 
@@ -66,7 +67,7 @@ static char *dump_of(const unsigned char *s, size_t n, int chunked, size_t cap)
 
 		if (layout_run(&pg, &d, 1 + (int)rnd(200), cs[rnd(3)],
 			rnd(4) == 0 ? 1 + rnd(50) : 0,
-			rnd(4) == 0 ? 1 + rnd(20000) : 0) == 0) {
+			rnd(4) == 0 ? 1 + rnd(20000) : 0, NULL) == 0) {
 			unsigned long i;
 
 			/* every line and span within the text */
@@ -78,6 +79,42 @@ static char *dump_of(const unsigned char *s, size_t n, int chunked, size_t cap)
 					|| pg.spans[i].link > pg.nlinks)
 					abort();
 			layout_free(&pg);
+		}
+		/* the forms: collect, lay out with them, change, submit */
+		{
+			struct forms fs;
+			struct url base;
+			int i;
+
+			url_parse("http://fuzz.test/a/b?c", &base);
+			if (forms_init(&fs, &d) == 0) {
+				for (i = 0; i < fs.n; i++) {
+					struct field *f = &fs.f[i];
+					nodeid o[4];
+					int no = forms_options(&fs, f, o, 4);
+
+					if (rnd(2))
+						forms_click(&fs, f);
+					if (f->type == FT_TEXT && rnd(2))
+						forms_set_text(f, "fu\xc3\x9fz & =");
+					if (no && rnd(2))
+						forms_choose(f, o[rnd(no)]);
+					(void)forms_text(&fs, f);
+				}
+				if (fs.n) {
+					struct submission sub;
+					const char *why;
+					struct field *f = &fs.f[rnd(fs.n)];
+
+					if (forms_submit(&fs, f->form, f->node, &base,
+						(int)rnd(2), &sub, &why) == 0)
+						xfree(sub.body);
+					forms_reset(&fs, f->form);
+				}
+				if (layout_run(&pg, &d, 40, TCS_UTF8, 0, 0, &fs) == 0)
+					layout_free(&pg);
+				forms_free(&fs);
+			}
 		}
 	}
 	doc_free(&d);

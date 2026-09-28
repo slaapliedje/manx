@@ -13,12 +13,46 @@ HTTP paths:
   /count       body says how many requests this connection has served
 Gopher: "" (menu), "/file.txt", "/search\tquery".
 """
-import socket, sys, threading
+import gzip, socket, sys, threading, zlib
 
 HOST = sys.argv[1] if len(sys.argv) > 1 else "127.0.0.1"
 BIG = bytes((i * 7 + 3) % 251 for i in range(300000))
+HITS = {}
 
-def send_http(c, path, n_on_conn):
+def send_http(c, path, n_on_conn, req=b""):
+    head, _, body = req.partition(b"\r\n\r\n")
+    hdrs = {}
+    for line in head.split(b"\r\n")[1:]:
+        k, _, v = line.partition(b":")
+        hdrs[k.strip().lower()] = v.strip()
+    method = head.split(b" ", 1)[0]
+    if path == "/setcookie":
+        c.sendall(b"HTTP/1.1 302 Found\r\nSet-Cookie: sid=abc123; Path=/\r\n"
+                  b"Set-Cookie: pref=x; Max-Age=60\r\nLocation: /echo\r\nContent-Length: 0\r\n\r\n")
+        return True
+    query = path.partition("?")[2].encode()
+    path = path.partition("?")[0]
+    if path == "/echo":
+        text = b"method=" + method + (b" query=" + query if query else b"") + b" cookie=" + hdrs.get(b"cookie", b"-") + b" type=" + \
+            hdrs.get(b"content-type", b"-") + b" body=" + body
+        c.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n" % len(text) + text)
+        return True
+    if path in ("/fresh", "/etag"):
+        HITS[path] = HITS.get(path, 0) + 1
+        if path == "/etag" and hdrs.get(b"if-none-match") == b'"v1"':
+            c.sendall(b'HTTP/1.1 304 Not Modified\r\nETag: "v1"\r\nContent-Length: 0\r\n\r\n')
+            return True
+        text = b"<title>%s</title><p>served %d times <a href=/len>next</a>" % (path.encode(), HITS[path])
+        extra = b"Cache-Control: max-age=60\r\n" if path == "/fresh" else b'ETag: "v1"\r\n'
+        c.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n" + extra +
+                  b"Content-Length: %d\r\n\r\n" % len(text) + text)
+        return True
+    if path == "/post303":
+        c.sendall(b"HTTP/1.1 303 See Other\r\nLocation: /echo\r\nContent-Length: 0\r\n\r\n")
+        return True
+    if path == "/post307":
+        c.sendall(b"HTTP/1.1 307 Temporary Redirect\r\nLocation: /echo\r\nContent-Length: 0\r\n\r\n")
+        return True
     if path == "/len":
         c.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nhello")
     elif path == "/chunked":
@@ -46,6 +80,26 @@ def send_http(c, path, n_on_conn):
         for b in b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n":
             c.sendall(bytes([b]))
         c.sendall(b"slow")
+    elif path in ("/gzip", "/deflate", "/rawdeflate", "/gzip-chunked", "/gzip-cut"):
+        text = b"compressed " * 3 + b"hello"
+        if path == "/deflate":
+            body, enc = zlib.compress(text), b"deflate"
+        elif path == "/rawdeflate":
+            co = zlib.compressobj(6, zlib.DEFLATED, -15)
+            body, enc = co.compress(text) + co.flush(), b"deflate"
+        else:
+            body, enc = gzip.compress(text, mtime=0), b"gzip"
+        if path == "/gzip-cut":
+            body = body[:len(body) - 6]
+        head = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: " + enc + b"\r\n"
+        if path == "/gzip-chunked":
+            c.sendall(head + b"Transfer-Encoding: chunked\r\n\r\n")
+            for i in range(0, len(body), 3):
+                part = body[i:i + 3]
+                c.sendall(b"%x\r\n" % len(part) + part + b"\r\n")
+            c.sendall(b"0\r\n\r\n")
+        else:
+            c.sendall(head + b"Content-Length: %d\r\n\r\n" % len(body) + body)
     elif path == "/count":
         body = str(n_on_conn).encode()
         c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n" % len(body) + body)
@@ -64,8 +118,18 @@ def http_conn(c):
                 buf += d
             head, buf = buf.split(b"\r\n\r\n", 1)
             n += 1
+            clen = 0
+            for line in head.split(b"\r\n")[1:]:
+                if line.lower().startswith(b"content-length:"):
+                    clen = int(line.split(b":", 1)[1])
+            while len(buf) < clen:
+                d = c.recv(4096)
+                if not d:
+                    return
+                buf += d
+            body, buf = buf[:clen], buf[clen:]
             path = head.split(b" ")[1].decode()
-            keep = send_http(c, path, n)
+            keep = send_http(c, path, n, head + b"\r\n\r\n" + body)
             if not keep or b"HEAD " == head[:5] and False:
                 return
     finally:

@@ -24,6 +24,7 @@ enum {
 
 extern int scr_rows, scr_cols;
 extern enum term_cs scr_cs;
+extern int scr_color;			/* 0: no colours even if available */
 
 /*
  * Take over the terminal: raw mode, terminfo, the alternate screen.

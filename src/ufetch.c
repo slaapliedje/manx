@@ -11,6 +11,8 @@
  *   -m   memory cap in KB for everything ufetch allocates
  *   -E   no early requests: validate the server before sending anything
  *   -n   no connection reuse (each URL gets a new connection)
+ *   -d   POST this form data (application/x-www-form-urlencoded)
+ * Cookies set by one URL are sent with the next (kept in memory only).
  * Several URLs are fetched in turn, reusing connections.
  */
 #include <stdio.h>
@@ -75,15 +77,21 @@ static void usage(void)
 int main(int argc, char **argv)
 {
 	const char *out_path = NULL, *pem = getenv("UB_CAFILE"), *method = "GET";
+	struct fetch_opts post;
 	char seed_path[600];
 	struct fetch_cb cb;
 	static struct fetch_result res;
 	int a, fails = 0;
 
+	memset(&post, 0, sizeof post);
 	for (a = 1; a < argc && argv[a][0] == '-' && argv[a][1]; a++) {
 		if (strcmp(argv[a], "-v") == 0)
 			g_verbose = 1;
-		else if (strcmp(argv[a], "-n") == 0)
+		else if (strcmp(argv[a], "-d") == 0 && a + 1 < argc) {
+			post.body = argv[++a];
+			post.body_len = strlen(post.body);
+			method = "POST";
+		} else if (strcmp(argv[a], "-n") == 0)
 			fetch_keep_alive = 0;
 		else if (strcmp(argv[a], "-E") == 0)
 			fetch_early_requests = 0;
@@ -137,7 +145,7 @@ int main(int argc, char **argv)
 	for (; a < argc; a++) {
 		unsigned long t0 = os_msec();
 
-		if (fetch(argv[a], method, &cb, &res) < 0) {
+		if (fetch_ex(argv[a], method, post.body ? &post : NULL, &cb, &res) < 0) {
 			fprintf(stderr, "ufetch: %s: %s\n", argv[a], res.error);
 			fails++;
 			continue;
@@ -145,6 +153,8 @@ int main(int argc, char **argv)
 		fprintf(stderr, "%d %s %s%s%s, %ld B, %lu ms total", res.status,
 			res.url, res.content_type, res.charset[0] ? "; " : "",
 			res.charset, res.body_bytes, os_msec() - t0);
+		if (res.wire_bytes && res.wire_bytes != res.body_bytes)
+			fprintf(stderr, " (%ld B on the wire)", res.wire_bytes);
 		if (res.redirects)
 			fprintf(stderr, ", %d redirect(s)", res.redirects);
 		fprintf(stderr, "\n");

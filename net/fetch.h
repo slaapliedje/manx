@@ -32,7 +32,8 @@ struct fetch_result {
 	char url[URL_MAX];		/* the final URL, after redirects */
 	char content_type[128];
 	char charset[32];
-	long body_bytes;
+	long body_bytes;		/* as delivered (decoded) */
+	long wire_bytes;		/* as sent (compressed, if it was) */
 	int redirects;
 	/* for the curious (ufetch -v): of the last connection */
 	int tls, tls_resumed, tls_leaf_memo, tls_learned, tls_profile, reused,
@@ -55,5 +56,21 @@ extern int fetch_keep_alive;
 /* 0, or -1 with res->error set. method: "GET" or "HEAD". */
 int fetch(const char *url, const char *method, const struct fetch_cb *cb,
 	struct fetch_result *res);
+
+/* more for a request: a body (a POST), where it came from */
+struct fetch_opts {
+	const char *body;		/* NULL: none */
+	size_t body_len;
+	const char *body_type;		/* its Content-Type */
+	const char *referer;		/* sent only to the same origin */
+	const char *extra;		/* more header lines ("X: y\r\n"...) */
+};
+
+/* fetch with opts (may be NULL). A body is never sent before the
+ * server's certificate is checked; nor are cookies. After a POST, a 301,
+ * 302 or 303 is followed with a GET (as browsers do), a 307/308 with
+ * the POST again. */
+int fetch_ex(const char *url, const char *method, const struct fetch_opts *opts,
+	const struct fetch_cb *cb, struct fetch_result *res);
 
 #endif /* UB_FETCH_H */

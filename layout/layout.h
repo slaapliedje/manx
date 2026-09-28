@@ -9,6 +9,7 @@
 #include <stddef.h>
 #include "doc.h"
 #include "style.h"
+#include "forms.h"
 
 /* the terminal's character set */
 enum term_cs { TCS_ASCII, TCS_LATIN1, TCS_UTF8 };
@@ -68,11 +69,13 @@ struct page {
 /*
  * Lay d out width columns wide for a terminal of character set cs.
  * max_lines: stop after that many lines (0: all), for showing the top of
- * a page that is still loading. byte_cap: 0 for the default. 0, or -1
- * when out of memory before anything was laid out.
+ * a page that is still loading. byte_cap: 0 for the default. fs: what
+ * the user has put in the form fields (NULL: the page's values). 0, or
+ * -1 when out of memory before anything was laid out.
  */
 int layout_run(struct page *p, const struct doc *d, int width,
-	enum term_cs cs, unsigned long max_lines, size_t byte_cap);
+	enum term_cs cs, unsigned long max_lines, size_t byte_cap,
+	const struct forms *fs);
 void layout_free(struct page *p);
 
 /* The span index in effect at text offset off, searching from span s. */

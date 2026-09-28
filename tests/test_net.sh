@@ -29,6 +29,18 @@ check "slow head"       "^200"                  "slow"           http://$H:8081/
 check "404"             "^404"                  ""               http://$H:8081/nothing
 check "keep-alive"      "connection reused"     "123"            http://$H:8081/count http://$H:8081/count http://$H:8081/count
 check "big chunked"     "300000 B"              ""               http://$H:8081/big
+G="compressed compressed compressed hello"
+check "gzip"            "^200"                  "$G"             http://$H:8081/gzip
+check "deflate (zlib)"  "^200"                  "$G"             http://$H:8081/deflate
+check "deflate (raw)"   "^200"                  "$G"             http://$H:8081/rawdeflate
+check "gzip chunked"    "^200"                  "$G"             http://$H:8081/gzip-chunked
+check "gzip cut short"  "cut short"             ""               http://$H:8081/gzip-cut
+check "cookie on redirect" "^200" "method=GET cookie=sid=abc123; pref=x type=- body=" http://$H:8081/setcookie
+C="method=GET cookie=sid=abc123; pref=x type=- body="
+check "cookie sent again" "^200" "$C$C" http://$H:8081/setcookie http://$H:8081/echo
+check "post"            "^200"   "method=POST cookie=- type=application/x-www-form-urlencoded body=q=68030&x=1" -d 'q=68030&x=1' http://$H:8081/echo
+check "post, 303"       "^200"   "method=GET cookie=- type=- body=" -d 'a=b' http://$H:8081/post303
+check "post, 307"       "^200"   "method=POST cookie=- type=application/x-www-form-urlencoded body=a=b" -d 'a=b' http://$H:8081/post307
 check "gopher menu"     "text/x-gopher-menu"    ""               gopher://$H:7070/
 check "gopher text"     "text/plain"            "gopher text"    gopher://$H:7070/0/file.txt
 check "gopher search"   "^200"                  ""               "gopher://$H:7070/7/search?68030"

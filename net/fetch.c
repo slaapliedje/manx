@@ -14,7 +14,10 @@
 #include "os.h"
 #include "conn.h"
 #include "http.h"
+#include <time.h>
 #include "fetch.h"
+#include "inflate.h"
+#include "cookie.h"
 
 int fetch_early_requests = 1;
 int fetch_keep_alive = 1;
@@ -37,23 +40,21 @@ static int fail(struct fetch_result *res, const char *msg)
 
 /* --- http and https ---------------------------------------------------- */
 
-/* one response's parser callbacks: straight through to cb, noting
- * whether the receiver asked to stop */
+/* one response's parser callbacks: straight through to cb (through a
+ * gzip/deflate decoder when the body is encoded), noting whether the
+ * receiver asked to stop */
 struct hctx {
 	const struct fetch_cb *cb;
+	const struct url *u;
+	struct http_resp *r;
+	struct inflate *z;
+	int decided;			/* whether to decode, looked at */
+	int corrupt;
 	int stopped;
 	unsigned long t0;
 };
 
-static void h_header(void *ctx, const char *name, const char *value)
-{
-	struct hctx *h = ctx;
-
-	if (h->cb->header)
-		h->cb->header(h->cb->ctx, name, value);
-}
-
-static int h_body(void *ctx, const unsigned char *d, size_t n)
+static int h_decoded(void *ctx, const unsigned char *d, size_t n)
 {
 	struct hctx *h = ctx;
 
@@ -62,6 +63,71 @@ static int h_body(void *ctx, const unsigned char *d, size_t n)
 		return -1;
 	}
 	return 0;
+}
+
+/* ASCII case-insensitive equality */
+static int same_word(const char *a, const char *b)
+{
+	for (; *a && *b; a++, b++)
+		if (tolower((unsigned char)*a) != tolower((unsigned char)*b))
+			return 0;
+	return *a == *b;
+}
+
+static void h_header(void *ctx, const char *name, const char *value)
+{
+	struct hctx *h = ctx;
+
+	/* cookies from every response, redirects too (logins set them on
+	 * the redirect that follows the form) */
+	if (cookie_enabled && same_word(name, "set-cookie"))
+		cookie_set(h->u, value, (long)time(NULL));
+	if (h->cb->header)
+		h->cb->header(h->cb->ctx, name, value);
+}
+
+static int h_body(void *ctx, const unsigned char *d, size_t n)
+{
+	struct hctx *h = ctx;
+	int rc;
+
+	if (!h->decided) {
+		/* the head is complete by the first body byte */
+		const char *ce = h->r->content_encoding;
+		int fmt = strcmp(ce, "gzip") == 0 || strcmp(ce, "x-gzip") == 0 ?
+			INF_GZIP : strcmp(ce, "deflate") == 0 ? INF_DEFLATE : -1;
+
+		h->decided = 1;
+		if (fmt >= 0 && (h->z = inflate_new(fmt, h_decoded, h)) == NULL) {
+			h->corrupt = 1;
+			return -1;
+		}
+	}
+	if (h->z == NULL)
+		return h_decoded(h, d, n);
+	rc = inflate_feed(h->z, d, n);
+	if (rc == INF_BAD) {
+		h->corrupt = 1;
+		return -1;
+	}
+	return rc == INF_STOP ? -1 : 0;
+}
+
+/* the response ended: the encoded body must have ended too */
+static int h_finish(struct hctx *h)
+{
+	int rc;
+
+	if (h->z == NULL)
+		return 0;
+	rc = inflate_finish(h->z);
+	inflate_free(h->z);
+	h->z = NULL;
+	if (rc == INF_END)
+		return 0;
+	if (rc == INF_BAD)
+		h->corrupt = 1;
+	return -1;
 }
 
 static int is_redirect(int s)
@@ -74,11 +140,53 @@ static int is_redirect(int s)
  * parsed, -1 on failure; *retry is set when a pooled connection turned
  * out dead before any byte of the response came (worth one retry).
  */
-static int http_once(const struct url *u, const char *method,
-	const struct fetch_cb *cb, struct fetch_result *res, struct http_resp *r,
-	int *retry)
+/* the request's extra header lines: cookies, referer, the body's type
+ * and length. 1 when they carry something private (then the request
+ * must wait for the certificate check). */
+static int extra_headers(const struct url *u, const struct fetch_opts *o,
+	char *buf, size_t n)
 {
-	static char req[URL_MAX + 1024];
+	static char cookies[4096];
+	static struct url ref;
+	size_t len = 0;
+	int private = 0;
+
+	buf[0] = '\0';
+	if (cookie_header(u, (long)time(NULL), cookies, sizeof cookies) > 0
+		&& strlen(cookies) + 12 < n) {
+		len += (size_t)sprintf(buf, "Cookie: %s\r\n", cookies);
+		private = 1;
+	}
+	if (o && o->referer && url_parse(o->referer, &ref) == URL_OK
+		&& strcmp(ref.scheme, u->scheme) == 0
+		&& strcmp(ref.host, u->host) == 0 && url_port(&ref) == url_port(u)) {
+		char r[URL_MAX];
+
+		/* the same origin only: other sites don't learn where from */
+		if (url_format(&ref, r, sizeof r, 0) == URL_OK
+			&& len + strlen(r) + 14 < n)
+			len += (size_t)sprintf(buf + len, "Referer: %s\r\n", r);
+	}
+	if (o && o->extra && len + strlen(o->extra) + 1 < n)
+		len += (size_t)sprintf(buf + len, "%s", o->extra);
+	if (o && o->body) {
+		if (len + 100 < n)
+			len += (size_t)sprintf(buf + len, "Content-Type: %.60s\r\n"
+				"Content-Length: %lu\r\n", o->body_type ? o->body_type
+				: "application/x-www-form-urlencoded",
+				(unsigned long)o->body_len);
+		private = 1;
+	}
+	return private;
+}
+
+static int http_once(const struct url *u, const char *method,
+	const struct fetch_opts *opts, const struct fetch_cb *cb,
+	struct fetch_result *res, struct http_resp *r, int *retry)
+{
+	static char req[URL_MAX + 1024 + 4096 + URL_MAX];
+	static char extra[4096 + URL_MAX + 200];
+	int private;
 	static unsigned char buf[4096];
 	struct hctx h;
 	struct http_sink sink;
@@ -90,9 +198,11 @@ static int http_once(const struct url *u, const char *method,
 
 	*retry = 0;
 	status(cb, "Connecting to %s...", u->host);
-	/* nothing private in these requests yet (no cookies, no forms): the
-	 * request may go before validation finishes (conn.h) */
-	c = conn_open(u->host, port, is_tls, fetch_early_requests, err, sizeof err);
+	/* a request with nothing private (no cookies, no form data) may go
+	 * before the certificate check finishes (conn.h); others wait */
+	private = extra_headers(u, opts, extra, sizeof extra);
+	c = conn_open(u->host, port, is_tls, fetch_early_requests && !private,
+		err, sizeof err);
 	if (c == NULL)
 		return fail(res, err);
 	res->reused = c->reused;
@@ -103,12 +213,14 @@ static int http_once(const struct url *u, const char *method,
 		res->tls = is_tls;
 	}
 
-	n = http_request(req, sizeof req, method, u, NULL);
+	n = http_request(req, sizeof req, method, u, extra);
 	if (n < 0) {
 		conn_release(c, 0);
 		return fail(res, "URL too long for a request");
 	}
-	if (conn_write(c, req, (size_t)n) < 0) {
+	if (conn_write(c, req, (size_t)n) < 0
+		|| (opts && opts->body && opts->body_len
+		&& conn_write(c, opts->body, opts->body_len) < 0)) {
 		*retry = c->reused;
 		conn_release(c, 0);
 		return fail(res, "sending the request failed");
@@ -116,6 +228,8 @@ static int http_once(const struct url *u, const char *method,
 
 	memset(&h, 0, sizeof h);
 	h.cb = cb;
+	h.u = u;
+	h.r = r;
 	h.t0 = os_msec();
 	sink.ctx = &h;
 	sink.header = h_header;
@@ -160,6 +274,18 @@ static int http_once(const struct url *u, const char *method,
 		res->tls_suite = ti->suite;
 		res->t_handshake = ti->t_handshake;
 		res->t_verify = ti->t_verify;
+	}
+	if (rc == HTTP_DONE && h_finish(&h) < 0 && !h.stopped) {
+		conn_release(c, 0);
+		return fail(res, "the compressed body is corrupt or cut short");
+	}
+	if (h.z) {
+		inflate_free(h.z);
+		h.z = NULL;
+	}
+	if (h.corrupt && !h.stopped) {
+		conn_release(c, 0);
+		return fail(res, "the compressed body is corrupt");
 	}
 	if (rc != HTTP_DONE) {
 		const char *why = conn_error(c);
@@ -247,7 +373,8 @@ static void shim_reset(void *ctx)
 }
 
 static int http_fetch(struct url *u, const char *method,
-	const struct fetch_cb *cb, struct fetch_result *res)
+	const struct fetch_opts *opts, const struct fetch_cb *cb,
+	struct fetch_result *res)
 {
 	static struct http_resp r;
 	static struct url next;
@@ -265,14 +392,14 @@ static int http_fetch(struct url *u, const char *method,
 		shim.inner.header = shim_header;
 		shim.inner.body = shim_body;
 		shim.inner.reset = cb->reset ? shim_reset : NULL;
-		rc = http_once(u, method, &shim.inner, res, &r, &retry);
+		rc = http_once(u, method, opts, &shim.inner, res, &r, &retry);
 		if (rc < 0 && retry) {
 			status(cb, "Reconnecting to %s...", u->host);
 			res->error[0] = '\0';
 			if (res->body_bytes && shim.inner.reset)
 				shim.inner.reset(shim.inner.ctx);
 			res->body_bytes = 0;
-			rc = http_once(u, method, &shim.inner, res, &r, &retry);
+			rc = http_once(u, method, opts, &shim.inner, res, &r, &retry);
 		}
 		if (rc < 0)
 			return -1;
@@ -289,6 +416,12 @@ static int http_fetch(struct url *u, const char *method,
 			strcpy(next.fragment, u->fragment);
 		*u = next;
 		res->redirects++;
+		/* after a POST: 301/302/303 go on with a GET (as browsers do),
+		 * 307/308 repeat the POST */
+		if (opts && opts->body && r.status != 307 && r.status != 308) {
+			method = "GET";
+			opts = NULL;
+		}
 		{
 			char url[URL_MAX];
 
@@ -299,6 +432,7 @@ static int http_fetch(struct url *u, const char *method,
 	if (hops > FETCH_MAX_REDIRECTS)
 		return fail(res, "too many redirects");
 	res->status = r.status;
+	res->wire_bytes = r.body_bytes;
 	snprintf(res->content_type, sizeof res->content_type, "%s", r.content_type);
 	snprintf(res->charset, sizeof res->charset, "%s", r.charset);
 	/* a final response with an empty body still reports its head */
@@ -461,6 +595,12 @@ static int file_fetch(const struct url *u, const struct fetch_cb *cb,
 int fetch(const char *url, const char *method, const struct fetch_cb *cb,
 	struct fetch_result *res)
 {
+	return fetch_ex(url, method, NULL, cb, res);
+}
+
+int fetch_ex(const char *url, const char *method, const struct fetch_opts *opts,
+	const struct fetch_cb *cb, struct fetch_result *res)
+{
 	static struct url u;
 	static const struct fetch_cb none;
 	int rc;
@@ -473,7 +613,7 @@ int fetch(const char *url, const char *method, const struct fetch_cb *cb,
 	if (strcmp(u.scheme, "http") == 0 || strcmp(u.scheme, "https") == 0) {
 		if (u.host[0] == '\0')
 			return fail(res, "URL without a host");
-		rc = http_fetch(&u, method, cb, res);
+		rc = http_fetch(&u, method, opts, cb, res);
 	} else if (strcmp(u.scheme, "gopher") == 0) {
 		if (u.host[0] == '\0')
 			return fail(res, "URL without a host");

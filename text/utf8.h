@@ -54,6 +54,9 @@ unsigned long utf8_get(const char **p);
  */
 int translit(unsigned long cp, int latin1, char *out);
 
+/* The windows-1252 byte for a code point, or -1 when it has none. */
+int win1252_byte(unsigned long cp);
+
 /* Terminal cells a code point takes on a UTF-8 terminal: 0 (combining,
  * zero width), 2 (East Asian wide) or 1. */
 int ucs_width(unsigned long cp);

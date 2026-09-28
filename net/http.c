@@ -347,7 +347,7 @@ int http_request(char *buf, size_t n, const char *method,
 		"Host: %s\r\n"
 		"User-Agent: " USER_AGENT "\r\n"
 		"Accept: text/html, text/plain;q=0.9, */*;q=0.5\r\n"
-		"Accept-Encoding: identity\r\n"
+		"Accept-Encoding: gzip, deflate\r\n"
 		"%s"
 		"\r\n", method, target, host, extra ? extra : "");
 	return len < 0 || (size_t)len >= n ? -1 : len;

@@ -60,7 +60,8 @@ HTML_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard text/*.c html/*.c style/*.c layou
 SPIKES := $(B)/tlsbench
 TOOLS  := $(B)/ub $(B)/ufetch $(B)/ubtrust $(B)/uparse
 FRONT_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard frontend/*.c))
-BENCH  := $(B)/bench_parse $(B)/bench_micro $(B)/bench_loops $(B)/bench_mem
+BENCH  := $(B)/bench_parse $(B)/bench_micro $(B)/bench_loops $(B)/bench_mem \
+	$(B)/bench_inflate
 
 all: $(SPIKES) $(TOOLS) $(BENCH)
 
@@ -83,6 +84,9 @@ $(B)/bench_micro: $(B)/tests/bench_micro.o $(B)/html/tags.o $(OS_OBJ)
 	$(LD) -o $@ $^ $(LDLIBS)
 
 $(B)/bench_loops: $(B)/tests/bench_loops.o $(OS_OBJ)
+	$(LD) -o $@ $^ $(LDLIBS)
+
+$(B)/bench_inflate: $(B)/tests/bench_inflate.o $(B)/net/inflate.o $(OS_OBJ)
 	$(LD) -o $@ $^ $(LDLIBS)
 
 $(B)/bench_mem: $(B)/tests/bench_mem.o $(OS_OBJ)
@@ -119,18 +123,23 @@ build/test/test_snprintf: tests/test_snprintf.c os/sysv4/snprintf.c
 	cc -std=c99 -Wall -Wno-format -Wno-format-truncation \
 		tests/test_snprintf.c build/test/snprintf.o -o $@
 
+# test_inflate decodes gzip/zlib made by Python from corpus pages (and
+# stored/empty streams) when the corpus is there
+INFLATE_PAGES = $(wordlist 1,6,$(wildcard build/corpus/*.html))
+
 test: $(TESTS) build/test/test_snprintf $(B)/tlsbench
-	@for t in $(TESTS) build/test/test_snprintf; do $$t || exit 1; done
+	@for t in $(filter-out build/test/test_inflate,$(TESTS)) build/test/test_snprintf; do $$t || exit 1; done
+	build/test/test_inflate $$(python3 tests/gen_deflate.py build/test/deflate $(INFLATE_PAGES))
 	$(B)/tlsbench 50 kat
 
 # the HTML engine under AddressSanitizer + UBSan, fed mutated corpus pages
 # (tests/fetch_corpus.sh first). FUZZ_ITERS, FUZZ_SEED to taste.
 FUZZ_ITERS ?= 20000
 FUZZ_SEED ?= 1
-build/fuzz/fuzz_html: tests/fuzz_html.c $(wildcard text/*.c html/*.c style/*.c layout/*.c) os/mem.c
+build/fuzz/fuzz_html: tests/fuzz_html.c $(wildcard text/*.c html/*.c style/*.c layout/*.c) os/mem.c os/host/os_time.c net/url.c
 	@mkdir -p build/fuzz
 	cc -std=c99 -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=all \
-		-Ios -Itext -Ihtml -Istyle -Ilayout -o $@ $^
+		-Ios -Itext -Ihtml -Istyle -Ilayout -Inet -o $@ $^
 
 fuzz: build/fuzz/fuzz_html
 	build/fuzz/fuzz_html $(FUZZ_ITERS) $(FUZZ_SEED) build/corpus/*.html

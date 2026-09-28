@@ -245,7 +245,7 @@ int main(int argc, char **argv)
 		for (i = 0; i < reps; i++) {
 			if (i)
 				layout_free(&pg);
-			if (layout_run(&pg, &g_doc, width, tcs, 0, 0) < 0) {
+			if (layout_run(&pg, &g_doc, width, tcs, 0, 0, NULL) < 0) {
 				fprintf(stderr, "uparse: layout: out of memory\n");
 				return 1;
 			}

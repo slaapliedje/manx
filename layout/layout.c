@@ -35,6 +35,7 @@ struct list {
 struct lay {
 	struct page *p;
 	const struct doc *d;
+	const struct forms *fs;
 	int width;
 	unsigned long max_lines;
 	int stop;
@@ -636,21 +637,27 @@ static void render_field(struct lay *L, nodeid id, const char *s)
 static void render_input(struct lay *L, nodeid id)
 {
 	const struct doc *d = L->d;
+	const struct field *f = L->fs ? forms_field(L->fs, id) : NULL;
 	const char *type = doc_attr(d, id, ATTR_TYPE);
 	const char *val = doc_attr(d, id, ATTR_VALUE);
 	char buf[80];
-	int size, i, n;
+	int size, i, n, checked = doc_attr(d, id, ATTR_CHECKED) != NULL;
 
+	if (f) {
+		checked = f->checked;
+		if (f->type == FT_TEXT || f->type == FT_PASSWORD)
+			val = f->value;
+	}
 	if (type == NULL)
 		type = "text";
 	if (strcmp(type, "hidden") == 0)
 		return;
 	if (strcmp(type, "checkbox") == 0) {
-		render_field(L, id, doc_attr(d, id, ATTR_CHECKED) ? "[x]" : "[ ]");
+		render_field(L, id, checked ? "[x]" : "[ ]");
 		return;
 	}
 	if (strcmp(type, "radio") == 0) {
-		render_field(L, id, doc_attr(d, id, ATTR_CHECKED) ? "(*)" : "( )");
+		render_field(L, id, checked ? "(*)" : "( )");
 		return;
 	}
 	if (strcmp(type, "submit") == 0 || strcmp(type, "button") == 0
@@ -678,17 +685,25 @@ static void render_input(struct lay *L, nodeid id)
 		size = 30;
 	if (size > L->width - 4)
 		size = L->width - 4;
-	if (val == NULL || !*val) {
+	if ((val == NULL || !*val) && !f) {
 		val = doc_attr(d, id, ATTR_PLACEHOLDER);
 		if (val == NULL)
 			val = "";
-	}
+	} else if (val == NULL)
+		val = "";
 	buf[0] = '[';
 	n = 1;
-	if (strcmp(type, "password") == 0)
-		for (i = 0; val[i] && n <= size; i++)
-			buf[n++] = '*';
-	else {
+	if (strcmp(type, "password") == 0) {
+		int cols = 0;
+
+		for (i = 0; val[i] && cols < size; i++)
+			if (((unsigned char)val[i] & 0xC0) != 0x80) {
+				buf[n++] = '*';	/* one per character */
+				cols++;
+			}
+		size -= cols;
+		size += 1;
+	} else {
 		/* whole characters only */
 		const char *v = val;
 		int cols = 0;
@@ -715,9 +730,15 @@ static void render_input(struct lay *L, nodeid id)
 static void render_select(struct lay *L, nodeid id)
 {
 	const struct doc *d = L->d;
+	const struct field *f = L->fs ? forms_field(L->fs, id) : NULL;
 	nodeid c, g, first = 0, sel = 0;
 	char txt[48], buf[64];
 
+	if (f) {
+		snprintf(buf, sizeof buf, "[%.44s v]", forms_text(L->fs, f));
+		render_field(L, id, buf);
+		return;
+	}
 	for (c = d->nodes[id].first; c && !sel; c = d->nodes[c].next) {
 		const struct node *n = &d->nodes[c];
 
@@ -753,10 +774,19 @@ static void render_select(struct lay *L, nodeid id)
 
 static void render_textarea(struct lay *L, nodeid id)
 {
+	const struct field *f = L->fs ? forms_field(L->fs, id) : NULL;
 	char txt[40], buf[56];
 	size_t i;
 
-	inner_text(L->d, id, txt, sizeof txt);
+	if (f) {
+		/* whole characters of its start */
+		const char *v = forms_text(L->fs, f), *q = v;
+
+		while (*q && q - v < (long)sizeof txt - 5)
+			(void)utf8_get(&q);
+		snprintf(txt, sizeof txt, "%.*s", (int)(q - v), v);
+	} else
+		inner_text(L->d, id, txt, sizeof txt);
 	for (i = 0; txt[i]; i++)
 		if (txt[i] == '\n' || txt[i] == '\t')
 			txt[i] = ' ';
@@ -1057,7 +1087,8 @@ static void leave(struct lay *L, nodeid id, int depth)
 }
 
 int layout_run(struct page *p, const struct doc *d, int width,
-	enum term_cs cs, unsigned long max_lines, size_t byte_cap)
+	enum term_cs cs, unsigned long max_lines, size_t byte_cap,
+	const struct forms *fs)
 {
 	struct lay *L;
 	nodeid id;
@@ -1075,6 +1106,7 @@ int layout_run(struct page *p, const struct doc *d, int width,
 	memset(L, 0, sizeof *L);
 	L->p = p;
 	L->d = d;
+	L->fs = fs;
 	L->width = p->width;
 	L->max_lines = max_lines;
 	set_span(L);

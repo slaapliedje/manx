@@ -30,6 +30,7 @@ extern char *tparm(const char *s, ...);
 #endif
 
 int scr_rows = 24, scr_cols = 80;
+int scr_color = 1;
 enum term_cs scr_cs = TCS_ASCII;
 
 struct cell {
@@ -191,7 +192,7 @@ static void load_caps(void)
 	ncolors = has_terminfo ? tigetnum("colors") : 0;
 	if (ncolors < 8 || (c_setaf == NULL && !has_terminfo))
 		ncolors = 0;
-	if (getenv("UB_NOCOLOR"))
+	if (getenv("UB_NOCOLOR") || !scr_color)
 		ncolors = 0;
 	if (!has_terminfo) {
 		/* an unknown terminal: assume ANSI (VT100 and later) */

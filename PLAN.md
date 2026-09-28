@@ -128,8 +128,15 @@ transputer spike; see `docs/phase0-results.md`)
   (`-mno-strict-align`); parsing got 40% faster.
 - Left for later: grid tables; the parser on very large pages.
 
-**Phase 4 — forms, cookies, polish:** GET/POST forms, cookie jar, disk cache,
-config file, bookmarks, gzip (tiny inflate).
+**Phase 4 — forms, cookies, polish** (done 2026-09-28; see
+`docs/phase4-results.md`)
+- gzip/deflate: a streaming inflate; pages arrive 4-6x smaller (Wikipedia
+  131 KB as 26 KB). ✔
+- GET/POST forms, every field type, $EDITOR for textareas. ✔
+- Cookie jar (RFC 6265), never sent on an early request. ✔
+- Disk cache: Back without the network, conditional requests, POST
+  answers kept. ✔
+- Config file, bookmarks. ✔
 
 **Phase 5 — X11 frontend:** Xlib window, proportional fonts through the metrics
 interface, mouse, same features as text.

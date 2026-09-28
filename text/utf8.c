@@ -330,3 +330,15 @@ int ucs_width(unsigned long cp)
 		return 2;
 	return 1;
 }
+
+int win1252_byte(unsigned long cp)
+{
+	int i;
+
+	if (cp < 0x80 || (cp >= 0xA0 && cp <= 0xFF))
+		return (int)cp;
+	for (i = 0; i < 32; i++)
+		if (cp1252[i] == cp && cp1252[i] >= 0x100)
+			return 0x80 + i;
+	return -1;
+}

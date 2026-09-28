@@ -24,7 +24,7 @@ static char *render(const char *html, int width, enum term_cs cs,
 	html_load_begin(&l, d, "utf-8", 0);
 	html_load_feed(&l, (const unsigned char *)html, strlen(html));
 	html_load_end(&l);
-	layout_run(pg, d, width, cs, 0, 0);
+	layout_run(pg, d, width, cs, 0, 0, NULL);
 	f = tmpfile();
 	layout_print(pg, f);
 	rewind(f);
