@@ -49,6 +49,9 @@ struct fetch_result {
  */
 extern int fetch_early_requests;
 
+/* Keep connections for reuse (default 1). */
+extern int fetch_keep_alive;
+
 /* 0, or -1 with res->error set. method: "GET" or "HEAD". */
 int fetch(const char *url, const char *method, const struct fetch_cb *cb,
 	struct fetch_result *res);

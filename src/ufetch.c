@@ -10,6 +10,7 @@
  *   -k   the PEM root bundle (default $UB_CAFILE, else the store as built)
  *   -m   memory cap in KB for everything ufetch allocates
  *   -E   no early requests: validate the server before sending anything
+ *   -n   no connection reuse (each URL gets a new connection)
  * Several URLs are fetched in turn, reusing connections.
  */
 #include <stdio.h>
@@ -67,7 +68,7 @@ static void note(const char *msg)
 static void usage(void)
 {
 	fprintf(stderr, "usage: ufetch [-v] [-I] [-o file] [-k ca.pem] "
-		"[-m cap_kb] [-E] URL...\n");
+		"[-m cap_kb] [-E] [-n] URL...\n");
 	exit(2);
 }
 
@@ -82,6 +83,8 @@ int main(int argc, char **argv)
 	for (a = 1; a < argc && argv[a][0] == '-' && argv[a][1]; a++) {
 		if (strcmp(argv[a], "-v") == 0)
 			g_verbose = 1;
+		else if (strcmp(argv[a], "-n") == 0)
+			fetch_keep_alive = 0;
 		else if (strcmp(argv[a], "-E") == 0)
 			fetch_early_requests = 0;
 		else if (strcmp(argv[a], "-I") == 0)

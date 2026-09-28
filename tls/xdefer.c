@@ -156,6 +156,10 @@ static int xd_ske(br_ssl_client_context *sc, int use_rsa,
 
 void xdefer_install(struct xdefer *xd, br_ssl_client_context *sc)
 {
+	/* nothing may survive from an earlier handshake on this object: a
+	 * resumed session sends no certificate, so start_chain never runs
+	 * to reset these, and a stale chain would be taken for this one */
+	memset(xd, 0, sizeof *xd);
 	xd->vtable = &xd_vtable;
 	g_active = xd;
 	br_ssl_client_ske_defer = xd_ske;

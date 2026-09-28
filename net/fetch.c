@@ -17,6 +17,7 @@
 #include "fetch.h"
 
 int fetch_early_requests = 1;
+int fetch_keep_alive = 1;
 
 static void status(const struct fetch_cb *cb, const char *fmt, const char *arg)
 {
@@ -183,7 +184,7 @@ static int http_once(const struct url *u, const char *method,
 		return fail(res, got_any ? "malformed or truncated response"
 			: "no response from the server");
 	}
-	conn_release(c, r->keep_alive);
+	conn_release(c, r->keep_alive && fetch_keep_alive);
 	return 0;
 }
 
