@@ -56,7 +56,7 @@ HTML_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard text/*.c html/*.c))
 
 SPIKES := $(B)/tlsbench
 TOOLS  := $(B)/ufetch $(B)/ubtrust $(B)/uparse
-BENCH  := $(B)/bench_parse $(B)/bench_micro $(B)/bench_loops
+BENCH  := $(B)/bench_parse $(B)/bench_micro $(B)/bench_loops $(B)/bench_mem
 
 all: $(SPIKES) $(TOOLS) $(BENCH)
 
@@ -76,6 +76,9 @@ $(B)/bench_micro: $(B)/tests/bench_micro.o $(B)/html/tags.o $(OS_OBJ)
 	$(LD) -o $@ $^ $(LDLIBS)
 
 $(B)/bench_loops: $(B)/tests/bench_loops.o $(OS_OBJ)
+	$(LD) -o $@ $^ $(LDLIBS)
+
+$(B)/bench_mem: $(B)/tests/bench_mem.o $(OS_OBJ)
 	$(LD) -o $@ $^ $(LDLIBS)
 
 $(B)/ubtrust: $(B)/src/ubtrust.o $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
