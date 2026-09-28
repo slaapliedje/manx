@@ -100,25 +100,6 @@ static int http_once(const struct url *u, const char *method,
 		res->t_dns = c->t_dns;
 		res->t_connect = c->t_connect;
 		res->tls = is_tls;
-		if (is_tls) {
-			const struct tls_info *ti = &c->tls->info;
-			char msg[200];
-
-			snprintf(msg, sizeof msg, "TLS %s%s%s%s: handshake %lu ms, "
-				"validation %lu ms, suite 0x%04x",
-				tls_profile_name(ti->profile), ti->resumed ? ", resumed" : "",
-				ti->leaf_memo ? ", known leaf" : "",
-				c->reconnected ? ", reconnected" : "", ti->t_handshake,
-				ti->t_verify, ti->suite);
-			status(cb, "%s", msg);
-			res->tls_resumed = c->tls->info.resumed;
-			res->tls_leaf_memo = c->tls->info.leaf_memo;
-			res->tls_learned = c->tls->info.learned;
-			res->tls_profile = c->tls->info.profile;
-			res->tls_suite = c->tls->info.suite;
-			res->t_handshake = c->tls->info.t_handshake;
-			res->t_verify = c->tls->info.t_verify;
-		}
 	}
 
 	n = http_request(req, sizeof req, method, u, NULL);
@@ -158,6 +139,27 @@ static int http_once(const struct url *u, const char *method,
 			conn_unread(c, buf + used, (size_t)n - used);
 	}
 	res->t_body = os_msec() - h.t0;
+	/* the TLS figures are final now: with an early request the
+	 * validation ran at the first read */
+	if (is_tls && !c->reused) {
+		const struct tls_info *ti = &c->tls->info;
+		char msg[200];
+
+		snprintf(msg, sizeof msg, "TLS %s%s%s%s: handshake %lu ms, "
+			"validation %lu ms, suite 0x%04x",
+			tls_profile_name(ti->profile), ti->resumed ? ", resumed" : "",
+			ti->leaf_memo ? ", known leaf" : "",
+			c->reconnected ? ", reconnected" : "", ti->t_handshake,
+			ti->t_verify, ti->suite);
+		status(cb, "%s", msg);
+		res->tls_resumed = ti->resumed;
+		res->tls_leaf_memo = ti->leaf_memo;
+		res->tls_learned = ti->learned;
+		res->tls_profile = ti->profile;
+		res->tls_suite = ti->suite;
+		res->t_handshake = ti->t_handshake;
+		res->t_verify = ti->t_verify;
+	}
 	if (rc != HTTP_DONE) {
 		const char *why = conn_error(c);
 
@@ -168,6 +170,13 @@ static int http_once(const struct url *u, const char *method,
 			*retry = 0;
 			return fail(res, err);
 		}
+		/* a long validation on a new connection: the server has likely
+		 * given up meanwhile (or dropped a response nobody read). Once
+		 * more is cheap now: the session is stored, the leaf known. */
+		if (is_tls && !c->reused && !h.stopped
+			&& c->tls->info.t_verify > 8000
+			&& (res->body_bytes == 0 || cb->reset))
+			*retry = 1;
 		conn_release(c, 0);
 		if (h.stopped)
 			return fail(res, "stopped");
@@ -227,6 +236,15 @@ static int shim_body(void *ctx, const unsigned char *d, size_t n)
 	return s->outer->body ? s->outer->body(s->outer->ctx, d, n) : 0;
 }
 
+static void shim_reset(void *ctx)
+{
+	struct final_shim *s = ctx;
+
+	s->res->body_bytes = 0;
+	s->decided = 0;
+	s->outer->reset(s->outer->ctx);
+}
+
 static int http_fetch(struct url *u, const char *method,
 	const struct fetch_cb *cb, struct fetch_result *res)
 {
@@ -245,10 +263,13 @@ static int http_fetch(struct url *u, const char *method,
 		shim.inner.status = cb->status;
 		shim.inner.header = shim_header;
 		shim.inner.body = shim_body;
+		shim.inner.reset = cb->reset ? shim_reset : NULL;
 		rc = http_once(u, method, &shim.inner, res, &r, &retry);
 		if (rc < 0 && retry) {
 			status(cb, "Reconnecting to %s...", u->host);
 			res->error[0] = '\0';
+			if (res->body_bytes && shim.inner.reset)
+				shim.inner.reset(shim.inner.ctx);
 			res->body_bytes = 0;
 			rc = http_once(u, method, &shim.inner, res, &r, &retry);
 		}

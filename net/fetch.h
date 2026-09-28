@@ -22,6 +22,9 @@ struct fetch_cb {
 	int (*body)(void *ctx, const unsigned char *data, size_t len);
 	/* each response header of the final response: may be NULL */
 	void (*header)(void *ctx, const char *name, const char *value);
+	/* forget what was delivered: the fetch is starting over (a broken
+	 * transfer retried). May be NULL: then no retry after body bytes. */
+	void (*reset)(void *ctx);
 };
 
 struct fetch_result {

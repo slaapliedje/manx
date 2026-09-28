@@ -47,6 +47,18 @@ static int on_body(void *ctx, const unsigned char *d, size_t n)
 	return 0;
 }
 
+static const char *g_out_path;
+
+/* a broken transfer is being retried: start the output over */
+static void on_reset(void *ctx)
+{
+	(void)ctx;
+	if (g_out && g_out != stdout)
+		g_out = freopen(g_out_path, "wb", g_out);
+	if (g_verbose)
+		fprintf(stderr, "  (starting the transfer over)\n");
+}
+
 static void note(const char *msg)
 {
 	fprintf(stderr, "%s\n", msg);
@@ -105,6 +117,7 @@ int main(int argc, char **argv)
 				os_msec() - t0);
 	}
 
+	g_out_path = out_path;
 	if (out_path)
 		g_out = strcmp(out_path, "-") == 0 ? stdout : fopen(out_path, "wb");
 	if (out_path && g_out == NULL) {
@@ -115,6 +128,8 @@ int main(int argc, char **argv)
 	cb.status = on_status;
 	cb.header = on_header;
 	cb.body = on_body;
+	if (!out_path || strcmp(out_path, "-") != 0)
+		cb.reset = on_reset;	/* stdout can't be taken back */
 
 	for (; a < argc; a++) {
 		unsigned long t0 = os_msec();
