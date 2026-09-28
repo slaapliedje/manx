@@ -20,6 +20,7 @@
 struct saved {
 	unsigned char attr, pre, tag, list;
 	unsigned char display, margin;
+	unsigned long para_mark, para_line;	/* <p>: where it began */
 	unsigned short link;
 	short indent;
 	unsigned long link_mark;	/* text_len when the link began */
@@ -60,6 +61,7 @@ struct lay {
 	int cell;
 	unsigned long cell_mark;	/* text_len when the cell began */
 	int cell_break;			/* 1 + margin of a break owed */
+	long heading_line;		/* the last h1-h3 */
 	char marker[16];		/* a list item's marker, not yet shown */
 	int marker_w;
 	struct list lists[MAX_LISTS];
@@ -291,6 +293,20 @@ static void block_break(struct lay *L, int margin)
 
 /* --- text ------------------------------------------------------------ */
 
+/* is span a plainer (no link, fewer attributes) than span b? */
+static int plainer(const struct lspan *a, const struct lspan *b)
+{
+	int na = 0, nb = 0, i;
+
+	if (!a->link != !b->link)
+		return !a->link;
+	for (i = 0; i < 8; i++) {
+		na += (a->attr >> i) & 1;
+		nb += (b->attr >> i) & 1;
+	}
+	return na < nb;
+}
+
 /* before content of w columns: a cell's owed break, the line, the space
  * owed before it (or a line break instead, when it won't fit) */
 static void settle(struct lay *L, int w)
@@ -313,9 +329,18 @@ static void settle(struct lay *L, int w)
 		} else {
 			static const char sp[] = "        ";
 			int k = L->pend_space > 8 ? 8 : L->pend_space;
+			struct page *p = L->p;
 
 			put_bytes(L, sp, (size_t)k);
 			L->col += k;
+			/* between two spans the space takes the plainer one's
+			 * look: no underline running into a link or out of it */
+			if (p->nspans >= 2
+				&& p->spans[p->nspans - 1].off == p->text_len - (unsigned long)k
+				&& p->spans[p->nspans - 1].off > L->line_off
+				&& plainer(&p->spans[p->nspans - 2],
+				&p->spans[p->nspans - 1]))
+				p->spans[p->nspans - 1].off += (unsigned long)k;
 		}
 		L->pend_space = 0;
 	}
@@ -995,6 +1020,12 @@ static int enter(struct lay *L, nodeid id, int depth)
 		add_anchor(L, id);
 	if (tag == TAG_MAIN && L->p->main_line < 0)
 		L->p->main_line = (long)here_line(L);
+	if (tag == TAG_H1 || tag == TAG_H2 || tag == TAG_H3)
+		L->heading_line = (long)here_line(L);
+	if (tag == TAG_P) {
+		sv->para_mark = L->p->text_len;
+		sv->para_line = here_line(L);
+	}
 	L->indent += s.indent;
 	if (s.pre)
 		L->pre = 1;
@@ -1044,6 +1075,18 @@ static void leave(struct lay *L, nodeid id, int depth)
 		put_text(L, "\"");
 	if (tag == TAG_BUTTON)
 		put_text(L, "]");
+	/* the first real paragraph (after <main>, if there is one): where
+	 * the reading starts; its heading if that's just above */
+	if (tag == TAG_P && L->p->content_line < 0
+		&& L->p->text_len - sv->para_mark >= 80
+		&& (L->p->main_line < 0 || (long)sv->para_line >= L->p->main_line)) {
+		long ln = (long)sv->para_line;
+
+		if (L->heading_line >= 0 && ln - L->heading_line <= 12
+			&& L->heading_line >= L->p->main_line)
+			ln = L->heading_line;
+		L->p->content_line = ln;
+	}
 	if (tag == TAG_A && L->link && L->link != sv->link) {
 		/* the link had no text: show something to select */
 		if (L->p->text_len == L->link_mark) {
@@ -1100,6 +1143,7 @@ int layout_run(struct page *p, const struct doc *d, int width,
 	p->cs = cs;
 	p->byte_cap = byte_cap ? byte_cap : LAYOUT_DEFAULT_CAP;
 	p->main_line = -1;
+	p->content_line = -1;
 	L = xmalloc(sizeof *L);
 	if (L == NULL)
 		return -1;
@@ -1109,6 +1153,7 @@ int layout_run(struct page *p, const struct doc *d, int width,
 	L->fs = fs;
 	L->width = p->width;
 	L->max_lines = max_lines;
+	L->heading_line = -1;
 	set_span(L);
 
 	id = d->nnodes > 1 ? d->nodes[1].first : 0;

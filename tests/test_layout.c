@@ -124,6 +124,71 @@ int main(void)
 	check("nbsp keeps words", "<p>aaaa bbbb&nbsp;cc", 10, TCS_ASCII,
 		"aaaa\nbbbb cc\n");
 	check_links();
+	/* nor the space after it */
+	{
+		struct page pg;
+		struct doc d;
+		unsigned long i;
+		int bad = 0;
+
+		render("<p>by <a href=u>someone</a> today <b>bold</b> end", 40,
+			TCS_ASCII, &pg, &d);
+		runs++;
+		for (i = 0; i < pg.nspans; i++) {
+			unsigned long o = pg.spans[i].off;
+
+			if ((pg.spans[i].link || pg.spans[i].attr)
+				&& o < pg.text_len && pg.text[o] == ' ')
+				bad = 1;
+			if (!pg.spans[i].link && !pg.spans[i].attr && o > 0
+				&& pg.text[o] != ' ' && o < pg.text_len
+				&& pg.text[o - 1] == ' ' && i > 0
+				&& (pg.spans[i - 1].link || pg.spans[i - 1].attr))
+				bad = 1;
+		}
+		if (bad) {
+			fails++;
+			printf("FAIL a space is part of a link or bold run\n");
+		}
+		layout_free(&pg);
+		doc_free(&d);
+	}
+	/* where reading starts */
+	{
+		struct page pg;
+		struct doc d;
+
+		render("<ul><li>menu<li>menu</ul><main><p>Toggle<ul><li>x<li>y"
+			"</ul><h1>Title</h1><p>short<p>A first paragraph that is "
+			"long enough to be the start of the article itself, surely."
+			"</main>", 80, TCS_ASCII, &pg, &d);
+		runs++;
+		if (pg.content_line < 0 || strncmp(pg.text
+			+ pg.lines[pg.content_line].off, "Title", 5) != 0) {
+			fails++;
+			printf("FAIL content line %ld\n", pg.content_line);
+		}
+		layout_free(&pg);
+		doc_free(&d);
+	}
+	/* the space before a link isn't part of it */
+	{
+		struct page pg;
+		struct doc d;
+		unsigned long i, sp = 0;
+
+		render("<p>by <a href=u>someone</a> today", 40, TCS_ASCII, &pg, &d);
+		runs++;
+		for (i = 0; i < pg.nspans; i++)
+			if (pg.spans[i].link)
+				sp = pg.spans[i].off;
+		if (sp != 3 || pg.text[sp] != 's') {
+			fails++;
+			printf("FAIL link span starts at %lu ('%c')\n", sp, pg.text[sp]);
+		}
+		layout_free(&pg);
+		doc_free(&d);
+	}
 	printf("layout: %d/%d passed\n", runs - fails, runs);
 	return fails != 0;
 }

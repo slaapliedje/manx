@@ -15,6 +15,7 @@ step per line:
                        how long the run has taken
     expect TEXT        fail (exit 1) unless TEXT is on screen now
     show               print the screen (ATTRS=1 adds R/U/B markers)
+    png FILE           the screen as a picture (needs Pillow)
 
 Environment: ROWS, COLS (default 24x80). --tt: ASV_HOST (default
 192.168.3.250), ASV_TOOLS (where .asvpass lives, default
@@ -153,6 +154,60 @@ class Telnet:
         self.s.close()
 
 
+PALETTE = {"black": (0, 0, 0), "red": (205, 49, 49), "green": (13, 188, 121),
+           "brown": (229, 229, 16), "blue": (36, 114, 200), "magenta": (188, 63, 188),
+           "cyan": (17, 168, 205), "white": (229, 229, 229)}
+FG, BG = (208, 208, 208), (16, 20, 24)
+FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
+FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf"
+FONT_WIDE = "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"  # CJK
+
+
+def color(c, default):
+    if c == "default":
+        return default
+    if c in PALETTE:
+        return PALETTE[c]
+    try:
+        return tuple(int(c[i:i + 2], 16) for i in (0, 2, 4))
+    except ValueError:
+        return default
+
+
+def save_png(screen, path, size=16, margin=14):
+    """The screen drawn cell by cell: colours, reverse, underline, bold."""
+    import unicodedata
+    from PIL import Image, ImageDraw, ImageFont
+    font, bold = ImageFont.truetype(FONT, size), ImageFont.truetype(FONT_BOLD, size)
+    try:
+        wide = ImageFont.truetype(FONT_WIDE, size)
+    except OSError:
+        wide = font
+    cw = round(font.getlength("M"))
+    asc, desc = font.getmetrics()
+    ch = asc + desc + 2
+    img = Image.new("RGB", (COLS * cw + 2 * margin, ROWS * ch + 2 * margin), BG)
+    d = ImageDraw.Draw(img)
+    for y in range(ROWS):
+        row = screen.buffer[y]
+        for x in range(COLS):
+            c = row[x]
+            fg, bg = color(c.fg, FG), color(c.bg, BG)
+            if c.reverse:
+                fg, bg = bg, fg
+            px, py = margin + x * cw, margin + y * ch
+            if bg != BG:
+                d.rectangle([px, py, px + cw - 1, py + ch - 1], fill=bg)
+            if c.data.strip():
+                f = bold if c.bold else font
+                if unicodedata.east_asian_width(c.data[0]) in "WF":
+                    f = wide    # (drawn over this cell and the next)
+                d.text((px, py + 1), c.data, font=f, fill=fg)
+            if c.underscore:
+                d.line([px, py + asc + 2, px + cw - 1, py + asc + 2], fill=fg)
+    img.save(path)
+
+
 def main():
     args = sys.argv[1:]
     tt = bool(args) and args[0] == "--tt"
@@ -222,6 +277,8 @@ def main():
                     break
             elif cmd == "show":
                 show()
+            elif cmd == "png":
+                save_png(screen, arg)
             else:
                 sys.exit("uidrive: unknown step %r" % step)
     finally:

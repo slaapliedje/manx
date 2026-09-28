@@ -60,6 +60,8 @@ struct page {
 	unsigned long nanchors, anchors_cap;
 	size_t byte_cap;		/* all of the above together */
 	long main_line;			/* where <main> begins, or -1 */
+	long content_line;		/* the first real paragraph (or its
+					 * heading), or -1 */
 	int truncated;			/* the cap was hit: the rest is missing */
 	int partial;			/* stopped at max_lines */
 };

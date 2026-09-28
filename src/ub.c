@@ -523,7 +523,7 @@ static const char help_html[] =
 	"Tab/Shift-Tab  next/previous link anywhere\n"
 	"Space, PgDn    page down        b, PgUp   page up\n"
 	"j/k            line down/up     Home/End  top/bottom\n"
-	"m              the main content (skips site navigation)\n"
+	"m              where the reading starts (past the site's menus)\n"
 	"g              go to a URL, or search for words\n"
 	"G              edit the current URL\n"
 	"/              find             n/N       next/previous match\n"
@@ -537,7 +537,7 @@ static const char help_html[] =
 	"button. A text area opens in $EDITOR (vi).</p>"
 	"<h1>Settings</h1><p>In ~/.ub/config, one <i>key = value</i> a line "
 	"(or as UB_KEY in the environment):</p><pre>"
-	"home = URL             the start page\n"
+	"start = URL            the start page\n"
 	"search = URL           where g sends words (DuckDuckGo Lite)\n"
 	"charset = utf-8        the terminal's: utf-8, latin1, ascii\n"
 	"color = off            no colours\n"
@@ -1682,7 +1682,7 @@ int main(int argc, char **argv)
 	/* settings: ~/.ub/config, UB_<KEY> overriding */
 	if (config_load(os_datapath(path, sizeof path, "config"), &err) < 0)
 		fprintf(stderr, "ub: %s\n", err);
-	start = argc > 1 ? argv[1] : config_str("home", "about:start");
+	start = argc > 1 ? argv[1] : config_str("start", "about:start");
 	g_search = config_str("search", SEARCH_URL);
 	scr_color = config_bool("color", 1);
 	fetch_early_requests = config_bool("early_requests", 1);
@@ -1778,7 +1778,9 @@ int main(int argc, char **argv)
 			scroll_to(max_top());
 			break;
 		case 'm':
-			if (g_page.main_line >= 0)
+			if (g_page.content_line >= 0)
+				scroll_to(g_page.content_line);
+			else if (g_page.main_line >= 0)
 				scroll_to(g_page.main_line);
 			else if (layout_anchor(&g_page, "content") >= 0)
 				scroll_to(layout_anchor(&g_page, "content"));
