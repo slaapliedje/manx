@@ -1,0 +1,6 @@
+#!/bin/sh
+# amixsh 'command' [timeout] - run a command as root in the emulated AMIX
+# machine (sp1's amix/emu/uaeamix.py; UAEAMIX names it, and the emulator
+# must be running: uaeamix.py start --wait).
+: "${UAEAMIX:=$HOME/dev/OpenUA/data/work/asv/sp1/amix/emu/uaeamix.py}"
+exec python3 "$UAEAMIX" sh "$@"

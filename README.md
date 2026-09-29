@@ -111,8 +111,9 @@ engine, text browser, then forms, cookies, cache and gzip. Each has a
 write-up in [docs](docs), with measurements from the TT. Next: the X11
 frontend, then images, with the TT's transputers as an optional helper.
 
-Tested on an Atari TT030 with Atari System V. AMIX runs the same binary,
-but it hasn't been tried on a real Amiga yet.
+Tested on an Atari TT030 with Atari System V, and on AMIX 2.1 in an
+emulated Amiga 3000 (`tools/amix/`), where it loads Hacker News over HTTPS.
+It hasn't been tried on a real Amiga yet.
 
 ## Licence
 

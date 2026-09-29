@@ -1,0 +1,4 @@
+#!/bin/sh
+# amixput LOCAL REMOTE - copy a file into the emulated AMIX machine (ftp).
+: "${UAEAMIX:=$HOME/dev/OpenUA/data/work/asv/sp1/amix/emu/uaeamix.py}"
+exec python3 "$UAEAMIX" put "$@"

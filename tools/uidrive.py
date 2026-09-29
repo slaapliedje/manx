@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """uidrive.py - drive a full-screen program and look at its screen.
 
-    tools/uidrive.py [--tt] COMMAND [ARGS...] < steps
+    tools/uidrive.py [--tt|--amix] COMMAND [ARGS...] < steps
 
 Runs COMMAND in a pseudo-terminal (or, with --tt, logs in to the TT over
-telnet and runs COMMAND there, from /work/dev/ub), keeps a terminal
+telnet and runs COMMAND there, from /work/dev/ub; with --amix, the same in
+the emulated AMIX machine of sp1's amix/emu, from /home/dev/manx), keeps a terminal
 emulator (pyte) of what it draws, and follows a step script on stdin, one
 step per line:
 
@@ -21,6 +22,8 @@ Environment: ROWS, COLS (default 24x80). --tt: ASV_HOST (default
 192.168.3.250), ASV_TOOLS (where .asvpass lives, default
 ~/dev/OpenUA/data/work/asv; the password never leaves this machine),
 TTCS (the MANX_CHARSET given to the program there, default latin1).
+--amix: AMIX_EMU (where .amixpass lives, default sp1's amix/work/emu);
+the emulator forwards 127.0.0.1:2323 to the guest's telnet.
 The cursor-position probe is answered as a UTF-8 xterm would.
 
 Needs pyte (pip install pyte).
@@ -74,29 +77,39 @@ class Pty:
         os.kill(self.pid, 9)
 
 
+def target(amix):
+    """(host, port, password file, working directory) of --tt or --amix."""
+    if amix:
+        emu = os.environ.get("AMIX_EMU", os.path.expanduser(
+            "~/dev/OpenUA/data/work/asv/sp1/amix/work/emu"))
+        return "127.0.0.1", 2323, os.path.join(emu, ".amixpass"), "/home/dev/manx"
+    tools = os.environ.get("ASV_TOOLS",
+                           os.path.expanduser("~/dev/OpenUA/data/work/asv"))
+    return (os.environ.get("ASV_HOST", "192.168.3.250"), 23,
+            os.path.join(tools, ".asvpass"), "/work/dev/ub")
+
+
 class Telnet:
-    """COMMAND on the TT, as root, over telnet (the asvsh.py login)."""
+    """COMMAND on the TT or AMIX, as root, over telnet (the asvsh.py login)."""
     IAC, DONT, DO, WONT, WILL, SB, SE = 255, 254, 253, 252, 251, 250, 240
 
-    def __init__(self, command):
-        host = os.environ.get("ASV_HOST", "192.168.3.250")
-        tools = os.environ.get("ASV_TOOLS",
-                               os.path.expanduser("~/dev/OpenUA/data/work/asv"))
-        self.s = socket.create_connection((host, 23), timeout=15)
+    def __init__(self, command, amix=False):
+        host, port, passfile, workdir = target(amix)
+        self.s = socket.create_connection((host, port), timeout=15)
         self.wait_for(b"ogin:", 20)
         self.send(b"root\r\n")
         if b"assword:" in self.wait_for(b"assword:", 10):
-            with open(os.path.join(tools, ".asvpass")) as f:
+            with open(passfile) as f:
                 self.send(f.read().strip().encode() + b"\r\n")
         got = self.wait_for(b"# ", 20)
         if b"erminal" in got or b"TERM" in got:
             self.send(b"xterm\r\n")
             self.wait_for(b"# ", 10)
-        self.send(b"stty -echo; cd /work/dev/ub\r\n")
+        self.send(("stty -echo; cd %s\r\n" % workdir).encode())
         self.wait_for(b"# ", 10)
         # (a Bourne shell doesn't export VAR=x put before exec: export)
-        env = "TERM=xterm LINES=%d COLUMNS=%d MANX_HOME=/work/dev/ub/home " \
-              "MANX_CHARSET=%s" % (ROWS, COLS, os.environ.get("TTCS", "latin1"))
+        env = "TERM=xterm LINES=%d COLUMNS=%d MANX_HOME=%s/home " \
+              "MANX_CHARSET=%s" % (ROWS, COLS, workdir, os.environ.get("TTCS", "latin1"))
         names = " ".join(v.split("=")[0] for v in env.split())
         self.send(("%s; export %s; exec %s\r\n" % (env, names, command)).encode())
 
@@ -210,12 +223,13 @@ def save_png(screen, path, size=16, margin=14):
 
 def main():
     args = sys.argv[1:]
-    tt = bool(args) and args[0] == "--tt"
+    tt = bool(args) and args[0] in ("--tt", "--amix")
+    amix = tt and args[0] == "--amix"
     if tt:
         args = args[1:]
     if not args:
         sys.exit(__doc__)
-    conn = Telnet(" ".join(args)) if tt else Pty(args)
+    conn = Telnet(" ".join(args), amix) if tt else Pty(args)
     screen = pyte.Screen(COLS, ROWS)
     stream = pyte.ByteStream(screen)
     t0 = time.time()

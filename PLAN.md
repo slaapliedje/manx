@@ -79,6 +79,9 @@ Back/forward re-parses from the disk cache rather than keeping documents.
   using `ASV_HOST`; credentials stay outside the repo.
 - Emulators when the real machine is busy: the Hatari fork (ASV) and WinUAE
   (AMIX).
+- `tools/amix/`: the same for AMIX 2.1 in an emulated A3000 (sp1's
+  `amix/emu/uaeamix.py`, WinUAE 5.3.1): `amixsh`, `amixput`, `amixrun`,
+  and `amixdrive` for the full-screen UI.
 
 ## 5. Phases
 
@@ -157,5 +160,6 @@ present.
 | amx signal and `ERESTART` quirks | No signals; loop on `EINTR`/`ERESTART`. |
 
 ## 7. Open questions
-- AMIX machine for testing: real A3000UX, or WinUAE only?
+- AMIX machine for testing: WinUAE for now (`tools/amix/`); a real A3000UX
+  if one turns up.
 - Which sites matter most (for the Phase 2 corpus)?

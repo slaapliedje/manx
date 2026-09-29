@@ -1,0 +1,13 @@
+#!/bin/sh
+# amixrun LOCAL-BINARY [args...] - copy a binary to /home/dev/manx in the
+# emulated AMIX machine and run it there, in the foreground, with
+# MANX_HOME=/home/dev/manx/home; prints its output and exits with its
+# status. AMIXRUN_TIMEOUT (seconds, default 600) bounds the run.
+set -e
+here=$(dirname "$0")
+bin=$1; shift
+name=$(basename "$bin")
+d=/home/dev/manx
+"$here/amixsh" "[ -d $d/home ] || mkdir -p $d/home" >/dev/null
+"$here/amixput" "$bin" "$d/$name"
+exec "$here/amixsh" "cd $d; chmod 755 $name; MANX_HOME=$d/home; export MANX_HOME; ./$name $*" "${AMIXRUN_TIMEOUT:-600}"

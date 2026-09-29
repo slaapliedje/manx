@@ -1,0 +1,8 @@
+#!/bin/sh
+# amixdrive 'command' < steps - run a full-screen program in the emulated
+# AMIX machine (from /home/dev/manx, as root, over telnet) and follow a
+# step script: keys, wait, until, expect, show, png (see tools/uidrive.py).
+#   printf 'until Hacker 120\nshow\n' | tools/amix/amixdrive './manx https://news.ycombinator.com/'
+# Needs pyte; set UIDRIVE_PYTHON to a python that has it.
+here=$(dirname "$0")
+exec "${UIDRIVE_PYTHON:-python3}" "$here/../uidrive.py" --amix "$@"
