@@ -541,6 +541,7 @@ static const char help_html[] =
 	"search = URL           where g sends words (DuckDuckGo Lite)\n"
 	"charset = utf-8        the terminal's: utf-8, latin1, ascii\n"
 	"color = off            no colours\n"
+	"link_color = blue      links' colour (cyan; blue suits white)\n"
 	"cookies = off          no cookies\n"
 	"cache_kb = 2048        the disk cache's size (0: none)\n"
 	"cafile = FILE          the PEM bundle of trusted roots\n"
@@ -1685,6 +1686,17 @@ int main(int argc, char **argv)
 	start = argc > 1 ? argv[1] : config_str("start", "about:start");
 	g_search = config_str("search", SEARCH_URL);
 	scr_color = config_bool("color", 1);
+	{
+		/* link_color: a colour name, or 0-7 */
+		static const char *const names[] = { "black", "red", "green",
+			"yellow", "blue", "magenta", "cyan", "white" };
+		const char *lc = config_str("link_color", "cyan");
+		int i;
+
+		for (i = 0; i < 8; i++)
+			if (strcmp(lc, names[i]) == 0 || (lc[0] == '0' + i && !lc[1]))
+				scr_link_color = i;
+	}
 	fetch_early_requests = config_bool("early_requests", 1);
 	cookie_enabled = config_bool("cookies", 1);
 	if (cookie_enabled)

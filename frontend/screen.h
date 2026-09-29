@@ -25,6 +25,7 @@ enum {
 extern int scr_rows, scr_cols;
 extern enum term_cs scr_cs;
 extern int scr_color;			/* 0: no colours even if available */
+extern int scr_link_color;		/* ANSI colour 0-7 for links (6: cyan) */
 
 /*
  * Take over the terminal: raw mode, terminfo, the alternate screen.

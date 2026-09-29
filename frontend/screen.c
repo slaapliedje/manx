@@ -31,6 +31,7 @@ extern char *tparm(const char *s, ...);
 
 int scr_rows = 24, scr_cols = 80;
 int scr_color = 1;
+int scr_link_color = 6;
 enum term_cs scr_cs = TCS_ASCII;
 
 struct cell {
@@ -129,8 +130,8 @@ static void oattr(int a)
 	if ((a & CA_REV) || ((a & CA_MARK) && !ncolors))
 		ocap(c_rev ? c_rev : "\033[7m");
 	if (ncolors && (a & (CA_LINK | CA_MARK)) && !(a & CA_REV)) {
-		/* links cyan, find matches yellow */
-		int color = (a & CA_MARK) ? 3 : 6;
+		/* links cyan (or as set), find matches yellow */
+		int color = (a & CA_MARK) ? 3 : scr_link_color;
 
 		if (c_setaf)
 			ocap(TPARM2(c_setaf, color, 0));
