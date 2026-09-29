@@ -77,11 +77,11 @@ Back/forward re-parses from the disk cache rather than keeping documents.
   `toolchain/sysv4-cc` + `sysv4-ld` (from OpenUA; needs `AMIX_SYSROOT`).
 - `tools/tt/`: push a binary to the TT (ftp as `dev`) and run it (telnet),
   using `ASV_HOST`; credentials stay outside the repo.
-- Emulators when the real machine is busy: the Hatari fork (ASV) and WinUAE
-  (AMIX).
+- Emulators when the real machine is busy: the Hatari fork (ASV) and
+  Amiberry or WinUAE (AMIX).
 - `tools/amix/`: the same for AMIX 2.1 in an emulated A3000 (sp1's
-  `amix/emu/uaeamix.py`, WinUAE 5.3.1): `amixsh`, `amixput`, `amixrun`,
-  and `amixdrive` for the full-screen UI.
+  `amix/emu/uaeamix.py`, on Amiberry by default): `amixsh`, `amixput`,
+  `amixrun`, and `amixdrive` for the full-screen UI.
 
 ## 5. Phases
 
@@ -160,6 +160,6 @@ present.
 | amx signal and `ERESTART` quirks | No signals; loop on `EINTR`/`ERESTART`. |
 
 ## 7. Open questions
-- AMIX machine for testing: WinUAE for now (`tools/amix/`); a real A3000UX
+- AMIX machine for testing: an emulator for now (`tools/amix/`); a real A3000UX
   if one turns up.
 - Which sites matter most (for the Phase 2 corpus)?
