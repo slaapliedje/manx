@@ -772,8 +772,8 @@ const char *tls_strerror(int err)
 
 	switch (err) {
 	case 0: return "ok";
-	case TLS_ERR_NOT_SEEDED: return "random pool not seeded (run: ubtrust seed)";
-	case TLS_ERR_NO_ANCHORS: return "no trusted certificates (run: ubtrust roots FILE)";
+	case TLS_ERR_NOT_SEEDED: return "random pool not seeded (run: manxtrust seed)";
+	case TLS_ERR_NO_ANCHORS: return "no trusted certificates (run: manxtrust roots FILE)";
 	case BR_ERR_IO: return "connection closed by the server";
 	case BR_ERR_X509_EXPIRED: return "certificate expired or not yet valid";
 	case BR_ERR_X509_BAD_SERVER_NAME: return "certificate is for another host";

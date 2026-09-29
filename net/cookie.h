@@ -3,8 +3,8 @@
  * scripts needs). Persistent cookies live in a file (mode 600); session
  * cookies only as long as the browser runs.
  */
-#ifndef UB_COOKIE_H
-#define UB_COOKIE_H
+#ifndef MANX_COOKIE_H
+#define MANX_COOKIE_H
 
 #include <stddef.h>
 #include "url.h"
@@ -35,4 +35,4 @@ void cookie_clear(void);
 /* For tests: a cookie date to seconds since 1970, or -1. */
 long cookie_parse_date(const char *s);
 
-#endif /* UB_COOKIE_H */
+#endif /* MANX_COOKIE_H */

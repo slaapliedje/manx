@@ -3,8 +3,8 @@
  * with a small pool of kept-alive connections (on a 68030 a new TLS
  * connection costs seconds, so reusing one matters more than anywhere).
  */
-#ifndef UB_CONN_H
-#define UB_CONN_H
+#ifndef MANX_CONN_H
+#define MANX_CONN_H
 
 #include <stddef.h>
 #include "tls.h"
@@ -56,4 +56,4 @@ void conn_release(struct conn *c, int reusable);
 /* Close every pooled connection. */
 void conn_close_all(void);
 
-#endif /* UB_CONN_H */
+#endif /* MANX_CONN_H */

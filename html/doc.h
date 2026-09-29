@@ -3,8 +3,8 @@
  * bytes and refer to each other by 16-bit index; text and attributes live
  * in two pools. Everything is freed at once when the page is left.
  */
-#ifndef UB_DOC_H
-#define UB_DOC_H
+#ifndef MANX_DOC_H
+#define MANX_DOC_H
 
 #include <stddef.h>
 
@@ -73,4 +73,4 @@ const char *doc_title(const struct doc *d);
 /* An indented dump of the tree (to a FILE *), for tests and uparse. */
 void doc_dump(const struct doc *d, void *file);
 
-#endif /* UB_DOC_H */
+#endif /* MANX_DOC_H */

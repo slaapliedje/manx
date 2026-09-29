@@ -2,7 +2,7 @@
 # ttdrive 'command' < steps - run a full-screen program on the TT (from
 # /work/dev/ub, as root, over telnet) and follow a step script: keys,
 # wait, until, expect, show (see tools/uidrive.py). E.g.
-#   printf 'until Hacker 60\nshow\n' | tools/tt/ttdrive './ub https://news.ycombinator.com/'
+#   printf 'until Hacker 60\nshow\n' | tools/tt/ttdrive './manx https://news.ycombinator.com/'
 # Needs pyte; set UIDRIVE_PYTHON to a python that has it.
 here=$(dirname "$0")
 exec "${UIDRIVE_PYTHON:-python3}" "$here/../uidrive.py" --tt "$@"

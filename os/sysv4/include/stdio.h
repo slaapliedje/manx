@@ -3,8 +3,8 @@
  * (os/sysv4/snprintf.c). toolchain/sysv4-cc puts this directory ahead of
  * the system headers.
  */
-#ifndef UB_SYSV4_STDIO_H
-#define UB_SYSV4_STDIO_H
+#ifndef MANX_SYSV4_STDIO_H
+#define MANX_SYSV4_STDIO_H
 
 #include_next <stdio.h>
 #include <stdarg.h>
@@ -13,4 +13,4 @@
 int snprintf(char *buf, size_t n, const char *fmt, ...);
 int vsnprintf(char *buf, size_t n, const char *fmt, va_list ap);
 
-#endif /* UB_SYSV4_STDIO_H */
+#endif /* MANX_SYSV4_STDIO_H */

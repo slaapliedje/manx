@@ -10,7 +10,7 @@
 #include "os.h"
 #include "entropy.h"
 
-#ifdef UB_SYSV4
+#ifdef MANX_SYSV4
 pid_t getpid(void);
 #else
 #include <unistd.h>
@@ -91,7 +91,7 @@ void entropy_init(const char *seed_path)
 	struct tms tm;
 	long v;
 
-	entropy_add("ub entropy", 10, 0);
+	entropy_add("manx entropy", 12, 0);
 	if (read_exact("/dev/urandom", buf, sizeof buf)) {
 		s_rep.urandom = 1;
 		entropy_add(buf, sizeof buf, 256);

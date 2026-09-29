@@ -5,13 +5,13 @@
  * Every source is hashed into a SHA-256 pool, with a conservative
  * estimate of the bits it adds. TLS gets seed material only once the
  * estimate reaches ENTROPY_NEEDED. On the 68030 machines the real sources
- * are a seed file saved by earlier runs (first made by `ubtrust seed`,
+ * are a seed file saved by earlier runs (first made by `manxtrust seed`,
  * from keystroke timing or imported from another machine), keystroke
  * timing, and network arrival timing; the TT's clock jitter is nearly
  * worthless (3-9 distinct values in 512 samples).
  */
-#ifndef UB_ENTROPY_H
-#define UB_ENTROPY_H
+#ifndef MANX_ENTROPY_H
+#define MANX_ENTROPY_H
 
 #include <stddef.h>
 
@@ -44,4 +44,4 @@ struct entropy_report {
 };
 const struct entropy_report *entropy_report(void);
 
-#endif /* UB_ENTROPY_H */
+#endif /* MANX_ENTROPY_H */

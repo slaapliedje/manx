@@ -1,13 +1,13 @@
 /*
- * ubtrust - manage the browser's trust material and random seed.
+ * manxtrust - manage the browser's trust material and random seed.
  *
- *   ubtrust status            what is in the data directory
- *   ubtrust roots FILE.pem    (re)build the root store from a PEM bundle
- *   ubtrust learn FILE.pem    verify the intermediates in a PEM bundle and
+ *   manxtrust status            what is in the data directory
+ *   manxtrust roots FILE.pem    (re)build the root store from a PEM bundle
+ *   manxtrust learn FILE.pem    verify the intermediates in a PEM bundle and
  *                             keep the good ones (preloading: a first visit
  *                             to a site then checks one signature, not two)
- *   ubtrust seed              seed the random pool from keystroke timing
- *   ubtrust seed -            seed it from 64 hex digits on stdin, made
+ *   manxtrust seed              seed the random pool from keystroke timing
+ *   manxtrust seed -            seed it from 64 hex digits on stdin, made
  *                             on a machine with a real random source, e.g.
  *                             head -c 32 /dev/urandom | od -An -tx1
  */
@@ -21,7 +21,7 @@
 #include "anchors.h"
 #include "tls.h"
 
-#ifdef UB_SYSV4
+#ifdef MANX_SYSV4
 int isatty(int);
 int read(int, void *, unsigned);
 #else
@@ -54,14 +54,14 @@ static int status(void)
 	struct anchors a;
 	const char *dir = os_datadir();
 
-	printf("data directory: %s\n", dir ? dir : "(none: set HOME or UB_HOME)");
+	printf("data directory: %s\n", dir ? dir : "(none: set HOME or MANX_HOME)");
 	if (dir == NULL)
 		return 1;
 	anchors_init(&a);
 	if (anchors_load(&a, os_datapath(path, sizeof path, "roots.bin"), NULL, NULL) == 0)
 		printf("roots:          %lu\n", (unsigned long)a.n);
 	else
-		printf("roots:          none (ubtrust roots FILE.pem)\n");
+		printf("roots:          none (manxtrust roots FILE.pem)\n");
 	anchors_free(&a);
 	anchors_init(&a);
 	anchors_load(&a, os_datapath(path, sizeof path, "inter.bin"), NULL, NULL);
@@ -72,7 +72,7 @@ static int status(void)
 	printf("full-profile hosts: %d\n", count_lines("hosts"));
 	entropy_init(os_datapath(seed, sizeof seed, "seed"));
 	printf("random pool:    %d bits%s\n", entropy_bits(),
-		entropy_ready() ? "" : " - NOT READY (ubtrust seed)");
+		entropy_ready() ? "" : " - NOT READY (manxtrust seed)");
 	return 0;
 }
 
@@ -84,7 +84,7 @@ static int seed_hex(void)
 	char *p;
 
 	if (!fgets(line, sizeof line, stdin)) {
-		fprintf(stderr, "ubtrust: no input\n");
+		fprintf(stderr, "manxtrust: no input\n");
 		return 1;
 	}
 	for (p = line; *p && n < 32; p++) {
@@ -98,7 +98,7 @@ static int seed_hex(void)
 		else { b[n++] = (unsigned char)(hi << 4 | v); hi = -1; }
 	}
 	if (n < 32) {
-		fprintf(stderr, "ubtrust: need 64 hex digits, got %d\n", 2 * n);
+		fprintf(stderr, "manxtrust: need 64 hex digits, got %d\n", 2 * n);
 		return 1;
 	}
 	entropy_add(b, sizeof b, 256);
@@ -112,7 +112,7 @@ static int seed_keys(void)
 	int keys = 0;
 
 	if (!isatty(0)) {
-		fprintf(stderr, "ubtrust: seeding needs a terminal (or: ubtrust seed -)\n");
+		fprintf(stderr, "manxtrust: seeding needs a terminal (or: manxtrust seed -)\n");
 		return 1;
 	}
 	printf("Type random keys, unevenly, until the bar is full.\n");
@@ -152,7 +152,7 @@ int main(int argc, char **argv)
 	char path[600];
 
 	if (argc < 2) {
-		fprintf(stderr, "usage: ubtrust status | roots FILE.pem | learn FILE.pem"
+		fprintf(stderr, "usage: manxtrust status | roots FILE.pem | learn FILE.pem"
 			" | seed [-]\n");
 		return 2;
 	}
@@ -163,7 +163,7 @@ int main(int argc, char **argv)
 		int n = tls_build_roots(argv[2]);
 
 		if (n < 0) {
-			fprintf(stderr, "ubtrust: can't build roots from %s\n", argv[2]);
+			fprintf(stderr, "manxtrust: can't build roots from %s\n", argv[2]);
 			return 1;
 		}
 		printf("%d roots stored (%lu s)\n", n, (os_msec() - t0 + 500) / 1000);
@@ -173,12 +173,12 @@ int main(int argc, char **argv)
 		int n;
 
 		if (tls_init(NULL, note) < 0) {
-			fprintf(stderr, "ubtrust: no roots yet (ubtrust roots FILE.pem)\n");
+			fprintf(stderr, "manxtrust: no roots yet (manxtrust roots FILE.pem)\n");
 			return 1;
 		}
 		n = tls_learn_pem(argv[2], note);
 		if (n < 0) {
-			fprintf(stderr, "ubtrust: can't read %s\n", argv[2]);
+			fprintf(stderr, "manxtrust: can't read %s\n", argv[2]);
 			return 1;
 		}
 		printf("%d intermediate(s) learned\n", n);
@@ -188,7 +188,7 @@ int main(int argc, char **argv)
 		int rc;
 
 		if (os_datapath(path, sizeof path, "seed") == NULL) {
-			fprintf(stderr, "ubtrust: no data directory\n");
+			fprintf(stderr, "manxtrust: no data directory\n");
 			return 1;
 		}
 		entropy_init(path);
@@ -199,6 +199,6 @@ int main(int argc, char **argv)
 		}
 		return rc;
 	}
-	fprintf(stderr, "ubtrust: unknown command %s\n", argv[1]);
+	fprintf(stderr, "manxtrust: unknown command %s\n", argv[1]);
 	return 2;
 }

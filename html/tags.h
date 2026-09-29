@@ -2,8 +2,8 @@
  * tags.h - the HTML element and attribute names the browser knows, as
  * small numbers, with the properties the tokenizer and tree builder need.
  */
-#ifndef UB_TAGS_H
-#define UB_TAGS_H
+#ifndef MANX_TAGS_H
+#define MANX_TAGS_H
 
 /* elements: TAG_UNKNOWN for any other name (kept, treated as inline) */
 enum tag {
@@ -69,4 +69,4 @@ enum attr {
 const char *attr_name(int attr);
 int attr_lookup(const char *lowercase_name);	/* ATTR_NONE if not kept */
 
-#endif /* UB_TAGS_H */
+#endif /* MANX_TAGS_H */

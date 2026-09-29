@@ -10,7 +10,7 @@
 #include <sys/stat.h>
 #include "os.h"
 
-#ifdef UB_SYSV4
+#ifdef MANX_SYSV4
 int rename(const char *, const char *);
 int unlink(const char *);
 int chmod(const char *, mode_t);
@@ -27,10 +27,10 @@ const char *os_datadir(void)
 	if (done)
 		return dir[0] ? dir : NULL;
 	done = 1;
-	if ((e = getenv("UB_HOME")) != NULL && *e && strlen(e) < sizeof dir)
+	if ((e = getenv("MANX_HOME")) != NULL && *e && strlen(e) < sizeof dir)
 		strcpy(dir, e);
-	else if ((e = getenv("HOME")) != NULL && *e && strlen(e) + 5 < sizeof dir)
-		sprintf(dir, "%s/.ub", strcmp(e, "/") == 0 ? "" : e);
+	else if ((e = getenv("HOME")) != NULL && *e && strlen(e) + sizeof "/.manx" < sizeof dir)
+		sprintf(dir, "%s/.manx", strcmp(e, "/") == 0 ? "" : e);
 	else
 		return NULL;
 	mkdir(dir, 0700);		/* fails harmlessly if it exists */

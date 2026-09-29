@@ -190,7 +190,7 @@ int main(int argc, char **argv)
 
 		signal(SIGPIPE, SIG_IGN);
 		entropy_init(os_datapath(seed, sizeof seed, "seed"));
-		tls_init(getenv("UB_CAFILE"), NULL);
+		tls_init(getenv("MANX_CAFILE"), NULL);
 		memset(&cb, 0, sizeof cb);
 		cb.head = on_head;
 		cb.body = on_body;

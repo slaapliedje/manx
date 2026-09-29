@@ -3,8 +3,8 @@
  * them, and the submission they make (HTML's form submission algorithm,
  * without scripts).
  */
-#ifndef UB_FORMS_H
-#define UB_FORMS_H
+#ifndef MANX_FORMS_H
+#define MANX_FORMS_H
 
 #include <stddef.h>
 #include "doc.h"
@@ -78,4 +78,4 @@ int forms_submit(const struct forms *fs, nodeid form, nodeid submitter,
 	const struct url *base, int win1252, struct submission *out,
 	const char **why);
 
-#endif /* UB_FORMS_H */
+#endif /* MANX_FORMS_H */

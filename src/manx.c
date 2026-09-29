@@ -1,7 +1,7 @@
 /*
- * ub - the browser, text frontend.
+ * manx - a web browser for 68030 System V Unix: the text frontend.
  *
- *   ub [URL|FILE]
+ *   manx [URL|FILE]
  *
  * Keys (as in Lynx, plus vi's):
  *   Up/Down      previous/next link (scrolling when it's off screen)
@@ -516,7 +516,7 @@ static void load_string(const char *html, const char *url)
 }
 
 static const char help_html[] =
-	"<title>ub help</title><h1>Keys</h1><pre>"
+	"<title>Manx help</title><h1>Keys</h1><pre>"
 	"Up/Down        previous/next link\n"
 	"Right, Enter   follow the link\n"
 	"Left, u, BkSp  back\n"
@@ -535,8 +535,8 @@ static const char help_html[] =
 	"type in a text field (Enter moves to the next; in the last one it "
 	"sends the form), tick a checkbox, choose from a list, or press a "
 	"button. A text area opens in $EDITOR (vi).</p>"
-	"<h1>Settings</h1><p>In ~/.ub/config, one <i>key = value</i> a line "
-	"(or as UB_KEY in the environment):</p><pre>"
+	"<h1>Settings</h1><p>In ~/.manx/config, one <i>key = value</i> a line "
+	"(or as MANX_KEY in the environment):</p><pre>"
 	"start = URL            the start page\n"
 	"search = URL           where g sends words (DuckDuckGo Lite)\n"
 	"charset = utf-8        the terminal's: utf-8, latin1, ascii\n"
@@ -550,7 +550,7 @@ static const char help_html[] =
 	"</pre><p>Start pages: <a href=\"about:start\">about:start</a>";
 
 static const char start_html[] =
-	"<title>ub</title><h1>ub - a web browser for 68030 Unix</h1>"
+	"<title>Manx</title><h1>Manx - a web browser for 68030 Unix</h1>"
 	"<p>Press <b>g</b> and type a URL, or words to search for. "
 	"<b>?</b> lists the keys.</p><ul>"
 	"<li><a href=\"https://lite.duckduckgo.com/lite/\">DuckDuckGo Lite</a>"
@@ -807,7 +807,7 @@ static int load(const char *url_in, const struct fetch_opts *opts, int mode,
 	if (g_unsupported) {
 		static char why[300];
 
-		snprintf(why, sizeof why, "It is %s, which ub can't show yet.",
+		snprintf(why, sizeof why, "It is %s, which Manx can't show yet.",
 			g_ctype);
 		error_page(res.url[0] ? res.url : url, why);
 		return -1;
@@ -1019,7 +1019,7 @@ static void go_url(const char *target)
 	}
 	if (strncmp(target, "telnet:", 7) == 0 || strncmp(target, "mailto:", 7) == 0
 		|| strncmp(target, "javascript:", 11) == 0) {
-		message("ub can't follow %s links.", target);
+		message("Manx can't follow %s links.", target);
 		return;
 	}
 	visit(target);
@@ -1313,7 +1313,7 @@ static void field_action(nodeid node)
 		message("That button needs JavaScript.", NULL);
 		break;
 	case FT_FILE:
-		message("ub can't upload files.", NULL);
+		message("Manx can't upload files.", NULL);
 		break;
 	default:
 		break;
@@ -1535,7 +1535,7 @@ static void typed(const char *in, char *out, size_t n)
 
 /* --- bookmarks ------------------------------------------------------- */
 
-/* the bookmarks are a page: $UB_HOME/bookmarks.html, one link a line */
+/* the bookmarks are a page: $MANX_HOME/bookmarks.html, one link a line */
 static void add_bookmark(void)
 {
 	char path[600], title[300], line[URL_MAX * 2 + 800], eu[URL_MAX + 200],
@@ -1552,7 +1552,7 @@ static void add_bookmark(void)
 	if (!prompt("Bookmark as: ", title, sizeof title) || !title[0])
 		return;
 	if (os_datapath(path, sizeof path, "bookmarks.html") == NULL) {
-		message("No place for bookmarks ($HOME or $UB_HOME).", NULL);
+		message("No place for bookmarks ($HOME or $MANX_HOME).", NULL);
 		return;
 	}
 	html_escape(g_url, eu, sizeof eu);
@@ -1568,8 +1568,8 @@ static void add_bookmark(void)
 		f = fopen(path, "w");
 		if (f)
 			fputs("<title>Bookmarks</title>\n<h1>Bookmarks</h1>\n"
-				"<p>(ub adds a line with a; the file is " "bookmarks.html in "
-				"~/.ub: edit it to change or remove them.)\n<ul>\n", f);
+				"<p>(Manx adds a line with a; the file is " "bookmarks.html in "
+				"~/.manx: edit it to change or remove them.)\n<ul>\n", f);
 	} else
 		f = fopen(path, "a");
 	if (f == NULL) {
@@ -1680,9 +1680,9 @@ int main(int argc, char **argv)
 	int quit = 0;
 
 	signal(SIGPIPE, SIG_IGN);
-	/* settings: ~/.ub/config, UB_<KEY> overriding */
+	/* settings: ~/.manx/config, MANX_<KEY> overriding */
 	if (config_load(os_datapath(path, sizeof path, "config"), &err) < 0)
-		fprintf(stderr, "ub: %s\n", err);
+		fprintf(stderr, "manx: %s\n", err);
 	start = argc > 1 ? argv[1] : config_str("start", "about:start");
 	g_search = config_str("search", SEARCH_URL);
 	scr_color = config_bool("color", 1);
@@ -1708,7 +1708,7 @@ int main(int argc, char **argv)
 	/* the first run builds the trust store: say so, it takes a minute */
 	tls_init(config_str("cafile", NULL), tls_note);
 	if (doc_init(&g_doc, 0) < 0 || scr_open(config_str("charset", NULL)) < 0) {
-		fprintf(stderr, "ub: needs a terminal\n");
+		fprintf(stderr, "manx: needs a terminal\n");
 		return 1;
 	}
 	if (argc > 1 && !strstr(start, "://") && strncmp(start, "about:", 6)) {

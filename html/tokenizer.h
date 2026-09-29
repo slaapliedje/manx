@@ -5,8 +5,8 @@
  * references, raw text and RCDATA elements), simplified elsewhere.
  * <script> and <style> bodies are skipped as they stream past.
  */
-#ifndef UB_TOKENIZER_H
-#define UB_TOKENIZER_H
+#ifndef MANX_TOKENIZER_H
+#define MANX_TOKENIZER_H
 
 #include <stddef.h>
 
@@ -65,4 +65,4 @@ void tok_end(struct tokenizer *t);
  * tokenizer does: the code point, or 0 if unknown (for tests). */
 unsigned long tok_entity(const char *name, int semicolon);
 
-#endif /* UB_TOKENIZER_H */
+#endif /* MANX_TOKENIZER_H */

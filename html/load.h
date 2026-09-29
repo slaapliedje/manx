@@ -2,8 +2,8 @@
  * load.h - bytes of an HTML document in, a struct doc out, as the bytes
  * arrive: charset detection, decoding to UTF-8, tokenizing, tree building.
  */
-#ifndef UB_LOAD_H
-#define UB_LOAD_H
+#ifndef MANX_LOAD_H
+#define MANX_LOAD_H
 
 #include <stddef.h>
 #include "utf8.h"
@@ -43,4 +43,4 @@ void html_load_end(struct html_load *l);
 enum charset html_sniff(const unsigned char *s, size_t n, int *from,
 	size_t *bom_len);
 
-#endif /* UB_LOAD_H */
+#endif /* MANX_LOAD_H */

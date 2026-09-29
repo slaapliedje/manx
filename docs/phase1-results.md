@@ -1,7 +1,7 @@
 # Phase 1 results: the network core (2026-09-27)
 
 Everything below was measured on the real TT030 (Atari System V) with the
-static AMIX binaries `ufetch` and `ubtrust`, over the TT's WiFi-bridged
+static AMIX binaries `ufetch` and `manxtrust`, over the TT's WiFi-bridged
 DaynaPORT link.
 
 ## What exists
@@ -16,9 +16,9 @@ DaynaPORT link.
 | `tls/tls` | BearSSL client: offer ladder, deferred validation, early requests, learned intermediates, known leaves, session resumption |
 | `tls/anchors` | trust anchors with expiry; PEM loader; compact binary store |
 | `tls/entropy` | estimated pool; TLS refused until 128 bits; seed-file ratchet |
-| `os/` | data directory (`$UB_HOME` or `~/.ub`), whole-file helpers, capped allocator |
+| `os/` | data directory (`$MANX_HOME` or `~/.manx`), whole-file helpers, capped allocator |
 | `src/ufetch` | fetch and report (`-v -I -o -k -m -E -n`) |
-| `src/ubtrust` | `status`, `roots FILE.pem`, `learn FILE.pem`, `seed` / `seed -` |
+| `src/manxtrust` | `status`, `roots FILE.pem`, `learn FILE.pem`, `seed` / `seed -` |
 
 Tests: `make test` (URL, HTTP, snprintf, crypto known answers);
 `tests/test_net.sh` against `tests/netserver.py` (14 framing, redirect,
@@ -31,7 +31,7 @@ requests, in-process session resumption); `tests/sites.sh` (the campaign).
 The Phase 0 numbers set the design: a full certificate chain takes the TT
 30-140 s to check, and servers drop a silent client after roughly 10-20 s.
 
-1. **Trust store:** `ubtrust roots` decodes the PEM bundle once (55 s on
+1. **Trust store:** `manxtrust roots` decodes the PEM bundle once (55 s on
    the TT). After that, startup loads `roots.bin` in **0.3 s**.
 2. **The offer ladder:**
    - **fast:** ECDHE-RSA, X25519 only.
@@ -97,7 +97,7 @@ caps the heap for testing.
 - RSA-4096 leaves (GitHub) cost ~10 s per full handshake, and GitHub doesn't
   resume. 68030 assembly for the RSA public operation would help most here.
 - Cold visits to sites with ECDSA P-384 chains still take 1.5-2.5 minutes
-  once. `ubtrust learn` with a preload bundle of common intermediates cuts
+  once. `manxtrust learn` with a preload bundle of common intermediates cuts
   that to one signature.
 - The early-request policy is a deliberate trade-off (see 4 above): the
   browser must keep cookies, forms and credentials off early connections.

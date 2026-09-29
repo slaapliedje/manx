@@ -5,8 +5,8 @@
  * takes 52 s to decode on the TT; its binary form loads in well under a
  * second).
  */
-#ifndef UB_ANCHORS_H
-#define UB_ANCHORS_H
+#ifndef MANX_ANCHORS_H
+#define MANX_ANCHORS_H
 
 #include <stddef.h>
 #include "bearssl.h"
@@ -45,4 +45,4 @@ int anchors_load(struct anchors *a, const char *path, long *src_size,
 /* Copy anchor i of src into dst (for merging sets): as anchors_add_der. */
 int anchors_add_copy(struct anchors *dst, const struct anchors *src, size_t i);
 
-#endif /* UB_ANCHORS_H */
+#endif /* MANX_ANCHORS_H */

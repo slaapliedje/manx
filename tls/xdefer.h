@@ -9,8 +9,8 @@
  * real checks. NOTHING may be sent on, or accepted from, the connection
  * until xdefer_verify() returns 0.
  */
-#ifndef UB_XDEFER_H
-#define UB_XDEFER_H
+#ifndef MANX_XDEFER_H
+#define MANX_XDEFER_H
 
 #include "bearssl.h"
 
@@ -58,4 +58,4 @@ void xdefer_install(struct xdefer *xd, br_ssl_client_context *sc);
 int xdefer_verify(struct xdefer *xd, br_ssl_client_context *sc,
 	br_x509_minimal_context *xc, int leaf_known_good, int *anchor_at);
 
-#endif /* UB_XDEFER_H */
+#endif /* MANX_XDEFER_H */

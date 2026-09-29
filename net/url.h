@@ -2,8 +2,8 @@
  * url.h - URLs: parsing, resolving relative references (RFC 3986), and
  * formatting.
  */
-#ifndef UB_URL_H
-#define UB_URL_H
+#ifndef MANX_URL_H
+#define MANX_URL_H
 
 #include <stddef.h>
 
@@ -43,4 +43,4 @@ unsigned url_port(const struct url *u);
 /* The request target: path (at least "/") and "?query". */
 int url_target(const struct url *u, char *buf, size_t n);
 
-#endif /* UB_URL_H */
+#endif /* MANX_URL_H */

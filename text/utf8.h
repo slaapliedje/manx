@@ -2,8 +2,8 @@
  * utf8.h - character encodings. Documents are held in UTF-8 whatever they
  * arrived in; displays get Latin-1 or ASCII at draw time.
  */
-#ifndef UB_UTF8_H
-#define UB_UTF8_H
+#ifndef MANX_UTF8_H
+#define MANX_UTF8_H
 
 #include <stddef.h>
 
@@ -61,4 +61,4 @@ int win1252_byte(unsigned long cp);
  * zero width), 2 (East Asian wide) or 1. */
 int ucs_width(unsigned long cp);
 
-#endif /* UB_UTF8_H */
+#endif /* MANX_UTF8_H */

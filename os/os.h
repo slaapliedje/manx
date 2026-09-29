@@ -2,8 +2,8 @@
  * os.h - what the browser needs from the operating system, with one
  * implementation per target (os/host, os/sysv4).
  */
-#ifndef UB_OS_H
-#define UB_OS_H
+#ifndef MANX_OS_H
+#define MANX_OS_H
 
 #include <stddef.h>
 
@@ -17,7 +17,7 @@ unsigned long os_msec(void);
 
 /* --- files (os/os_files.c, all targets) --- */
 
-/* The browser's own directory: $UB_HOME, else $HOME/.ub (created, mode
+/* The browser's own directory: $MANX_HOME, else $HOME/.manx (created, mode
  * 700). NULL when neither can be used. */
 const char *os_datadir(void);
 
@@ -51,4 +51,4 @@ void mem_set_cap(size_t bytes);		/* 0: no cap */
 size_t mem_in_use(void);
 size_t mem_peak(void);
 
-#endif /* UB_OS_H */
+#endif /* MANX_OS_H */

@@ -3,8 +3,8 @@
  * lines of terminal bytes (already in the terminal's character set),
  * attribute/link spans over them, the links, and the fragment anchors.
  */
-#ifndef UB_LAYOUT_H
-#define UB_LAYOUT_H
+#ifndef MANX_LAYOUT_H
+#define MANX_LAYOUT_H
 
 #include <stddef.h>
 #include "doc.h"
@@ -90,4 +90,4 @@ long layout_anchor(const struct page *p, const char *name);
 /* The page as plain text, one line per line (tests, dumps). */
 void layout_print(const struct page *p, void *file);
 
-#endif /* UB_LAYOUT_H */
+#endif /* MANX_LAYOUT_H */

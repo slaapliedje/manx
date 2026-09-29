@@ -4,8 +4,8 @@
  * over telnet). Not curses: SVR4 curses counts bytes as columns, which
  * breaks on UTF-8 terminals.
  */
-#ifndef UB_SCREEN_H
-#define UB_SCREEN_H
+#ifndef MANX_SCREEN_H
+#define MANX_SCREEN_H
 
 #include "layout.h"
 
@@ -59,4 +59,4 @@ void scr_bell(void);
 void scr_suspend(void);
 void scr_resume(void);
 
-#endif /* UB_SCREEN_H */
+#endif /* MANX_SCREEN_H */

@@ -7,7 +7,7 @@
  *   -v   headers, TLS details and progress on stderr
  *   -I   HEAD instead of GET
  *   -o   write the body to a file (default: count it only; "-" = stdout)
- *   -k   the PEM root bundle (default $UB_CAFILE, else the store as built)
+ *   -k   the PEM root bundle (default $MANX_CAFILE, else the store as built)
  *   -m   memory cap in KB for everything ufetch allocates
  *   -E   no early requests: validate the server before sending anything
  *   -n   no connection reuse (each URL gets a new connection)
@@ -76,7 +76,7 @@ static void usage(void)
 
 int main(int argc, char **argv)
 {
-	const char *out_path = NULL, *pem = getenv("UB_CAFILE"), *method = "GET";
+	const char *out_path = NULL, *pem = getenv("MANX_CAFILE"), *method = "GET";
 	struct fetch_opts post;
 	char seed_path[600];
 	struct fetch_cb cb;

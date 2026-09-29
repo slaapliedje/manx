@@ -4,8 +4,8 @@
  * cut anywhere; output goes to a callback as it's produced. 33 KB of
  * state (the 32 KB window).
  */
-#ifndef UB_INFLATE_H
-#define UB_INFLATE_H
+#ifndef MANX_INFLATE_H
+#define MANX_INFLATE_H
 
 #include <stddef.h>
 
@@ -36,4 +36,4 @@ int inflate_finish(struct inflate *z);
 
 void inflate_free(struct inflate *z);
 
-#endif /* UB_INFLATE_H */
+#endif /* MANX_INFLATE_H */

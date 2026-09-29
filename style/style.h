@@ -3,8 +3,8 @@
  * few attributes that change it (hidden, style="display:none").
  * No CSS cascade: on a 68030 the table is the stylesheet.
  */
-#ifndef UB_STYLE_H
-#define UB_STYLE_H
+#ifndef MANX_STYLE_H
+#define MANX_STYLE_H
 
 #include "doc.h"
 
@@ -40,4 +40,4 @@ void style_of(const struct doc *d, nodeid id, struct style *s);
 void style_for(int tag, const char *hidden, const char *css, const char *id,
 	struct style *s);
 
-#endif /* UB_STYLE_H */
+#endif /* MANX_STYLE_H */

@@ -19,7 +19,7 @@
 extern int setupterm(char *term, int fd, int *err);
 extern char *tigetstr(char *cap);
 extern int tigetnum(char *cap);
-#ifdef UB_SYSV4
+#ifdef MANX_SYSV4
 extern char *tparm(char *s, long, long, long, long, long, long, long, long,
 	long);
 #define TPARM2(s, a, b)	tparm(s, a, b, 0, 0, 0, 0, 0, 0, 0)
@@ -193,7 +193,7 @@ static void load_caps(void)
 	ncolors = has_terminfo ? tigetnum("colors") : 0;
 	if (ncolors < 8 || (c_setaf == NULL && !has_terminfo))
 		ncolors = 0;
-	if (getenv("UB_NOCOLOR") || !scr_color)
+	if (getenv("MANX_NOCOLOR") || !scr_color)
 		ncolors = 0;
 	if (!has_terminfo) {
 		/* an unknown terminal: assume ANSI (VT100 and later) */

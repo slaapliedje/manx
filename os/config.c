@@ -8,6 +8,7 @@
 #include "config.h"
 
 #define MAX_KEYS	64
+#define PREFIX		"MANX_"	/* of a key's environment variable */
 
 static struct {
 	char *key, *value;
@@ -78,13 +79,13 @@ const char *config_str(const char *key, const char *def)
 	const char *e;
 	int i;
 
-	/* UB_KEY in the environment first */
-	if (strlen(key) + 4 < sizeof env) {
-		strcpy(env, "UB_");
+	/* MANX_KEY in the environment first */
+	if (strlen(key) + sizeof PREFIX < sizeof env) {
+		strcpy(env, PREFIX);
 		for (i = 0; key[i]; i++)
-			env[3 + i] = key[i] >= 'a' && key[i] <= 'z' ?
+			env[sizeof PREFIX - 1 + i] = key[i] >= 'a' && key[i] <= 'z' ?
 				(char)(key[i] - 32) : key[i];
-		env[3 + i] = '\0';
+		env[sizeof PREFIX - 1 + i] = '\0';
 		if ((e = getenv(env)) != NULL)
 			return e;
 	}

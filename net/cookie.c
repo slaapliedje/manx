@@ -463,7 +463,7 @@ void cookie_save(void)
 
 	if (!s_dirty || !s_path[0])
 		return;
-	len += (size_t)sprintf(buf, "# ub cookies: domain host-only path secure "
+	len += (size_t)sprintf(buf, "# manx cookies: domain host-only path secure "
 		"http-only expires name value\n");
 	for (i = 0; i < s_n; i++) {
 		const struct cookie *c = &s_jar[i];

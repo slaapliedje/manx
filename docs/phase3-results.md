@@ -1,6 +1,6 @@
 # Phase 3 results: the text browser
 
-`ub` is the first usable browser: it loads a page, lays it out for the
+`manx` (then called `ub`) is the first usable browser: it loads a page, lays it out for the
 terminal, and lets you read it and follow links, over HTTP, HTTPS, gopher
 and file:. Static binary for the TT (and AMIX): 329 KB.
 
@@ -12,9 +12,9 @@ and file:. Static binary for the TT (and AMIX): 329 KB.
 | `layout/` | one walk over the tree into lines of terminal bytes: word wrap (a word that no longer fits moves down by moving the line boundary, not the bytes), margins that collapse, lists (bullets by depth, `ol start/type`, roman), `<pre>` with tabs, blockquote/dd indent, `hr`, `br`, tables row by row (a row stays one line; blocks inside a cell break only between contents), form fields shown as `[____]` `[Go]` `[x]` `[B v]`, image alt text, a label for links with no text, anchors (`id`, `a name`) and `<main>` |
 | `html/gophermap` | gopher menus to HTML as they stream, `(DIR)`/`(TXT)`/`(?)` tags |
 | `frontend/screen` | the terminal through terminfo (ANSI when unknown): raw keys and escape sequences, a cell buffer, flushes that send only the changed part of each row. Not SVR4 curses: it counts bytes as columns, which breaks UTF-8 |
-| `src/ub.c` | the browser: progressive display while loading (only the screenful is laid out), `z`/Esc stops, Lynx keys (arrows move between links and follow/back), Tab, find, history with positions, `g` takes a URL or search words (DuckDuckGo Lite), gopher search prompts, `m` jumps past site navigation to `<main>`, `=` page info, error pages |
+| `src/manx.c` | the browser: progressive display while loading (only the screenful is laid out), `z`/Esc stops, Lynx keys (arrows move between links and follow/back), Tab, find, history with positions, `g` takes a URL or search words (DuckDuckGo Lite), gopher search prompts, `m` jumps past site navigation to `<main>`, `=` page info, error pages |
 
-Character sets: the terminal's is taken from `UB_CHARSET`, the locale, or
+Character sets: the terminal's is taken from `MANX_CHARSET`, the locale, or
 by asking the terminal (print é, ask where the cursor went: 1 column is
 UTF-8, 2 is an 8-bit set, no answer is ASCII). Text is transliterated at
 layout time (U+2014 becomes `--` on ASCII) and wide characters take two

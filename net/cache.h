@@ -1,11 +1,11 @@
 /*
- * cache.h - pages kept on disk ($UB_HOME/cache), so that going back
+ * cache.h - pages kept on disk ($MANX_HOME/cache), so that going back
  * needs no network (on a 68030 a TLS handshake costs seconds) and a page
  * still fresh isn't fetched again. One file per URL: a small text head,
  * then the body as it was shown (decoded).
  */
-#ifndef UB_CACHE_H
-#define UB_CACHE_H
+#ifndef MANX_CACHE_H
+#define MANX_CACHE_H
 
 #include <stddef.h>
 
@@ -48,4 +48,4 @@ void cache_remove(const char *key);
 long cache_freshness(const char *cache_control, const char *expires,
 	const char *date, long now, int *no_store);
 
-#endif /* UB_CACHE_H */
+#endif /* MANX_CACHE_H */

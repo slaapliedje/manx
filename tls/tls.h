@@ -15,8 +15,8 @@
  *     P-256 key exchange costs ~5 s on the TT, which some servers won't
  *     wait for mid-handshake). A host that refused a rung is remembered.
  */
-#ifndef UB_TLS_H
-#define UB_TLS_H
+#ifndef MANX_TLS_H
+#define MANX_TLS_H
 
 #include <stddef.h>
 #include "bearssl.h"
@@ -108,4 +108,4 @@ const char *tls_profile_name(int profile);
 /* A description of a BearSSL/TLS error code */
 const char *tls_strerror(int err);
 
-#endif /* UB_TLS_H */
+#endif /* MANX_TLS_H */

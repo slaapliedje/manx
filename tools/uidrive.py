@@ -20,7 +20,7 @@ step per line:
 Environment: ROWS, COLS (default 24x80). --tt: ASV_HOST (default
 192.168.3.250), ASV_TOOLS (where .asvpass lives, default
 ~/dev/OpenUA/data/work/asv; the password never leaves this machine),
-TTCS (the UB_CHARSET given to the program there, default latin1).
+TTCS (the MANX_CHARSET given to the program there, default latin1).
 The cursor-position probe is answered as a UTF-8 xterm would.
 
 Needs pyte (pip install pyte).
@@ -95,8 +95,8 @@ class Telnet:
         self.send(b"stty -echo; cd /work/dev/ub\r\n")
         self.wait_for(b"# ", 10)
         # (a Bourne shell doesn't export VAR=x put before exec: export)
-        env = "TERM=xterm LINES=%d COLUMNS=%d UB_HOME=/work/dev/ub/home " \
-              "UB_CHARSET=%s" % (ROWS, COLS, os.environ.get("TTCS", "latin1"))
+        env = "TERM=xterm LINES=%d COLUMNS=%d MANX_HOME=/work/dev/ub/home " \
+              "MANX_CHARSET=%s" % (ROWS, COLS, os.environ.get("TTCS", "latin1"))
         names = " ".join(v.split("=")[0] for v in env.split())
         self.send(("%s; export %s; exec %s\r\n" % (env, names, command)).encode())
 

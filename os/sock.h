@@ -4,8 +4,8 @@
  * AMIX's headers define the socket structures and constants but declare
  * none of the functions (libsocket.a has them), so they are declared here.
  */
-#ifndef UB_SOCK_H
-#define UB_SOCK_H
+#ifndef MANX_SOCK_H
+#define MANX_SOCK_H
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -13,7 +13,7 @@
 #include <poll.h>
 #include <errno.h>
 
-#ifdef UB_SYSV4
+#ifdef MANX_SYSV4
 int socket(int, int, int);
 int connect(int, const struct sockaddr *, int);
 int sendto(int, const void *, int, int, const struct sockaddr *, int);
@@ -35,4 +35,4 @@ int write(int, const void *, unsigned);
 #endif
 #define SOCK_RETRY(e)	((e) == EINTR || (e) == ERESTART || (e) == EAGAIN)
 
-#endif /* UB_SOCK_H */
+#endif /* MANX_SOCK_H */

@@ -10,7 +10,7 @@ do
 	[ -n "$url" ] || continue
 	n=$((n + 1))
 	f=$(printf '%s/%02d' "$dir" $n)
-	if curl -sSL --compressed --max-time 30 -A "Mozilla/5.0 (X11; Linux) ub-corpus" \
+	if curl -sSL --compressed --max-time 30 -A "Mozilla/5.0 (X11; Linux) manx-corpus" \
 		-D "$f.hdr" -o "$f.html" "$url"
 	then
 		echo "$url" > "$f.url"

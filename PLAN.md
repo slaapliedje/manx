@@ -1,4 +1,4 @@
-# unix-browser — plan
+# Manx — plan
 
 A web browser for 68030 System V Unix: **Atari System V (ASV, UniSoft SVR4
 UE12) on the TT030** with the ATW800/2 card, and **AMIX (Amiga UNIX, SVR4)**.
@@ -98,10 +98,10 @@ transputer spike; see `docs/phase0-results.md`)
 - TLS: deferred validation, early requests for requests with nothing
   private, the fast/full-x25519/full offer ladder, a binary trust store
   (0.3 s load), learned intermediates, known leaves, session resumption. ✔
-- Entropy pool with an estimate; `ubtrust seed`. ✔
+- Entropy pool with an estimate; `manxtrust seed`. ✔
 - Every site in the campaign loads on the TT, cold and repeat; ~650 KB
   footprint. ✔
-- Left for later: a preload bundle of common intermediates (`ubtrust
+- Left for later: a preload bundle of common intermediates (`manxtrust
   learn`); 68030 assembly for RSA/ECDSA verification; testing on a real
   AMIX machine.
 

@@ -4,8 +4,8 @@
  * elements), without the parts that cost more than they give on a 68030
  * (the adoption agency algorithm, foster parenting, template contents).
  */
-#ifndef UB_TREE_H
-#define UB_TREE_H
+#ifndef MANX_TREE_H
+#define MANX_TREE_H
 
 #include "doc.h"
 #include "tokenizer.h"
@@ -39,4 +39,4 @@ void tree_text(void *ctx, const char *s, size_t n);
 /* End of input: nothing more to close explicitly. */
 void tree_end(struct tree *b);
 
-#endif /* UB_TREE_H */
+#endif /* MANX_TREE_H */

@@ -3,8 +3,8 @@
  * streams, for the HTML engine: text lines as text, items as links with
  * a (DIR)/(TXT)/... tag in front.
  */
-#ifndef UB_GOPHERMAP_H
-#define UB_GOPHERMAP_H
+#ifndef MANX_GOPHERMAP_H
+#define MANX_GOPHERMAP_H
 
 #include <stddef.h>
 
@@ -21,4 +21,4 @@ void gophermap_begin(struct gophermap *g,
 void gophermap_feed(struct gophermap *g, const unsigned char *s, size_t n);
 void gophermap_end(struct gophermap *g);
 
-#endif /* UB_GOPHERMAP_H */
+#endif /* MANX_GOPHERMAP_H */

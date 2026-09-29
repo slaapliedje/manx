@@ -33,7 +33,7 @@ OS      := os/sysv4
 # here needs the FPU
 CPU     := -m68030 -msoft-float
 OPT     ?= -O2
-CFLAGS  := -DUB_SYSV4 $(CPU) -std=gnu99 $(OPT) -fomit-frame-pointer -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers
+CFLAGS  := -DMANX_SYSV4 $(CPU) -std=gnu99 $(OPT) -fomit-frame-pointer -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers
 # BearSSL: no /dev/urandom, no 64-bit fast paths (the 68030 has none)
 BROPT   ?= -O2
 BRFLAGS := $(CPU) $(BROPT) -fomit-frame-pointer \
@@ -58,7 +58,7 @@ TLS_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard tls/*.c))
 HTML_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard text/*.c html/*.c style/*.c layout/*.c))
 
 SPIKES := $(B)/tlsbench
-TOOLS  := $(B)/ub $(B)/ufetch $(B)/ubtrust $(B)/uparse
+TOOLS  := $(B)/manx $(B)/ufetch $(B)/manxtrust $(B)/uparse
 FRONT_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard frontend/*.c))
 BENCH  := $(B)/bench_parse $(B)/bench_micro $(B)/bench_loops $(B)/bench_mem \
 	$(B)/bench_inflate
@@ -68,7 +68,7 @@ all: $(SPIKES) $(TOOLS) $(BENCH)
 $(B)/tlsbench: $(B)/spikes/tlsbench.o $(OS_OBJ) $(BR_LIB)
 	$(LD) -o $@ $^ $(LDLIBS)
 
-$(B)/ub: $(B)/src/ub.o $(FRONT_OBJ) $(HTML_OBJ) $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
+$(B)/manx: $(B)/src/manx.o $(FRONT_OBJ) $(HTML_OBJ) $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
 	$(LD) -o $@ $^ $(TERMLIB) $(LDLIBS)
 
 $(B)/ufetch: $(B)/src/ufetch.o $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
@@ -77,7 +77,7 @@ $(B)/ufetch: $(B)/src/ufetch.o $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
 $(B)/uparse: $(B)/src/uparse.o $(HTML_OBJ) $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
 	$(LD) -o $@ $^ $(LDLIBS)
 
-$(B)/bench_parse: $(B)/tests/bench_parse.o $(HTML_OBJ) $(OS_OBJ)
+$(B)/bench_parse: $(B)/tests/bench_parse.o $(HTML_OBJ) $(B)/net/url.o $(OS_OBJ)
 	$(LD) -o $@ $^ $(LDLIBS)
 
 $(B)/bench_micro: $(B)/tests/bench_micro.o $(B)/html/tags.o $(OS_OBJ)
@@ -92,7 +92,7 @@ $(B)/bench_inflate: $(B)/tests/bench_inflate.o $(B)/net/inflate.o $(OS_OBJ)
 $(B)/bench_mem: $(B)/tests/bench_mem.o $(OS_OBJ)
 	$(LD) -o $@ $^ $(LDLIBS)
 
-$(B)/ubtrust: $(B)/src/ubtrust.o $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
+$(B)/manxtrust: $(B)/src/manxtrust.o $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
 	$(LD) -o $@ $^ $(LDLIBS)
 
 $(BR_LIB): $(BR_OBJ)

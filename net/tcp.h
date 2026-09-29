@@ -1,6 +1,6 @@
 /* tcp.h - blocking TCP connections with timeouts on reads. */
-#ifndef UB_TCP_H
-#define UB_TCP_H
+#ifndef MANX_TCP_H
+#define MANX_TCP_H
 
 #include <stddef.h>
 
@@ -16,4 +16,4 @@ int tcp_write_all(int fd, const void *buf, size_t len);
 
 void tcp_close(int fd);
 
-#endif /* UB_TCP_H */
+#endif /* MANX_TCP_H */

@@ -2,8 +2,8 @@
  * http.h - HTTP/1.1 client messages: building requests and parsing
  * responses incrementally, as bytes arrive.
  */
-#ifndef UB_HTTP_H
-#define UB_HTTP_H
+#ifndef MANX_HTTP_H
+#define MANX_HTTP_H
 
 #include <stddef.h>
 #include "url.h"
@@ -68,4 +68,4 @@ int http_resp_eof(struct http_resp *r);
 int http_request(char *buf, size_t n, const char *method,
 	const struct url *u, const char *extra);
 
-#endif /* UB_HTTP_H */
+#endif /* MANX_HTTP_H */

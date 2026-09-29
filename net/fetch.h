@@ -1,8 +1,8 @@
 /*
  * fetch.h - get a document by URL: http, https, gopher, file.
  */
-#ifndef UB_FETCH_H
-#define UB_FETCH_H
+#ifndef MANX_FETCH_H
+#define MANX_FETCH_H
 
 #include <stddef.h>
 #include "url.h"
@@ -73,4 +73,4 @@ struct fetch_opts {
 int fetch_ex(const char *url, const char *method, const struct fetch_opts *opts,
 	const struct fetch_cb *cb, struct fetch_result *res);
 
-#endif /* UB_FETCH_H */
+#endif /* MANX_FETCH_H */

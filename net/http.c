@@ -15,7 +15,7 @@ enum {
 	S_CHUNK_SIZE, S_CHUNK_DATA, S_CHUNK_CRLF, S_TRAILER, S_DONE
 };
 
-#define USER_AGENT	"ub/0.1 (68030; System V)"
+#define USER_AGENT	"Manx/0.4 (68030; System V)"
 
 void http_resp_init(struct http_resp *r, const struct http_sink *sink,
 	int head_only)
