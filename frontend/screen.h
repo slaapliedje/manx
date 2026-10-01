@@ -77,6 +77,13 @@ void scr_url(const char *url);
 void scr_scroll(long top, long rows, long total);
 void scr_state(int can_back, int can_forward, int loading);
 
+/*
+ * A URL being typed, with the cursor at pos, shown in the URL field: 1, or
+ * 0 when the screen has no field (the caller shows it itself). NULL ends
+ * the editing.
+ */
+int scr_url_edit(const char *text, int pos);
+
 /* Leave the screen for a moment (e.g. to show a long message) and come
  * back. */
 void scr_suspend(void);

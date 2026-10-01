@@ -77,8 +77,12 @@ struct hist {
 static struct hist g_hist[HIST_MAX];
 static int g_nhist, g_hpos = -1;
 
+/* prompt_mask's flags */
+#define PM_MASK		1	/* show * for each character */
+#define PM_URL		2	/* in the window's URL field, if there is one */
+
 static int prompt(const char *label, char *buf, size_t n);
-static int prompt_mask(const char *label, char *buf, size_t n, int mask);
+static int prompt_mask(const char *label, char *buf, size_t n, int flags);
 static int confirm(const char *question);
 
 static int view_rows(void)
@@ -1253,7 +1257,8 @@ static void edit_text(struct field *f)
 		name = f->type == FT_PASSWORD ? "Password" : "Text";
 	snprintf(label, sizeof label, "%.40s: ", name);
 	snprintf(buf, sizeof buf, "%s", f->value ? f->value : "");
-	if (!prompt_mask(label, buf, sizeof buf, f->type == FT_PASSWORD))
+	if (!prompt_mask(label, buf, sizeof buf,
+		f->type == FT_PASSWORD ? PM_MASK : 0))
 		return;
 	forms_set_text(f, buf);
 	relayout_keep();
@@ -1509,9 +1514,9 @@ static int prompt(const char *label, char *buf, size_t n)
 	return prompt_mask(label, buf, n, 0);
 }
 
-/* A line editor on the status line: 1 when Enter was pressed. mask:
- * show * for each character (passwords). */
-static int prompt_mask(const char *label, char *buf, size_t n, int mask)
+/* A line editor on the status line (or, with PM_URL, in the window's URL
+ * field): 1 when Enter was pressed. */
+static int prompt_mask(const char *label, char *buf, size_t n, int flags)
 {
 	size_t len = strlen(buf), pos = len;
 	int r = scr_rows - 1, lw = (int)strlen(label);
@@ -1524,22 +1529,31 @@ static int prompt_mask(const char *label, char *buf, size_t n, int mask)
 		if ((int)pos > avail)
 			start = (int)pos - avail;
 		draw_status();
-		scr_fill(r, 0, scr_cols, ' ', 0);
-		scr_put(r, 0, label, lw, CA_BOLD);
-		if (mask) {
-			memset(stars, '*', len < sizeof stars ? len : sizeof stars - 1);
-			scr_put(r, lw, stars + start, (int)len - start, 0);
-		} else
-			scr_put(r, lw, buf + start, (int)len - start, 0);
-		scr_cursor(r, lw + (int)pos - start);
+		if ((flags & PM_URL) && scr_url_edit(buf, (int)pos))
+			scr_cursor(-1, -1);
+		else {
+			scr_fill(r, 0, scr_cols, ' ', 0);
+			scr_put(r, 0, label, lw, CA_BOLD);
+			if (flags & PM_MASK) {
+				memset(stars, '*', len < sizeof stars ? len
+					: sizeof stars - 1);
+				scr_put(r, lw, stars + start, (int)len - start, 0);
+			} else
+				scr_put(r, lw, buf + start, (int)len - start, 0);
+			scr_cursor(r, lw + (int)pos - start);
+		}
 		scr_flush(0);
 		k = scr_getkey(-1);
 		switch (k) {
 		case '\r':
 			scr_cursor(-1, -1);
+			if (flags & PM_URL)
+				scr_url_edit(NULL, 0);
 			return 1;
 		case 27: case 7: case 3: case K_CLOSE:
 			scr_cursor(-1, -1);
+			if (flags & PM_URL)
+				scr_url_edit(NULL, 0);
 			return 0;
 		case 8: case 127:
 			if (pos) {
@@ -1906,7 +1920,8 @@ int main(int argc, char **argv)
 			in[0] = '\0';
 			if (k == 'G')
 				snprintf(in, sizeof in, "%s", g_url);
-			if (prompt("URL or search: ", in, sizeof in) && in[0]) {
+			if (prompt_mask("URL or search: ", in, sizeof in, PM_URL)
+				&& in[0]) {
 				typed(in, go, sizeof go);
 				go_url(go);
 			}

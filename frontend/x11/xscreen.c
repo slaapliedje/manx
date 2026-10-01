@@ -92,6 +92,8 @@ static struct button buttons[] = {
 static int pressed = -1;		/* the button held down, or -1 */
 static int url_x, url_label_w;		/* the URL field: label at url_x */
 static char url_text[512];
+static char edit_text[1024];		/* a URL being typed into the field */
+static int editing, edit_pos;
 static long sc_top, sc_rows, sc_total;	/* the page, for the scrollbar */
 static int dragging, drag_dy;		/* the elevator, held */
 static int controls_dirty = 1, scroll_dirty = 1;
@@ -388,6 +390,21 @@ void scr_url(const char *url)
 	controls_dirty = 1;
 }
 
+int scr_url_edit(const char *text, int pos)
+{
+	if (text == NULL) {
+		editing = 0;
+		controls_dirty = 1;
+		return 1;
+	}
+	strncpy(edit_text, text, sizeof edit_text - 1);
+	edit_text[sizeof edit_text - 1] = '\0';
+	edit_pos = pos;
+	editing = 1;
+	controls_dirty = 1;
+	return 1;
+}
+
 void scr_state(int can_back, int can_forward, int loading)
 {
 	int on[NBUTTONS], i;
@@ -463,12 +480,32 @@ static void draw_controls(void)
 	XSetForeground(dpy, gc, px_fg);
 	XDrawString(dpy, win, gc, url_x, y, "URL:", 4);
 	if (fw > cw) {
-		n = (int)strlen(url_text);
-		if (n * cw > fw)
-			n = fw / cw;
-		XDrawString(dpy, win, gc, fx, y, url_text, n);
-		XSetForeground(dpy, gc, px_bg3);
+		const char *t = editing ? edit_text : url_text;
+		int fit = fw / cw - 1, start = 0;
+
+		/* being typed: the part around the cursor, and an OPEN LOOK
+		 * caret (a small triangle) under the insertion point */
+		if (editing && edit_pos > fit)
+			start = edit_pos - fit;
+		n = (int)strlen(t + start);
+		if (n > fit + 1)
+			n = fit + 1;
+		XDrawString(dpy, win, gc, fx, y, (char *)t + start, n);
+		XSetForeground(dpy, gc, editing ? px_fg : px_bg3);
 		XDrawLine(dpy, win, gc, fx, y + 3, fx + fw, y + 3);
+		if (editing) {
+			int cx = fx + (edit_pos - start) * cw;
+			XPoint p[3];
+
+			p[0].x = (short)(cx - 4);
+			p[0].y = (short)(y + 6);
+			p[1].x = (short)(cx + 4);
+			p[1].y = (short)(y + 6);
+			p[2].x = (short)cx;
+			p[2].y = (short)(y - 3);
+			XSetForeground(dpy, gc, px_fg);
+			XFillPolygon(dpy, win, gc, p, 3, Convex, CoordModeOrigin);
+		}
 	}
 	controls_dirty = 0;
 }

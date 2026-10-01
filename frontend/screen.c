@@ -702,3 +702,10 @@ void scr_state(int can_back, int can_forward, int loading)
 	(void)can_forward;
 	(void)loading;
 }
+
+int scr_url_edit(const char *text, int pos)
+{
+	(void)text;
+	(void)pos;
+	return 0;
+}
