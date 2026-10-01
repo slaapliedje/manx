@@ -997,7 +997,18 @@ static int enter(struct lay *L, nodeid id, int depth)
 		int i, n, dw;
 
 		block_break(L, 0);
-		open_line(L);
+		/* in a table cell that's a break owed: make it (a line opened
+		 * over the open one would lose what is on it) */
+		if (L->cell_break) {
+			int m = L->cell_break - 1;
+
+			L->cell_break = 0;
+			end_line(L);
+			if (m > L->pend_lines)
+				L->pend_lines = m;
+		}
+		if (!L->line_open)
+			open_line(L);
 		dw = text_w(L, "-", 1, 1);
 		n = (L->width - L->col) / (dw > 0 ? dw : 1);
 		for (i = 0; i < n; i++)

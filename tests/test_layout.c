@@ -123,6 +123,10 @@ int main(void)
 		"\xe4\xb8\xad\xe6\x96\x87\nabc\n");
 	check("nbsp keeps words", "<p>aaaa bbbb&nbsp;cc", 10, TCS_ASCII,
 		"aaaa\nbbbb cc\n");
+	/* a rule in a table cell breaks the row's line; what was before it
+	 * stays (it was lost: the rule's line was opened over it) */
+	check("hr in a cell", "<table><tr><td>before<hr>after<td>next</table>",
+		20, TCS_ASCII, "before\n--------------------\nafter  next\n");
 	check_links();
 	/* nor the space after it */
 	{
