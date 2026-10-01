@@ -1,7 +1,10 @@
 /*
- * layout.h - a document laid out for a text screen of a given width:
- * lines of terminal bytes (already in the terminal's character set),
- * attribute/link spans over them, the links, and the fragment anchors.
+ * layout.h - a document laid out for a screen of a given width: lines of
+ * bytes (already in the screen's character set), attribute/link spans
+ * over them, the links, and the fragment anchors.
+ *
+ * Widths are a terminal's columns, or, given struct lmetrics, whatever
+ * units it measures in (an X screen: pixels, with proportional fonts).
  */
 #ifndef MANX_LAYOUT_H
 #define MANX_LAYOUT_H
@@ -17,8 +20,14 @@ enum term_cs { TCS_ASCII, TCS_LATIN1, TCS_UTF8 };
 struct lline {
 	unsigned long off;		/* first byte in page.text */
 	unsigned short len;		/* bytes */
-	unsigned short indent;		/* blank columns before them */
+	unsigned short indent;		/* blank columns (units) before them */
 	unsigned long span;		/* the span in effect at off */
+};
+
+/* a line's height and baseline in units: only with metrics (a terminal's
+ * lines are all 1 high, and don't spend memory saying so) */
+struct lheight {
+	unsigned short height, ascent;
 };
 
 /* attr/link from off up to the next span's off */
@@ -26,7 +35,19 @@ struct lspan {
 	unsigned long off;
 	unsigned short link;		/* 1-based index into links, 0: none */
 	unsigned char attr;		/* SA_* */
-	unsigned char pad;
+	unsigned char face;		/* LF_* (only with metrics; else 0) */
+};
+
+/*
+ * How a screen with proportional fonts measures: the width of n bytes of
+ * text in the look of attr/face, and a line's height with its baseline
+ * (ascent). em is the unit of indents, a terminal column's worth.
+ */
+struct lmetrics {
+	int (*width)(void *ctx, int attr, int face, const char *s, int n);
+	int (*height)(void *ctx, int attr, int face, int *ascent);
+	void *ctx;
+	int em;
 };
 
 enum { LK_HREF = 1, LK_FIELD };
@@ -52,6 +73,8 @@ struct page {
 	unsigned long text_len, text_cap;
 	struct lline *lines;
 	unsigned long nlines, lines_cap;
+	struct lheight *heights;	/* NULL without metrics */
+	unsigned long heights_cap;
 	struct lspan *spans;
 	unsigned long nspans, spans_cap;
 	struct llink *links;
@@ -78,6 +101,10 @@ struct page {
 int layout_run(struct page *p, const struct doc *d, int width,
 	enum term_cs cs, unsigned long max_lines, size_t byte_cap,
 	const struct forms *fs);
+/* the same, measured by m (NULL: a terminal's columns, as layout_run) */
+int layout_run_m(struct page *p, const struct doc *d, int width,
+	enum term_cs cs, unsigned long max_lines, size_t byte_cap,
+	const struct forms *fs, const struct lmetrics *m);
 void layout_free(struct page *p);
 
 /* The span index in effect at text offset off, searching from span s. */

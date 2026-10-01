@@ -139,13 +139,40 @@ static void text_out(const struct doc *d, nodeid id, int *col)
 static void usage(void)
 {
 	fprintf(stderr, "usage: uparse [-d] [-l] [-t] [-s] [-c N] [-m cap_kb] "
-		"[-C charset] [-w width [-u|-a] [-r N]] FILE|URL|-\n");
+		"[-C charset] [-w width [-u|-a] [-r N] [-S]] FILE|URL|-\n");
 	exit(2);
+}
+
+/* the whole layout: lines, spans, links and anchors (a regression check:
+ * -S output must not change when the layout's code does) */
+static void dump_page(const struct page *pg)
+{
+	unsigned long i;
+
+	printf("page width %d lines %lu spans %lu links %lu anchors %lu "
+		"main %ld content %ld truncated %d\n", pg->width, pg->nlines,
+		pg->nspans, pg->nlinks, pg->nanchors, pg->main_line,
+		pg->content_line, pg->truncated);
+	for (i = 0; i < pg->nlines; i++)
+		printf("L %lu off %lu len %u indent %u span %lu\n", i,
+			pg->lines[i].off, pg->lines[i].len, pg->lines[i].indent,
+			pg->lines[i].span);
+	for (i = 0; i < pg->nspans; i++)
+		printf("S %lu off %lu attr %u link %u\n", i, pg->spans[i].off,
+			pg->spans[i].attr, pg->spans[i].link);
+	for (i = 0; i < pg->nlinks; i++)
+		printf("K %lu node %u kind %u line %lu col %u\n", i,
+			(unsigned)pg->links[i].node, pg->links[i].kind,
+			pg->links[i].line, pg->links[i].col);
+	for (i = 0; i < pg->nanchors; i++)
+		printf("A %lu node %u line %lu\n", i,
+			(unsigned)pg->anchors[i].node, pg->anchors[i].line);
 }
 
 int main(int argc, char **argv)
 {
 	int dump = 0, links = 0, text = 0, stats = 0, a, width = 0, reps = 1;
+	int structure = 0;
 	enum term_cs tcs = TCS_LATIN1;
 	size_t cap = 0;
 	const char *src;
@@ -167,6 +194,7 @@ int main(int argc, char **argv)
 			width = atoi(argv[++a]);
 		else if (strcmp(argv[a], "-r") == 0 && a + 1 < argc)
 			reps = atoi(argv[++a]);
+		else if (strcmp(argv[a], "-S") == 0) structure = 1;
 		else if (strcmp(argv[a], "-u") == 0) tcs = TCS_UTF8;
 		else if (strcmp(argv[a], "-a") == 0) tcs = TCS_ASCII;
 		else
@@ -253,6 +281,8 @@ int main(int argc, char **argv)
 		t1 = os_msec() - t1;
 		if (reps == 1)
 			layout_print(&pg, stdout);
+		if (structure)
+			dump_page(&pg);
 		if (stats || reps > 1)
 			printf("layout %lu lines  %lu spans  %lu links  %lu KB%s  "
 				"%lu ms each\n", pg.nlines, pg.nspans, pg.nlinks,

@@ -17,6 +17,9 @@
 #include "layout.h"
 #include "forms.h"
 
+static int fake_width(void *ctx, int attr, int face, const char *s, int n);
+static int fake_height(void *ctx, int attr, int face, int *ascent);
+
 static unsigned long s_rng;
 
 static unsigned long rnd(unsigned long n)
@@ -61,14 +64,25 @@ static char *dump_of(const unsigned char *s, size_t n, int chunked, size_t cap)
 	doc_dump(&d, f);
 	fclose(f);
 	if (!chunked) {
-		/* and lay it out: any width, charset, cap, line limit */
+		/* and lay it out: any width, charset, cap, line limit; half
+		 * the time in a made-up proportional font (pixels) */
 		static const enum term_cs cs[] = { TCS_ASCII, TCS_LATIN1, TCS_UTF8 };
+		static const struct lmetrics fake = { fake_width, fake_height, NULL, 7 };
+		const struct lmetrics *m = rnd(2) ? &fake : NULL;
 		struct page pg;
 
-		if (layout_run(&pg, &d, 1 + (int)rnd(200), cs[rnd(3)],
-			rnd(4) == 0 ? 1 + rnd(50) : 0,
-			rnd(4) == 0 ? 1 + rnd(20000) : 0, NULL) == 0) {
+		if (layout_run_m(&pg, &d, m ? 1 + (int)rnd(2000) : 1 + (int)rnd(200),
+			cs[rnd(3)], rnd(4) == 0 ? 1 + rnd(50) : 0,
+			rnd(4) == 0 ? 1 + rnd(20000) : 0, NULL, m) == 0) {
 			unsigned long i;
+
+			/* with metrics, every line has a height */
+			if (m && pg.nlines && pg.heights == NULL)
+				abort();
+			for (i = 0; m && i < pg.nlines; i++)
+				if (pg.heights[i].height == 0
+					|| pg.heights[i].ascent > pg.heights[i].height)
+					abort();
 
 			/* every line and span within the text */
 			for (i = 0; i < pg.nlines; i++)
@@ -119,6 +133,32 @@ static char *dump_of(const unsigned char *s, size_t n, int chunked, size_t cap)
 	}
 	doc_free(&d);
 	return out;
+}
+
+/* a made-up proportional font: widths by byte, bold wider, headings
+ * bigger, monospace even */
+static int fake_width(void *ctx, int attr, int face, const char *s, int n)
+{
+	int w = 0, i;
+
+	(void)ctx;
+	for (i = 0; i < n; i++)
+		w += (face & LF_MONO) ? 7 : 4 + ((unsigned char)s[i] % 6);
+	if (attr & SA_BOLD)
+		w += n;
+	if (face & LF_HMASK)
+		w += w / (face & LF_HMASK);
+	return w;
+}
+
+static int fake_height(void *ctx, int attr, int face, int *ascent)
+{
+	static const int h[4] = { 14, 22, 18, 15 };
+
+	(void)ctx;
+	(void)attr;
+	*ascent = h[face & LF_HMASK] - 3;
+	return h[face & LF_HMASK];
 }
 
 int main(int argc, char **argv)

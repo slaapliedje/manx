@@ -24,12 +24,19 @@ enum display {
 #define SA_FIELD	0x08	/* a form field */
 #define SA_MARK		0x10	/* drawn: a find match */
 
+/* faces (bits): which font a proportional screen draws with; a terminal
+ * ignores them */
+#define LF_HMASK	0x03	/* a heading, 1-3 */
+#define LF_MONO		0x04	/* fixed width: pre, code, kbd... */
+#define LF_ITALIC	0x08	/* em, i, cite... */
+
 struct style {
 	unsigned char display;
 	unsigned char margin;	/* blank lines before and after (blocks) */
 	unsigned char indent;	/* extra left indent of the content */
 	unsigned char attr;	/* SA_* added to the content */
 	unsigned char pre;	/* white space kept, lines as in the source */
+	unsigned char face;	/* LF_* */
 };
 
 /* The style of element id in d. */

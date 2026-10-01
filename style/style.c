@@ -119,6 +119,17 @@ static void make_table(void)
 		s->attr = rules[i].attr;
 		s->pre = rules[i].pre;
 	}
+	/* the faces */
+	table[TAG_H1].face = 1;
+	table[TAG_H2].face = 2;
+	table[TAG_H3].face = 3;
+	table[TAG_PRE].face = table[TAG_XMP].face = table[TAG_LISTING].face
+		= table[TAG_PLAINTEXT].face = table[TAG_CODE].face
+		= table[TAG_TT].face = table[TAG_KBD].face
+		= table[TAG_SAMP].face = LF_MONO;
+	table[TAG_EM].face = table[TAG_I].face = table[TAG_CITE].face
+		= table[TAG_VAR].face = table[TAG_DFN].face
+		= table[TAG_ADDRESS].face = LF_ITALIC;
 	table_ready = 1;
 }
 

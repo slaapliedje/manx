@@ -1,11 +1,16 @@
 /*
- * layout.c - block/inline flow onto a text grid.
+ * layout.c - block/inline flow onto a text grid, or onto a screen with
+ * proportional fonts.
  *
  * One walk over the tree. Text goes straight into page.text in the
- * terminal's character set; a line is a range of that text plus an
+ * screen's character set; a line is a range of that text plus an
  * indent, so when a word doesn't fit, only the line boundary moves (the
  * word's bytes stay where they are). Spans record where the attributes
- * or the link change.
+ * or the link (and, with metrics, the face) change.
+ *
+ * Widths are measured through struct lmetrics when there is one, and
+ * otherwise in terminal columns: every width below starts as a column
+ * count, which text_w() keeps or replaces by what the metrics say.
  */
 #include <stdio.h>
 #include <string.h>
@@ -19,7 +24,7 @@
 
 struct saved {
 	unsigned char attr, pre, tag, list;
-	unsigned char display, margin;
+	unsigned char display, margin, face;
 	unsigned long para_mark, para_line;	/* <p>: where it began */
 	unsigned short link;
 	short indent;
@@ -37,6 +42,9 @@ struct lay {
 	struct page *p;
 	const struct doc *d;
 	const struct forms *fs;
+	const struct lmetrics *m;	/* NULL: terminal columns */
+	int em;				/* an indent column, in units */
+	int face;			/* LF_* */
 	int width;
 	unsigned long max_lines;
 	int stop;
@@ -44,6 +52,7 @@ struct lay {
 	int line_open;
 	unsigned long line_off, line_span;
 	int line_indent;
+	int line_a, line_d;		/* its tallest ascent and descent */
 	int col;			/* columns used, indent included */
 	/* flow state */
 	int indent;
@@ -75,6 +84,7 @@ struct lay {
 static size_t used(const struct page *p)
 {
 	return p->text_cap + p->lines_cap * sizeof(struct lline)
+		+ p->heights_cap * sizeof(struct lheight)
 		+ p->spans_cap * sizeof(struct lspan)
 		+ p->links_cap * sizeof(struct llink)
 		+ p->anchors_cap * sizeof(struct lanchor);
@@ -120,6 +130,50 @@ static int grow(struct lay *L, void **arr, unsigned long *cap,
 	grow(L, (void **)&(L)->p->arr, &(L)->p->cap, need, \
 		sizeof(*(L)->p->arr), first)
 
+/* --- measuring ---------------------------------------------------------- */
+
+/* how wide n bytes of text are in the current look: cols on a terminal */
+static int text_w(const struct lay *L, const char *s, int n, int cols)
+{
+	return L->m ? L->m->width(L->m->ctx, L->attr, L->face, s, n) : cols;
+}
+
+static int space_w(const struct lay *L)
+{
+	return text_w(L, " ", 1, 1);
+}
+
+/* the open line is as tall as the current look, at least */
+static void note_height(struct lay *L)
+{
+	int h, a;
+
+	if (L->m == NULL)
+		return;
+	h = L->m->height(L->m->ctx, L->attr, L->face, &a);
+	if (a > L->line_a)
+		L->line_a = a;
+	if (h - a > L->line_d)
+		L->line_d = h - a;
+}
+
+/* a line's height and ascent: its own, or (blank) the plain look's */
+static int line_height(const struct lay *L, int content, int *ascent)
+{
+	int h;
+
+	if (L->m == NULL) {
+		*ascent = 0;
+		return 1;
+	}
+	if (content && L->line_a + L->line_d > 0) {
+		*ascent = L->line_a;
+		return L->line_a + L->line_d;
+	}
+	h = L->m->height(L->m->ctx, 0, 0, ascent);
+	return h;
+}
+
 static int put_bytes(struct lay *L, const char *s, size_t n)
 {
 	struct page *p = L->p;
@@ -140,22 +194,24 @@ static int put_bytes(struct lay *L, const char *s, size_t n)
 	return 0;
 }
 
-/* attr/link from here on */
+/* attr/link (and with metrics, the face) from here on */
 static void set_span(struct lay *L)
 {
 	struct page *p = L->p;
 	struct lspan *s;
+	unsigned char face = (unsigned char)(L->m ? L->face : 0);
 
 	if (p->nspans) {
 		s = &p->spans[p->nspans - 1];
-		if (s->attr == L->attr && s->link == L->link)
+		if (s->attr == L->attr && s->link == L->link && s->face == face)
 			return;
 		if (s->off == p->text_len) {
 			/* nothing shown with the last one: replace it */
 			s->attr = (unsigned char)L->attr;
 			s->link = L->link;
+			s->face = face;
 			if (p->nspans >= 2 && s[-1].attr == s->attr
-				&& s[-1].link == s->link)
+				&& s[-1].link == s->link && s[-1].face == s->face)
 				p->nspans--;
 			return;
 		}
@@ -166,7 +222,7 @@ static void set_span(struct lay *L)
 	s->off = p->text_len;
 	s->attr = (unsigned char)L->attr;
 	s->link = L->link;
-	s->pad = 0;
+	s->face = face;
 }
 
 static unsigned long cur_span(const struct lay *L)
@@ -189,13 +245,21 @@ static unsigned long here_line(const struct lay *L)
 }
 
 static void push_line(struct lay *L, unsigned long off, unsigned long len,
-	int indent, unsigned long span)
+	int indent, unsigned long span, int content)
 {
 	struct page *p = L->p;
 	struct lline *ln;
+	int a, h;
 
 	if (GROW(L, lines, lines_cap, p->nlines + 1, 256) < 0)
 		return;
+	if (L->m && GROW(L, heights, heights_cap, p->nlines + 1, 256) < 0)
+		return;
+	if (L->m) {
+		h = line_height(L, content, &a);
+		p->heights[p->nlines].height = (unsigned short)h;
+		p->heights[p->nlines].ascent = (unsigned short)a;
+	}
 	ln = &p->lines[p->nlines++];
 	ln->off = off;
 	ln->len = (unsigned short)(len > 0xFFFF ? 0xFFFF : len);
@@ -216,7 +280,7 @@ static void close_line_at(struct lay *L, unsigned long end)
 		while (end > L->line_off && t[end - 1] == ' ')
 			end--;
 	push_line(L, L->line_off, end - L->line_off, L->line_indent,
-		L->line_span);
+		L->line_span, 1);
 	L->line_open = 0;
 	L->blank_run = 0;
 }
@@ -236,7 +300,7 @@ static void open_line(struct lay *L)
 	/* the blank lines a block's margin asked for (never at the top) */
 	if (L->p->nlines) {
 		while (L->blank_run < L->pend_lines) {
-			push_line(L, L->p->text_len, 0, 0, cur_span(L));
+			push_line(L, L->p->text_len, 0, 0, cur_span(L), 0);
 			L->blank_run++;
 		}
 	}
@@ -246,25 +310,30 @@ static void open_line(struct lay *L)
 	L->line_open = 1;
 	L->line_off = L->p->text_len;
 	L->line_span = cur_span(L);
+	L->line_a = L->line_d = 0;
 	L->in_word = 0;
 	L->pend_space = 0;
 	if (L->marker_w) {
-		int a = L->attr;
+		int a = L->attr, f = L->face, mw;
 		unsigned short k = L->link;
 
 		/* the marker hangs left of the item's text, plain */
-		L->line_indent = ind - L->marker_w;
+		L->attr = 0;
+		L->face = 0;
+		L->link = 0;
+		mw = text_w(L, L->marker, L->marker_w, L->marker_w);
+		L->line_indent = ind - mw;
 		if (L->line_indent < 0)
 			L->line_indent = 0;
-		L->attr = 0;
-		L->link = 0;
 		set_span(L);
 		L->line_span = cur_span(L);
 		put_bytes(L, L->marker, (size_t)L->marker_w);
+		note_height(L);
 		L->attr = a;
+		L->face = f;
 		L->link = k;
 		set_span(L);
-		L->col = L->line_indent + L->marker_w;
+		L->col = L->line_indent + mw;
 		L->marker_w = 0;
 	} else {
 		L->line_indent = ind;
@@ -322,7 +391,9 @@ static void settle(struct lay *L, int w)
 	if (!L->line_open)
 		open_line(L);
 	if (L->pend_space) {
-		if (L->col + L->pend_space + w > L->width
+		int sw = space_w(L);
+
+		if (L->col + L->pend_space * sw + w > L->width
 			&& L->col > L->line_indent) {
 			end_line(L);
 			open_line(L);
@@ -332,7 +403,7 @@ static void settle(struct lay *L, int w)
 			struct page *p = L->p;
 
 			put_bytes(L, sp, (size_t)k);
-			L->col += k;
+			L->col += k * sw;
 			/* between two spans the space takes the plainer one's
 			 * look: no underline running into a link or out of it */
 			if (p->nspans >= 2
@@ -364,6 +435,8 @@ static void make_room(struct lay *L, int w)
 		L->line_open = 1;
 		L->line_off = L->word_off;
 		L->line_span = L->word_span;
+		L->line_a = L->line_d = 0;
+		note_height(L);
 		L->line_indent = L->indent > L->width / 2 ?
 			L->width / 2 : L->indent;
 		L->col = L->line_indent + wcols;
@@ -379,13 +452,14 @@ static void make_room(struct lay *L, int w)
 	}
 }
 
-/* one character of w columns, n bytes */
+/* one character of w columns (units), n bytes */
 static void put_char(struct lay *L, const char *b, int n, int w)
 {
 	settle(L, w);
 	if (L->col + w > L->width)
 		make_room(L, w);
 	put_bytes(L, b, (size_t)n);
+	note_height(L);
 	L->col += w;
 }
 
@@ -412,7 +486,7 @@ static void put_run(struct lay *L, const char *b, int n, int w)
 					k = (int)(q - b);
 					cw = ucs_width(cp);
 				}
-				put_char(L, b, k, cw);
+				put_char(L, b, k, text_w(L, b, k, cw));
 				b += k;
 			}
 			return;
@@ -420,6 +494,7 @@ static void put_run(struct lay *L, const char *b, int n, int w)
 		make_room(L, w);
 	}
 	put_bytes(L, b, (size_t)n);
+	note_height(L);
 	L->col += w;
 }
 
@@ -445,16 +520,18 @@ static void put_text(struct lay *L, const char *s)
 					open_line(L);
 				end_line(L);
 			} else if (c == '\t') {
-				int to;
+				int to, sw = space_w(L), tab = 8 * sw;
 
 				if (!L->line_open)
 					open_line(L);
 				to = L->line_indent
-					+ ((L->col - L->line_indent) / 8 + 1) * 8;
-				while (L->col < to && L->col < L->width)
-					put_char(L, " ", 1, 1);
+					+ ((L->col - L->line_indent) / tab + 1) * tab;
+				/* (only spaces that fit: one that wrapped would
+				 * start the line again, short of the stop) */
+				while (L->col < to && L->col + sw <= L->width)
+					put_char(L, " ", 1, sw);
 			} else if (c == ' ')
-				put_char(L, " ", 1, 1);
+				put_char(L, " ", 1, space_w(L));
 			continue;
 		}
 		if (c < 0x80) {
@@ -467,7 +544,8 @@ static void put_text(struct lay *L, const char *s)
 				s++;		/* a control character */
 				continue;
 			}
-			put_run(L, r, (int)(s - r), (int)(s - r));
+			put_run(L, r, (int)(s - r), text_w(L, r, (int)(s - r),
+				(int)(s - r)));
 			continue;
 		}
 		{
@@ -486,7 +564,7 @@ static void put_text(struct lay *L, const char *s)
 			}
 			if (cp >= 0x80 && cp <= 0x9F)
 				continue;
-			put_run(L, b, n, w);
+			put_run(L, b, n, text_w(L, b, n, w));
 		}
 	}
 }
@@ -708,8 +786,8 @@ static void render_input(struct lay *L, nodeid id)
 		size = 4;
 	if (size > 30)
 		size = 30;
-	if (size > L->width - 4)
-		size = L->width - 4;
+	if (size > L->width / L->em - 4)
+		size = L->width / L->em - 4;
 	if ((val == NULL || !*val) && !f) {
 		val = doc_attr(d, id, ATTR_PLACEHOLDER);
 		if (val == NULL)
@@ -916,14 +994,16 @@ static int enter(struct lay *L, nodeid id, int depth)
 		end_line(L);
 		return 0;
 	case TAG_HR: {
-		int i, w;
+		int i, n, dw;
 
 		block_break(L, 0);
 		open_line(L);
-		w = L->width - L->col;
-		for (i = 0; i < w; i++)
+		dw = text_w(L, "-", 1, 1);
+		n = (L->width - L->col) / (dw > 0 ? dw : 1);
+		for (i = 0; i < n; i++)
 			put_bytes(L, "-", 1);
-		L->col += w;
+		note_height(L);
+		L->col += n * dw;
 		end_line(L);
 		return 0;
 	}
@@ -987,6 +1067,7 @@ static int enter(struct lay *L, nodeid id, int depth)
 	sv->cell_mark = L->cell_mark;
 	sv->display = s.display;
 	sv->margin = s.margin;
+	sv->face = (unsigned char)L->face;
 
 	switch (s.display) {
 	case D_BLOCK:
@@ -1026,9 +1107,13 @@ static int enter(struct lay *L, nodeid id, int depth)
 		sv->para_mark = L->p->text_len;
 		sv->para_line = here_line(L);
 	}
-	L->indent += s.indent;
+	L->indent += s.indent * L->em;
 	if (s.pre)
 		L->pre = 1;
+	/* a heading's level replaces the one outside; the rest add up */
+	if (s.face & LF_HMASK)
+		L->face = (L->face & ~LF_HMASK) | (s.face & LF_HMASK);
+	L->face |= s.face & (LF_MONO | LF_ITALIC);
 	if (tag == TAG_UL || tag == TAG_OL || tag == TAG_MENU || tag == TAG_DIR) {
 		list_begin(L, id, tag);
 		sv->list = 1;
@@ -1100,6 +1185,7 @@ static void leave(struct lay *L, nodeid id, int depth)
 	}
 	L->attr = sv->attr;
 	L->pre = sv->pre;
+	L->face = sv->face;
 	L->link = sv->link;
 	L->link_mark = sv->link_mark;
 	L->indent = sv->indent;
@@ -1133,6 +1219,13 @@ int layout_run(struct page *p, const struct doc *d, int width,
 	enum term_cs cs, unsigned long max_lines, size_t byte_cap,
 	const struct forms *fs)
 {
+	return layout_run_m(p, d, width, cs, max_lines, byte_cap, fs, NULL);
+}
+
+int layout_run_m(struct page *p, const struct doc *d, int width,
+	enum term_cs cs, unsigned long max_lines, size_t byte_cap,
+	const struct forms *fs, const struct lmetrics *m)
+{
 	struct lay *L;
 	nodeid id;
 	int depth = 0;
@@ -1151,6 +1244,8 @@ int layout_run(struct page *p, const struct doc *d, int width,
 	L->p = p;
 	L->d = d;
 	L->fs = fs;
+	L->m = m;
+	L->em = m && m->em > 0 ? m->em : 1;
 	L->width = p->width;
 	L->max_lines = max_lines;
 	L->heading_line = -1;
@@ -1195,6 +1290,7 @@ void layout_free(struct page *p)
 {
 	xfree(p->text);
 	xfree(p->lines);
+	xfree(p->heights);
 	xfree(p->spans);
 	xfree(p->links);
 	xfree(p->anchors);
