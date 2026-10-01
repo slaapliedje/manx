@@ -94,7 +94,9 @@ manx                         # or: manx https://news.ycombinator.com/
 `xmanx` is the same browser in an X11 window, with controls in the OPEN
 LOOK manner of both systems' desktops (Back, Forward, Reload and Stop
 buttons, a URL field, a scrollbar with an elevator) and the mouse: a click
-follows a link, the wheel scrolls, the keys are the same. On Atari System V
+follows a link, the wheel scrolls, the keys are the same. The page is set
+in the server's Helvetica and Courier (the 75 dpi fonts of X11R5 and
+R6.3), headings bigger, italics italic. On Atari System V
 it opens `$DISPLAY` over TCP (`:0` becomes `thishost:0`), because AMIX's
 X11R5 library and ASV's X11R6.3 server have no local transport in common.
 
@@ -107,7 +109,8 @@ Settings go in `~/.manx/config`, one `key = value` a line, or as
 | `search` | where words typed at `g` go (DuckDuckGo Lite) |
 | `charset` | the terminal's: `utf-8`, `latin1`, `ascii` (otherwise the terminal is asked) |
 | `color`, `link_color` | `off` for none; the links' colour (cyan on a terminal, blue in a window) |
-| `font` | `xmanx`'s font, a fixed-width X font (`fixed`) |
+| `font` | `xmanx`'s font for its title and status lines, a fixed-width X font (`fixed`) |
+| `proportional` | `off`: `xmanx` shows the page in that font too, as on a terminal |
 | `cookies` | `off` for none |
 | `cache_kb` | the disk cache's size (2048; 0 for none) |
 | `cafile` | a PEM bundle to build the roots from |
@@ -120,9 +123,10 @@ Settings go in `~/.manx/config`, one `key = value` a line, or as
 Phases 0-4 of [PLAN.md](PLAN.md) are done: toolchain, network core, HTML
 engine, text browser, then forms, cookies, cache and gzip. Each has a
 write-up in [docs](docs), with measurements from the TT. Phase 5, the X11
-frontend, has begun: `xmanx` draws the text browser's screen in a window,
-with the mouse. Next: proportional fonts, then images, with the TT's
-transputers as an optional helper.
+frontend, is under way: `xmanx` has its window, controls and mouse, and
+sets pages in proportional fonts (the layout measures through the
+screen's font metrics; on a terminal it counts columns, unchanged).
+Next: images, with the TT's transputers as an optional helper.
 
 Tested on an Atari TT030 with Atari System V, and on AMIX 2.1 in an
 emulated Amiga 3000 (`tools/amix/`), where it loads Hacker News over HTTPS.

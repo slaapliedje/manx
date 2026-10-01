@@ -24,6 +24,7 @@
 #include <X11/keysym.h>
 #include "os.h"
 #include "entropy.h"
+#include "style.h"
 #include "screen.h"
 
 int scr_rows = 25, scr_cols = 80;
@@ -31,6 +32,8 @@ int scr_color = 1;
 int scr_link_color = 4;		/* blue: links on a white page */
 enum term_cs scr_cs = TCS_LATIN1;
 int scr_mouse_row, scr_mouse_col;
+int scr_mouse_x, scr_mouse_y;
+int scr_proportional = 1;
 long scr_scroll_target;
 const char *scr_font;
 const char *scr_needs = "an X display ($DISPLAY)";
@@ -58,6 +61,12 @@ static int closing;
 static int ctrl_h, bh, gx, gy, sb_x;
 
 static struct cell *cur, *nxt;		/* in the window / being built */
+static int px_mode;			/* the page in fonts, in a pane */
+static struct lmetrics metrics;		/* ... measured with these */
+static XFontStruct *find_font(const char *family, int bold, int slant, int px);
+static XFontStruct *face_font(int attr, int face);
+static int m_width(void *ctx, int attr, int face, const char *s, int n);
+static int m_height(void *ctx, int attr, int face, int *ascent);
 static int cur_row = -1, cur_col = -1;	/* where scr_cursor asked */
 static int drawn_row = -1, drawn_col = -1;	/* where the cursor is drawn */
 
@@ -254,6 +263,15 @@ int scr_open(const char *cs_env)
 	px_bg2 = color("#b2b2b2", px_bg, NULL);
 	px_bg3 = color("#7f7f7f", px_fg, NULL);
 	px_hi = color("white", px_bg, NULL);
+
+	/* the page in fonts, unless it's off or none is to be had */
+	px_mode = scr_proportional && find_font("helvetica", 0, 0, 12) != NULL;
+	if (scr_proportional && !px_mode)
+		px_mode = find_font("lucida", 0, 0, 12) != NULL;
+	metrics.width = m_width;
+	metrics.height = m_height;
+	metrics.ctx = NULL;
+	metrics.em = px_mode ? XTextWidth(face_font(0, 0), "0", 1) : 1;
 
 	win_w = 2 * PAD + scr_cols * cw + SBW;
 	win_h = gy + PAD + scr_rows * ch;
@@ -461,8 +479,20 @@ static void draw_button(const struct button *b, int down)
 	}
 	XSetForeground(dpy, gc, b->on ? px_fg : px_bg3);
 	XSetFont(dpy, gc, font->fid);
+	/* no grey on a mono screen: a grey stipple for a button that can't
+	 * act */
+	if (!b->on && px_bg3 == px_fg) {
+		static Pixmap grey;
+		static char bits[] = { 0x01, 0x02 };
+
+		if (grey == 0)
+			grey = XCreateBitmapFromData(dpy, win, bits, 2, 2);
+		XSetStipple(dpy, gc, grey);
+		XSetFillStyle(dpy, gc, FillStippled);
+	}
 	XDrawString(dpy, win, gc, x + (w - tw) / 2, y + 3 + ascent,
 		(char *)b->label, (int)strlen(b->label));
+	XSetFillStyle(dpy, gc, FillSolid);
 }
 
 /* the control area: the buttons, then "URL:" and the address on a line */
@@ -596,16 +626,278 @@ static void draw_scrollbar(void)
 	scroll_dirty = 0;
 }
 
+/* --- the page in fonts ---------------------------------------------------- */
+
+/*
+ * The pane is the cells' rows 1 to rows-2, in pixels. Each frame the page
+ * comes as runs of text (scr_text); flushing paints them, and any cell
+ * written over the pane (a menu), into a pixmap, and copies that to the
+ * window when it changed.
+ */
+#define PANE_IN	3			/* the page's left inset */
+
+struct run {
+	short x, y, a;			/* y: the line's top; a: its ascent */
+	unsigned char attr, face;
+	unsigned off, n;		/* in rtext */
+};
+
+static struct run *runs;
+static int nruns, runs_cap;
+static char *rtext;
+static unsigned rtext_len, rtext_cap;
+static unsigned long pane_sum = 1, drawn_sum;	/* what's in the pixmap */
+static Pixmap pane_pm;
+static int pm_w, pm_h;
+
+/* fonts by look: [bold][face] */
+static XFontStruct *faces[2][16];
+static unsigned char face_tried[2][16];
+
+static int pane_x(void) { return gx; }
+static int pane_y(void) { return gy + ch; }
+static int pane_wpx(void) { return scr_cols * cw; }
+static int pane_hpx(void) { return (scr_rows - 2) * ch; }
+
+/* a font for the look, by XLFD: family, weight, slant and pixel size,
+ * trying the sizes around it */
+static XFontStruct *find_font(const char *family, int bold, int slant, int px)
+{
+	static const int near[] = { 0, -1, 1, -2, 2, 3, -3 };
+	static const char slants[2][3] = { "r", "oi" };
+	char name[200];
+	size_t i, j;
+	XFontStruct *f;
+
+	for (j = 0; slants[slant ? 1 : 0][j]; j++)
+		for (i = 0; i < sizeof near / sizeof near[0]; i++) {
+			sprintf(name, "-*-%s-%s-%c-normal--%d-*-*-*-*-*-iso8859-1",
+				family, bold ? "bold" : "medium",
+				slants[slant ? 1 : 0][j], px + near[i]);
+			if ((f = XLoadQueryFont(dpy, name)) != NULL)
+				return f;
+		}
+	return NULL;
+}
+
+static XFontStruct *face_font(int attr, int face)
+{
+	int b = (attr & CA_BOLD) != 0, k = face & 15, h = face & LF_HMASK;
+	XFontStruct *f;
+
+	if (faces[b][k])
+		return faces[b][k];
+	if (!face_tried[b][k]) {
+		/* headings: bigger and bold; 12 pixels otherwise */
+		static const int sizes[4] = { 12, 18, 14, 12 };
+		int bold = b || h, slant = (face & LF_ITALIC) != 0;
+		const char *fam = (face & LF_MONO) ? "courier" : "helvetica";
+
+		face_tried[b][k] = 1;
+		f = find_font(fam, bold, slant, sizes[h]);
+		if (f == NULL && slant)
+			f = find_font(fam, bold, 0, sizes[h]);
+		if (f == NULL && !(face & LF_MONO))
+			f = find_font("lucida", bold, slant, sizes[h]);
+		faces[b][k] = f;
+	}
+	if (faces[b][k] == NULL)
+		/* no such font here: the cells' own */
+		faces[b][k] = b && bold ? bold : font;
+	return faces[b][k];
+}
+
+static int m_width(void *ctx, int attr, int face, const char *s, int n)
+{
+	(void)ctx;
+	return XTextWidth(face_font(attr & SA_BOLD ? CA_BOLD : 0, face),
+		(char *)s, n);
+}
+
+static int m_height(void *ctx, int attr, int face, int *ascent)
+{
+	XFontStruct *f = face_font(attr & SA_BOLD ? CA_BOLD : 0, face);
+
+	(void)ctx;
+	*ascent = f->ascent + 1;
+	return f->ascent + f->descent + 2;
+}
+
+const struct lmetrics *scr_metrics(void)
+{
+	return px_mode ? &metrics : NULL;
+}
+
+int scr_pane_w(void)
+{
+	return px_mode ? pane_wpx() - 2 * PANE_IN : scr_cols;
+}
+
+int scr_pane_h(void)
+{
+	return px_mode ? pane_hpx() : scr_rows - 2;
+}
+
+void scr_text(int x, int y, int ascent, const char *s, int n, int attr,
+	int face)
+{
+	struct run *r;
+
+	if (!px_mode) {
+		scr_put(1 + y, x, s, n, attr);
+		return;
+	}
+	if (n <= 0)
+		return;
+	if (nruns == runs_cap) {
+		int c = runs_cap ? runs_cap * 2 : 256;
+		struct run *q = xrealloc(runs, (size_t)c * sizeof *q);
+
+		if (q == NULL)
+			return;
+		runs = q;
+		runs_cap = c;
+	}
+	if (rtext_len + (unsigned)n > rtext_cap) {
+		unsigned c = rtext_cap ? rtext_cap * 2 : 8192;
+		char *q;
+
+		while (c < rtext_len + (unsigned)n)
+			c *= 2;
+		if ((q = xrealloc(rtext, c)) == NULL)
+			return;
+		rtext = q;
+		rtext_cap = c;
+	}
+	memcpy(rtext + rtext_len, s, (size_t)n);
+	r = &runs[nruns++];
+	r->x = (short)x;
+	r->y = (short)y;
+	r->a = (short)ascent;
+	r->attr = (unsigned char)attr;
+	r->face = (unsigned char)face;
+	r->off = rtext_len;
+	r->n = (unsigned)n;
+	rtext_len += (unsigned)n;
+}
+
+/* a checksum of the frame's pane: its runs, and the cells over it */
+static unsigned long pane_checksum(void)
+{
+	unsigned long h = 5381;
+	const unsigned char *p;
+	size_t i, n;
+
+	p = (const unsigned char *)runs;
+	n = (size_t)nruns * sizeof *runs;
+	for (i = 0; i < n; i++)
+		h = h * 33 + p[i];
+	for (i = 0; i < rtext_len; i++)
+		h = h * 33 + (unsigned char)rtext[i];
+	p = (const unsigned char *)(nxt + scr_cols);
+	n = (size_t)(scr_rows - 2) * (size_t)scr_cols * sizeof *nxt;
+	for (i = 0; i < n; i++)
+		h = h * 33 + p[i];
+	return h | 1;
+}
+
+/* one run, into the pixmap */
+static void paint_run(const struct run *r)
+{
+	XFontStruct *f = face_font(r->attr, r->face);
+	int x = PANE_IN + r->x, base = r->y + r->a;
+	int w = XTextWidth(f, rtext + r->off, (int)r->n);
+	unsigned long fg = px_fg, bg = px_bg;
+	int fill = 0;
+
+	if ((r->attr & CA_LINK) && link_px_ok)
+		fg = px_link[scr_link_color & 7];
+	if (r->attr & CA_REV) {
+		bg = fg;
+		fg = px_bg;
+		fill = 1;
+	}
+	if (r->attr & CA_MARK) {
+		fg = px_fg;
+		bg = px_mark;
+		fill = 1;
+	}
+	if (fill) {
+		XSetForeground(dpy, gc, bg);
+		XFillRectangle(dpy, pane_pm, gc, x - 1, base - f->ascent, (unsigned)(w + 2),
+			(unsigned)(f->ascent + f->descent));
+	}
+	XSetForeground(dpy, gc, fg);
+	XSetFont(dpy, gc, f->fid);
+	XDrawString(dpy, pane_pm, gc, x, base, rtext + r->off, (int)r->n);
+	if ((r->attr & CA_UNDER) || ((r->attr & CA_LINK) && !(r->attr & CA_MARK)))
+		XDrawLine(dpy, pane_pm, gc, x, base + 1, x + w - 1, base + 1);
+}
+
+/* the pane, painted afresh: the page's runs, then the cells over them */
+static void paint_pane(void)
+{
+	int w = pane_wpx(), h = pane_hpx(), i, r, c;
+	Window root;
+	int dx, dy;
+	unsigned int bw, depth, pw, ph;
+
+	if (w <= 0 || h <= 0)
+		return;
+	if (pane_pm == 0 || pm_w != w || pm_h != h) {
+		if (pane_pm)
+			XFreePixmap(dpy, pane_pm);
+		XGetGeometry(dpy, win, &root, &dx, &dy, &pw, &ph, &bw, &depth);
+		pane_pm = XCreatePixmap(dpy, win, (unsigned)w, (unsigned)h, depth);
+		pm_w = w;
+		pm_h = h;
+	}
+	XSetForeground(dpy, gc, px_bg);
+	XFillRectangle(dpy, pane_pm, gc, 0, 0, (unsigned)w, (unsigned)h);
+	for (i = 0; i < nruns; i++)
+		paint_run(&runs[i]);
+	/* cells written over the pane this frame (ch 0: none) */
+	for (r = 1; r < scr_rows - 1; r++) {
+		const struct cell *cl = nxt + (size_t)r * (size_t)scr_cols;
+
+		for (c = 0; c < scr_cols; c++) {
+			char b = (char)(cl[c].ch ? cl[c].ch : ' ');
+			unsigned long fg = px_fg, bg = px_bg;
+			int x = c * cw, y = (r - 1) * ch;
+
+			if (cl[c].ch == 0)
+				continue;
+			if ((cl[c].a & CA_LINK) && link_px_ok)
+				fg = px_link[scr_link_color & 7];
+			if (cl[c].a & CA_REV) {
+				unsigned long t = fg;
+
+				fg = bg;
+				bg = t;
+			}
+			XSetForeground(dpy, gc, fg);
+			XSetBackground(dpy, gc, bg);
+			XSetFont(dpy, gc, (cl[c].a & CA_BOLD) && bold ? bold->fid : font->fid);
+			XDrawImageString(dpy, pane_pm, gc, x, y + ascent, &b, 1);
+		}
+	}
+	drawn_sum = pane_sum;
+}
+
 /* --- cells ------------------------------------------------------------- */
 
 void scr_erase(void)
 {
 	size_t i, n = (size_t)scr_rows * (size_t)scr_cols;
 
+	/* over the pane, a cell nothing writes is none at all: the page
+	 * shows through */
 	for (i = 0; i < n; i++) {
-		nxt[i].ch = ' ';
+		nxt[i].ch = px_mode ? 0 : ' ';
 		nxt[i].a = 0;
 	}
+	nruns = 0;
+	rtext_len = 0;
 }
 
 int scr_put(int row, int col, const char *s, int n, int attr)
@@ -720,8 +1012,23 @@ void scr_flush(int full)
 	/* the old cursor's cell comes back as it is */
 	if (drawn_row >= 0 && drawn_row < scr_rows && drawn_col < scr_cols)
 		cur[(size_t)drawn_row * (size_t)scr_cols + (size_t)drawn_col].a = 0xFF;
-	for (r = 0; r < scr_rows; r++)
-		flush_row(r, full);
+	if (px_mode) {
+		/* the title and status rows as cells; the pane as a picture */
+		pane_sum = pane_checksum();
+		if (full || pane_sum != drawn_sum || pane_pm == 0) {
+			paint_pane();
+			XCopyArea(dpy, pane_pm, win, gc, 0, 0, (unsigned)pm_w,
+				(unsigned)pm_h, pane_x(), pane_y());
+		}
+		for (r = 1; r < scr_rows - 1; r++)
+			memcpy(cur + (size_t)r * (size_t)scr_cols,
+				nxt + (size_t)r * (size_t)scr_cols,
+				(size_t)scr_cols * sizeof *cur);
+		flush_row(0, full);
+		flush_row(scr_rows - 1, full);
+	} else
+		for (r = 0; r < scr_rows; r++)
+			flush_row(r, full);
 	drawn_row = drawn_col = -1;
 	if (cur_row >= 0 && cur_row < scr_rows && cur_col >= 0 && cur_col < scr_cols) {
 		draw_run(cur_row, cur_col,
@@ -740,8 +1047,14 @@ static void redraw(void)
 	XClearWindow(dpy, win);
 	draw_controls();
 	draw_scrollbar();
+	if (px_mode && pane_pm)
+		XCopyArea(dpy, pane_pm, win, gc, 0, 0, (unsigned)pm_w,
+			(unsigned)pm_h, pane_x(), pane_y());
 	for (r = 0; r < scr_rows; r++) {
 		const struct cell *cl = cur + (size_t)r * (size_t)scr_cols;
+
+		if (px_mode && r > 0 && r < scr_rows - 1)
+			continue;
 
 		for (c = 0; c < scr_cols; ) {
 			int c1;
@@ -896,6 +1209,8 @@ static int event(void)
 			return scrollbar_press(y);
 		scr_mouse_row = (y - gy) / ch;
 		scr_mouse_col = (x - gx) / cw;
+		scr_mouse_x = x - pane_x() - PANE_IN;
+		scr_mouse_y = y - pane_y();
 		if (y < gy || x < gx || scr_mouse_row >= scr_rows
 			|| scr_mouse_col >= scr_cols)
 			return -1;

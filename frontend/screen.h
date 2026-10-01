@@ -33,6 +33,8 @@ extern enum term_cs scr_cs;
 extern int scr_color;			/* 0: no colours even if available */
 extern int scr_link_color;		/* ANSI colour 0-7 for links (6: cyan) */
 extern int scr_mouse_row, scr_mouse_col;	/* where K_MOUSE was */
+extern int scr_mouse_x, scr_mouse_y;	/* ... in the page's pane, in units */
+extern int scr_proportional;		/* X11: draw the page in fonts (1) */
 extern long scr_scroll_target;		/* where K_SCROLL goes */
 extern const char *scr_font;		/* X11: the font (NULL: "fixed") */
 extern const char *scr_needs;		/* what scr_open needs, for errors */
@@ -83,6 +85,23 @@ void scr_state(int can_back, int can_forward, int loading);
  * the editing.
  */
 int scr_url_edit(const char *text, int pos);
+
+/*
+ * The page in proportional fonts (X11): the layout measures with
+ * scr_metrics(), and the page is drawn with scr_text() into a pane
+ * scr_pane_w() x scr_pane_h() units (pixels) between the title row and
+ * the status row; cells written over the pane (menus) lie on top of it.
+ * NULL from scr_metrics(): a screen of cells only, where the page goes
+ * through scr_put() like everything else.
+ */
+struct lmetrics;
+const struct lmetrics *scr_metrics(void);
+int scr_pane_w(void);
+int scr_pane_h(void);
+/* page text at x, y (the top of its line, whose baseline is ascent
+ * below): attr CA_*, face LF_* */
+void scr_text(int x, int y, int ascent, const char *s, int n, int attr,
+	int face);
 
 /* Leave the screen for a moment (e.g. to show a long message) and come
  * back. */

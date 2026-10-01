@@ -142,7 +142,13 @@ transputer spike; see `docs/phase0-results.md`)
 - Config file, bookmarks. ✔
 
 **Phase 5 — X11 frontend:** Xlib window, proportional fonts through the metrics
-interface, mouse, same features as text.
+interface, mouse, same features as text. Under way (2026-09-30): `xmanx`
+has its window, OPEN LOOK controls (both targets' desktops are OPEN LOOK;
+drawn on Xlib, as OLIT is AMIX's only and XView too big), the mouse, the
+URL typed in its field, and pages in the server's Helvetica and Courier
+through `struct lmetrics` (the terminal's layout is byte-identical to
+before on the corpus). Runs on ASV's Xatw (X11R6.3, 8-bit) and AMIX's
+Xdmi (X11R5, mono, in the emulator).
 
 **Phase 6 — images and transputer offload:** GIF, PNG, baseline JPEG,
 dithering to 8-bit; offload image decode / inflate / bignum to the T800s when

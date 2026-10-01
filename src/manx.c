@@ -85,9 +85,38 @@ static int prompt(const char *label, char *buf, size_t n);
 static int prompt_mask(const char *label, char *buf, size_t n, int flags);
 static int confirm(const char *question);
 
+/* a plain line's height, in the screen's units */
+static int plain_h(void)
+{
+	const struct lmetrics *m = scr_metrics();
+	int a;
+
+	return m ? m->height(m->ctx, 0, 0, &a) : 1;
+}
+
+/* the page's lines that fit on the screen from line top (past the end,
+ * as many plain lines as would) */
+static int lines_fit(long top)
+{
+	int h = scr_pane_h(), y = 0, n = 0;
+	long ln;
+
+	if (scr_metrics() == NULL)
+		return h;
+	if (g_have_page && g_page.heights)
+		for (ln = top < 0 ? 0 : top; ln < (long)g_page.nlines; ln++) {
+			y += g_page.heights[ln].height;
+			if (y > h)
+				return n > 0 ? n : 1;
+			n++;
+		}
+	n += (h - y) / plain_h();
+	return n > 0 ? n : 1;
+}
+
 static int view_rows(void)
 {
-	return scr_rows - 2;
+	return lines_fit(g_top);
 }
 
 /* --- text for the terminal ---------------------------------------------- */
@@ -173,6 +202,74 @@ static void draw_line(int row, long ln)
 			} else
 				c += (int)(m - l->off);
 			scr_put(row, c, p->text + m, (int)k, CA_MARK | CA_REV);
+		}
+	}
+}
+
+/* how wide text of line ln is, from byte off for n bytes, in its spans'
+ * looks (fonts) */
+static int text_w_px(const struct lline *l, unsigned long s, unsigned long off,
+	unsigned long n)
+{
+	const struct lmetrics *m = scr_metrics();
+	const struct page *p = &g_page;
+	unsigned long end = off + n;
+	int w = 0;
+
+	(void)l;
+	while (off < end) {
+		unsigned long next = end;
+		const struct lspan *sp;
+
+		s = layout_span_at(p, s, off);
+		sp = &p->spans[s];
+		if (s + 1 < p->nspans && p->spans[s + 1].off < end)
+			next = p->spans[s + 1].off;
+		w += m->width(m->ctx, sp->attr, sp->face, p->text + off,
+			(int)(next - off));
+		off = next;
+	}
+	return w;
+}
+
+/* line ln of the page in fonts, its top at y in the pane */
+static void draw_line_px(int y, long ln)
+{
+	const struct lmetrics *m = scr_metrics();
+	const struct page *p = &g_page;
+	const struct lline *l = &p->lines[ln];
+	const struct lheight *lh = &p->heights[ln];
+	unsigned long off = l->off, end = l->off + l->len, s = l->span;
+	int x = l->indent;
+
+	while (off < end) {
+		unsigned long next = end;
+		const struct lspan *sp;
+
+		s = layout_span_at(p, s, off);
+		sp = &p->spans[s];
+		if (s + 1 < p->nspans && p->spans[s + 1].off < end)
+			next = p->spans[s + 1].off;
+		/* (in fonts, italics and headings look like what they are:
+		 * no underline standing in for them, as on a terminal) */
+		scr_text(x, y, lh->ascent, p->text + off, (int)(next - off),
+			cell_attr(sp->attr & (sp->face & (LF_ITALIC | LF_HMASK) ?
+			~SA_UNDER : 0xFF), sp->link), sp->face);
+		x += m->width(m->ctx, sp->attr, sp->face, p->text + off,
+			(int)(next - off));
+		off = next;
+	}
+	/* a find match on this line */
+	if (ln == g_find_line && g_find[0]) {
+		unsigned long mo = (unsigned long)g_find_off;
+		size_t k = strlen(g_find);
+
+		if (mo >= l->off && mo + k <= end) {
+			unsigned long ms = layout_span_at(p, l->span, mo);
+
+			scr_text(l->indent + text_w_px(l, l->span, l->off, mo - l->off),
+				y, lh->ascent, p->text + mo, (int)k, CA_MARK | CA_REV,
+				p->spans[ms].face);
 		}
 	}
 }
@@ -269,7 +366,20 @@ static void draw(int full)
 	scr_put(0, 0, title, (int)strlen(title), CA_REV | CA_BOLD);
 	scr_put(0, scr_cols - n, pos, n, CA_REV);
 	scr_title(title);
-	if (g_have_page)
+	if (g_have_page && scr_metrics() && g_page.heights) {
+		/* in fonts: lines as tall as they are, while they fit */
+		int y = 0, h = scr_pane_h();
+		long ln;
+
+		for (ln = g_top; ln < (long)g_page.nlines; ln++) {
+			int lh = g_page.heights[ln].height;
+
+			if (y + lh > h)
+				break;
+			draw_line_px(y, ln);
+			y += lh;
+		}
+	} else if (g_have_page)
 		for (i = 0; i < rows; i++) {
 			long ln = g_top + i;
 
@@ -292,8 +402,9 @@ static void relayout(long max_lines)
 {
 	if (g_have_page)
 		layout_free(&g_page);
-	if (layout_run(&g_page, &g_doc, scr_cols, scr_cs,
-		(unsigned long)max_lines, 0, g_have_forms ? &g_forms : NULL) < 0) {
+	if (layout_run_m(&g_page, &g_doc, scr_metrics() ? scr_pane_w() : scr_cols,
+		scr_cs, (unsigned long)max_lines, 0, g_have_forms ? &g_forms : NULL,
+		scr_metrics()) < 0) {
 		g_have_page = 0;
 		message("out of memory for the layout", NULL);
 		return;
@@ -303,8 +414,20 @@ static void relayout(long max_lines)
 
 static long max_top(void)
 {
-	long m = (long)g_page.nlines - view_rows();
+	long m;
 
+	if (scr_metrics() && g_page.heights) {
+		/* the top from which the last lines fill the pane */
+		int y = 0, h = scr_pane_h();
+
+		for (m = (long)g_page.nlines - 1; m >= 0; m--) {
+			y += g_page.heights[m].height;
+			if (y > h)
+				return m + 1;
+		}
+		return 0;
+	}
+	m = (long)g_page.nlines - view_rows();
 	return m < 0 ? 0 : m;
 }
 
@@ -555,6 +678,7 @@ static const char help_html[] =
 	"charset = utf-8        the terminal's: utf-8, latin1, ascii\n"
 	"color = off            no colours\n"
 	"link_color = blue      links' colour (cyan; blue suits white)\n"
+	"proportional = off     xmanx: the page in a fixed font\n"
 	"cookies = off          no cookies\n"
 	"cache_kb = 2048        the disk cache's size (0: none)\n"
 	"cafile = FILE          the PEM bundle of trusted roots\n"
@@ -1094,7 +1218,7 @@ static void select_link(long k)
 /* a menu over the page: the chosen item, or -1 */
 static int menu(const char *title, char **items, int n, int cur)
 {
-	int rows = view_rows() - 2, w = (int)strlen(title), i, top = 0, k;
+	int rows = scr_rows - 4, w = (int)strlen(title), i, top = 0, k;
 
 	if (rows > n)
 		rows = n;
@@ -1106,7 +1230,7 @@ static int menu(const char *title, char **items, int n, int cur)
 	if (cur < 0 || cur >= n)
 		cur = 0;
 	for (;;) {
-		int r0 = 1 + (view_rows() - rows - 2) / 2, c0 = (scr_cols - w - 4) / 2;
+		int r0 = 1 + (scr_rows - 2 - rows - 2) / 2, c0 = (scr_cols - w - 4) / 2;
 
 		if (cur < top)
 			top = cur;
@@ -1425,10 +1549,54 @@ static long link_at(int row, int col)
 	return -1;
 }
 
+/* the link (0-based) under x, y of the pane, in fonts; or -1 */
+static long link_at_px(int x, int y)
+{
+	const struct lmetrics *m = scr_metrics();
+	const struct page *p = &g_page;
+	const struct lline *l;
+	unsigned long off, end, s;
+	long ln;
+	int ly = 0, c;
+
+	if (!g_have_page || !p->heights || x < 0 || y < 0)
+		return -1;
+	for (ln = g_top; ln < (long)p->nlines; ln++) {
+		if (y < ly + p->heights[ln].height)
+			break;
+		ly += p->heights[ln].height;
+	}
+	if (ln >= (long)p->nlines)
+		return -1;
+	l = &p->lines[ln];
+	off = l->off;
+	end = l->off + l->len;
+	s = l->span;
+	c = l->indent;
+	while (off < end) {
+		unsigned long next = end;
+		const struct lspan *sp;
+		int w;
+
+		s = layout_span_at(p, s, off);
+		sp = &p->spans[s];
+		if (s + 1 < p->nspans && p->spans[s + 1].off < end)
+			next = p->spans[s + 1].off;
+		w = m->width(m->ctx, sp->attr, sp->face, p->text + off,
+			(int)(next - off));
+		if (x >= c && x < c + w)
+			return sp->link ? (long)sp->link - 1 : -1;
+		c += w;
+		off = next;
+	}
+	return -1;
+}
+
 /* a click: on a link, follow it */
 static void click(int row, int col)
 {
-	long k = link_at(row, col);
+	long k = scr_metrics() ? link_at_px(scr_mouse_x, scr_mouse_y)
+		: link_at(row, col);
 
 	if (k < 0)
 		return;
@@ -1787,6 +1955,7 @@ int main(int argc, char **argv)
 	g_search = config_str("search", SEARCH_URL);
 	scr_color = config_bool("color", 1);
 	scr_font = config_str("font", NULL);
+	scr_proportional = config_bool("proportional", 1);
 	{
 		/* link_color: a colour name, or 0-7 (unset: the screen's own,
 		 * cyan on a terminal, blue in a window) */

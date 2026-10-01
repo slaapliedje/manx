@@ -34,6 +34,8 @@ int scr_color = 1;
 int scr_link_color = 6;
 enum term_cs scr_cs = TCS_ASCII;
 int scr_mouse_row, scr_mouse_col;
+int scr_mouse_x, scr_mouse_y;
+int scr_proportional;
 long scr_scroll_target;
 const char *scr_font;
 const char *scr_needs = "a terminal";
@@ -708,4 +710,28 @@ int scr_url_edit(const char *text, int pos)
 	(void)text;
 	(void)pos;
 	return 0;
+}
+
+/* (a terminal is all cells) */
+const struct lmetrics *scr_metrics(void)
+{
+	return NULL;
+}
+
+int scr_pane_w(void)
+{
+	return scr_cols;
+}
+
+int scr_pane_h(void)
+{
+	return scr_rows - 2;
+}
+
+void scr_text(int x, int y, int ascent, const char *s, int n, int attr,
+	int face)
+{
+	(void)ascent;
+	(void)face;
+	scr_put(1 + y, x, s, n, attr);
 }
