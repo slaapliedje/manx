@@ -46,7 +46,7 @@ else
 $(error TARGET must be host or sysv4)
 endif
 
-INC := -Ios -Inet -Itls -Itext -Ihtml -Istyle -Ilayout -Ifrontend -I$(BEARSSL)/inc
+INC := -Ios -Inet -Itls -Itext -Ihtml -Istyle -Ilayout -Iimage -Ifrontend -I$(BEARSSL)/inc
 
 OS_SRC := $(wildcard os/*.c) $(wildcard $(OS)/*.c)
 OS_OBJ := $(OS_SRC:%.c=$(B)/%.o)
@@ -58,6 +58,7 @@ BR_LIB := $(B)/libbearssl.a
 NET_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard net/*.c))
 TLS_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard tls/*.c))
 HTML_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard text/*.c html/*.c style/*.c layout/*.c))
+IMG_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard image/*.c))
 
 SPIKES := $(B)/tlsbench
 TOOLS  := $(B)/manx $(B)/ufetch $(B)/manxtrust $(B)/uparse
@@ -69,7 +70,7 @@ ifeq ($(X11),1)
 TOOLS  += $(B)/xmanx
 endif
 BENCH  := $(B)/bench_parse $(B)/bench_micro $(B)/bench_loops $(B)/bench_mem \
-	$(B)/bench_inflate
+	$(B)/bench_inflate $(B)/bench_image
 
 all: $(SPIKES) $(TOOLS) $(BENCH)
 
@@ -100,6 +101,9 @@ $(B)/bench_loops: $(B)/tests/bench_loops.o $(OS_OBJ)
 $(B)/bench_inflate: $(B)/tests/bench_inflate.o $(B)/net/inflate.o $(OS_OBJ)
 	$(LD) -o $@ $^ $(LDLIBS)
 
+$(B)/bench_image: $(B)/tests/bench_image.o $(IMG_OBJ) $(B)/net/inflate.o $(OS_OBJ)
+	$(LD) -o $@ $^ $(LDLIBS)
+
 $(B)/bench_mem: $(B)/tests/bench_mem.o $(OS_OBJ)
 	$(LD) -o $@ $^ $(LDLIBS)
 
@@ -123,7 +127,7 @@ $(B)/%.o: %.c
 TESTS := $(filter-out build/test/test_snprintf,\
 	$(patsubst tests/%.c,build/test/%,$(wildcard tests/test_*.c)))
 
-build/test/%: tests/%.c $(HTML_OBJ) $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
+build/test/%: tests/%.c $(HTML_OBJ) $(IMG_OBJ) $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
 	@mkdir -p build/test
 	$(CC) $(CFLAGS) $(INC) -o $@ $^ $(LDLIBS)
 
@@ -139,8 +143,11 @@ build/test/test_snprintf: tests/test_snprintf.c os/sysv4/snprintf.c
 INFLATE_PAGES = $(wordlist 1,6,$(wildcard build/corpus/*.html))
 
 test: $(TESTS) build/test/test_snprintf $(B)/tlsbench
-	@for t in $(filter-out build/test/test_inflate,$(TESTS)) build/test/test_snprintf; do $$t || exit 1; done
+	@for t in $(filter-out build/test/test_inflate build/test/test_image,$(TESTS)) build/test/test_snprintf; do $$t || exit 1; done
 	build/test/test_inflate $$(python3 tests/gen_deflate.py build/test/deflate $(INFLATE_PAGES))
+	@mkdir -p build/test/img
+	python3 tests/gen_images.py build/test/img > build/test/img/manifest
+	build/test/test_image build/test/img
 	$(B)/tlsbench 50 kat
 
 # the HTML engine under AddressSanitizer + UBSan, fed mutated corpus pages
@@ -152,8 +159,16 @@ build/fuzz/fuzz_html: tests/fuzz_html.c $(wildcard text/*.c html/*.c style/*.c l
 	cc -std=c99 -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=all \
 		-Ios -Itext -Ihtml -Istyle -Ilayout -Inet -o $@ $^
 
-fuzz: build/fuzz/fuzz_html
+build/fuzz/fuzz_image: tests/fuzz_image.c $(wildcard image/*.c) net/inflate.c os/mem.c
+	@mkdir -p build/fuzz
+	cc -std=c99 -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=all \
+		-Ios -Inet -Iimage -o $@ $^
+
+fuzz: build/fuzz/fuzz_html build/fuzz/fuzz_image
 	build/fuzz/fuzz_html $(FUZZ_ITERS) $(FUZZ_SEED) build/corpus/*.html
+	@mkdir -p build/test/img
+	python3 tests/gen_images.py build/test/img > build/test/img/manifest
+	build/fuzz/fuzz_image $(FUZZ_ITERS) $(FUZZ_SEED) build/test/img
 
 clean:
 	rm -rf build
