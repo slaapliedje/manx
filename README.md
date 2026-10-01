@@ -58,7 +58,7 @@ the settings makes every request wait.
 Everything also builds and runs on Linux, for development and tests:
 
 ```sh
-make                 # build/host/manx, manxtrust, ufetch, uparse, benchmarks
+make                 # build/host/manx, xmanx, manxtrust, ufetch, uparse, benchmarks
 make test            # unit tests, TLS known-answer tests
 make fuzz            # the HTML engine and layout under ASan/UBSan
 ```
@@ -67,8 +67,11 @@ For the 68030: one static AMIX program, which also runs on Atari System V
 through the `amx` module of [atari-sysv-sp1](https://github.com/slaapliedje/atari-sysv-sp1):
 
 ```sh
-make TARGET=sysv4    # build/sysv4/manx, manxtrust
+make TARGET=sysv4    # build/sysv4/manx, xmanx, manxtrust
 ```
+
+`X11=0` leaves `xmanx` out (it needs Xlib: AMIX's static X11R5 `libX11.a`
+for the 68030, `libX11` on Linux).
 
 This needs:
 - a modern m68k GCC (the mint cross compiler, `m68k-atari-mint-gcc` 15);
@@ -88,6 +91,11 @@ manxtrust seed               # SVR4 has no /dev/random: type for a while to seed
 manx                         # or: manx https://news.ycombinator.com/
 ```
 
+`xmanx` is the same browser in an X11 window, with the mouse: a click
+follows a link, the wheel scrolls, the keys are the same. On Atari System V
+it opens `$DISPLAY` over TCP (`:0` becomes `thishost:0`), because AMIX's
+X11R5 library and ASV's X11R6.3 server have no local transport in common.
+
 Settings go in `~/.manx/config`, one `key = value` a line, or as
 `MANX_KEY` in the environment:
 
@@ -96,7 +104,8 @@ Settings go in `~/.manx/config`, one `key = value` a line, or as
 | `start` | the start page |
 | `search` | where words typed at `g` go (DuckDuckGo Lite) |
 | `charset` | the terminal's: `utf-8`, `latin1`, `ascii` (otherwise the terminal is asked) |
-| `color`, `link_color` | `off` for none; the links' colour (`blue` suits a white background) |
+| `color`, `link_color` | `off` for none; the links' colour (cyan on a terminal, blue in a window) |
+| `font` | `xmanx`'s font, a fixed-width X font (`fixed`) |
 | `cookies` | `off` for none |
 | `cache_kb` | the disk cache's size (2048; 0 for none) |
 | `cafile` | a PEM bundle to build the roots from |
@@ -108,8 +117,10 @@ Settings go in `~/.manx/config`, one `key = value` a line, or as
 
 Phases 0-4 of [PLAN.md](PLAN.md) are done: toolchain, network core, HTML
 engine, text browser, then forms, cookies, cache and gzip. Each has a
-write-up in [docs](docs), with measurements from the TT. Next: the X11
-frontend, then images, with the TT's transputers as an optional helper.
+write-up in [docs](docs), with measurements from the TT. Phase 5, the X11
+frontend, has begun: `xmanx` draws the text browser's screen in a window,
+with the mouse. Next: proportional fonts, then images, with the TT's
+transputers as an optional helper.
 
 Tested on an Atari TT030 with Atari System V, and on AMIX 2.1 in an
 emulated Amiga 3000 (`tools/amix/`), where it loads Hacker News over HTTPS.

@@ -264,6 +264,7 @@ static void draw(int full)
 	n = (int)strlen(pos);
 	scr_put(0, 0, title, (int)strlen(title), CA_REV | CA_BOLD);
 	scr_put(0, scr_cols - n, pos, n, CA_REV);
+	scr_title(title);
 	if (g_have_page)
 		for (i = 0; i < rows; i++) {
 			long ln = g_top + i;
@@ -1121,7 +1122,7 @@ static int menu(const char *title, char **items, int n, int cur)
 			break;
 		case '\r': case K_RIGHT:
 			return cur;
-		case 27: case 7: case 3: case K_LEFT: case 'q':
+		case 27: case 7: case 3: case K_LEFT: case 'q': case K_CLOSE:
 			return -1;
 		}
 	}
@@ -1346,6 +1347,65 @@ static void follow(void)
 	go_url(buf);
 }
 
+/* the columns text of n bytes takes on the screen */
+static int text_cols(const char *t, size_t n)
+{
+	const char *e = t + n;
+	int c = 0;
+
+	if (scr_cs != TCS_UTF8)
+		return (int)n;
+	while (t < e)
+		c += ucs_width(utf8_get(&t));
+	return c;
+}
+
+/* the link (0-based) under screen row/col, or -1 */
+static long link_at(int row, int col)
+{
+	const struct page *p = &g_page;
+	const struct lline *l;
+	long ln = g_top + row - 1;
+	unsigned long off, end, s;
+	int c;
+
+	if (!g_have_page || row < 1 || row > view_rows() || ln >= (long)p->nlines)
+		return -1;
+	l = &p->lines[ln];
+	off = l->off;
+	end = l->off + l->len;
+	s = l->span;
+	c = l->indent;
+	while (off < end) {
+		unsigned long next = end;
+		const struct lspan *sp;
+		int w;
+
+		s = layout_span_at(p, s, off);
+		sp = &p->spans[s];
+		if (s + 1 < p->nspans && p->spans[s + 1].off < end)
+			next = p->spans[s + 1].off;
+		w = text_cols(p->text + off, (size_t)(next - off));
+		if (col >= c && col < c + w)
+			return sp->link ? (long)sp->link - 1 : -1;
+		c += w;
+		off = next;
+	}
+	return -1;
+}
+
+/* a click: on a link, follow it */
+static void click(int row, int col)
+{
+	long k = link_at(row, col);
+
+	if (k < 0)
+		return;
+	g_sel = k;
+	draw(0);
+	follow();
+}
+
 /* next link on screen (dir 1) or previous (-1), scrolling when there is
  * none on screen */
 static void move_link(int dir)
@@ -1452,7 +1512,7 @@ static int prompt_mask(const char *label, char *buf, size_t n, int mask)
 		case '\r':
 			scr_cursor(-1, -1);
 			return 1;
-		case 27: case 7: case 3:
+		case 27: case 7: case 3: case K_CLOSE:
 			scr_cursor(-1, -1);
 			return 0;
 		case 8: case 127:
@@ -1686,14 +1746,16 @@ int main(int argc, char **argv)
 	start = argc > 1 ? argv[1] : config_str("start", "about:start");
 	g_search = config_str("search", SEARCH_URL);
 	scr_color = config_bool("color", 1);
+	scr_font = config_str("font", NULL);
 	{
-		/* link_color: a colour name, or 0-7 */
+		/* link_color: a colour name, or 0-7 (unset: the screen's own,
+		 * cyan on a terminal, blue in a window) */
 		static const char *const names[] = { "black", "red", "green",
 			"yellow", "blue", "magenta", "cyan", "white" };
-		const char *lc = config_str("link_color", "cyan");
+		const char *lc = config_str("link_color", NULL);
 		int i;
 
-		for (i = 0; i < 8; i++)
+		for (i = 0; lc && i < 8; i++)
 			if (strcmp(lc, names[i]) == 0 || (lc[0] == '0' + i && !lc[1]))
 				scr_link_color = i;
 	}
@@ -1708,7 +1770,7 @@ int main(int argc, char **argv)
 	/* the first run builds the trust store: say so, it takes a minute */
 	tls_init(config_str("cafile", NULL), tls_note);
 	if (doc_init(&g_doc, 0) < 0 || scr_open(config_str("charset", NULL)) < 0) {
-		fprintf(stderr, "manx: needs a terminal\n");
+		fprintf(stderr, "manx: needs %s\n", scr_needs);
 		return 1;
 	}
 	if (argc > 1 && !strstr(start, "://") && strncmp(start, "about:", 6)) {
@@ -1750,8 +1812,17 @@ int main(int argc, char **argv)
 			g_msg[0] = '\0';
 		g_msg_sticky = 0;
 		switch (k) {
-		case 'q': case 'Q':
+		case 'q': case 'Q': case K_CLOSE:
 			quit = 1;
+			break;
+		case K_MOUSE:
+			click(scr_mouse_row, scr_mouse_col);
+			break;
+		case K_WHEELUP:
+			scroll_to(g_top - 3);
+			break;
+		case K_WHEELDN:
+			scroll_to(g_top + 3);
 			break;
 		case K_DOWN:
 			move_link(1);

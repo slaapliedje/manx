@@ -33,6 +33,9 @@ int scr_rows = 24, scr_cols = 80;
 int scr_color = 1;
 int scr_link_color = 6;
 enum term_cs scr_cs = TCS_ASCII;
+int scr_mouse_row, scr_mouse_col;
+const char *scr_font;
+const char *scr_needs = "a terminal";
 
 struct cell {
 	unsigned char b[4];
@@ -672,4 +675,9 @@ void scr_bell(void)
 {
 	ocap(c_bel ? c_bel : "\007");
 	oflush();
+}
+
+void scr_title(const char *title)
+{
+	(void)title;
 }

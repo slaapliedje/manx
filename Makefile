@@ -21,6 +21,7 @@ CFLAGS  := -std=c99 -O2 -g -Wall -Wextra -Wno-unused-parameter -Wno-missing-fiel
 BRFLAGS := -O2 -g
 LDLIBS  :=
 TERMLIB := -ltinfo
+X11LIB  := -lX11
 else ifeq ($(TARGET),sysv4)
 AMIX_SYSROOT ?= $(HOME)/dev/OpenUA/data/work/asv/amix/sysroot
 export AMIX_SYSROOT
@@ -40,6 +41,7 @@ BRFLAGS := $(CPU) $(BROPT) -fomit-frame-pointer \
 	-DBR_USE_URANDOM=0 -DBR_USE_UNIX_TIME=1 -DBR_64=0 -DBR_INT128=0 -DBR_UMUL128=0
 LDLIBS  := -lsocket
 TERMLIB := -ltermlib
+X11LIB  := -lX11
 else
 $(error TARGET must be host or sysv4)
 endif
@@ -60,6 +62,12 @@ HTML_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard text/*.c html/*.c style/*.c layou
 SPIKES := $(B)/tlsbench
 TOOLS  := $(B)/manx $(B)/ufetch $(B)/manxtrust $(B)/uparse
 FRONT_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard frontend/*.c))
+# xmanx: the same browser in an X11 window (X11=0 to leave it out)
+X11 ?= 1
+X11_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard frontend/x11/*.c))
+ifeq ($(X11),1)
+TOOLS  += $(B)/xmanx
+endif
 BENCH  := $(B)/bench_parse $(B)/bench_micro $(B)/bench_loops $(B)/bench_mem \
 	$(B)/bench_inflate
 
@@ -70,6 +78,9 @@ $(B)/tlsbench: $(B)/spikes/tlsbench.o $(OS_OBJ) $(BR_LIB)
 
 $(B)/manx: $(B)/src/manx.o $(FRONT_OBJ) $(HTML_OBJ) $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
 	$(LD) -o $@ $^ $(TERMLIB) $(LDLIBS)
+
+$(B)/xmanx: $(B)/src/manx.o $(X11_OBJ) $(HTML_OBJ) $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
+	$(LD) -o $@ $^ $(X11LIB) $(LDLIBS)
 
 $(B)/ufetch: $(B)/src/ufetch.o $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
 	$(LD) -o $@ $^ $(LDLIBS)

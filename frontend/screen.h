@@ -1,8 +1,10 @@
 /*
- * screen.h - a text screen through terminfo: raw keyboard, a cell buffer,
- * and flushes that send only what changed (it matters at 9600 baud and
- * over telnet). Not curses: SVR4 curses counts bytes as columns, which
- * breaks on UTF-8 terminals.
+ * screen.h - a screen of character cells: raw keyboard, a cell buffer,
+ * and flushes that send only what changed. Two implementations: the text
+ * screen through terminfo (screen.c; it matters at 9600 baud and over
+ * telnet; not curses: SVR4 curses counts bytes as columns, which breaks
+ * on UTF-8 terminals), and an X11 window (x11/xscreen.c), which adds the
+ * mouse.
  */
 #ifndef MANX_SCREEN_H
 #define MANX_SCREEN_H
@@ -12,7 +14,10 @@
 /* keys besides plain bytes */
 enum {
 	K_UP = 0x101, K_DOWN, K_LEFT, K_RIGHT, K_PGUP, K_PGDN, K_HOME, K_END,
-	K_BTAB, K_DEL, K_INS, K_F1
+	K_BTAB, K_DEL, K_INS, K_F1,
+	K_MOUSE,		/* button 1 at scr_mouse_row/col */
+	K_WHEELUP, K_WHEELDN,	/* the scroll wheel */
+	K_CLOSE			/* the window is being closed; repeats */
 };
 
 /* cell attributes */
@@ -26,6 +31,9 @@ extern int scr_rows, scr_cols;
 extern enum term_cs scr_cs;
 extern int scr_color;			/* 0: no colours even if available */
 extern int scr_link_color;		/* ANSI colour 0-7 for links (6: cyan) */
+extern int scr_mouse_row, scr_mouse_col;	/* where K_MOUSE was */
+extern const char *scr_font;		/* X11: the font (NULL: "fixed") */
+extern const char *scr_needs;		/* what scr_open needs, for errors */
 
 /*
  * Take over the terminal: raw mode, terminfo, the alternate screen.
@@ -53,6 +61,9 @@ void scr_flush(int full);
 int scr_getkey(int timeout_ms);
 
 void scr_bell(void);
+
+/* What the window is called (X11; a no-op on a terminal). */
+void scr_title(const char *title);
 
 /* Leave the screen for a moment (e.g. to show a long message) and come
  * back. */
