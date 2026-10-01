@@ -91,7 +91,9 @@ manxtrust seed               # SVR4 has no /dev/random: type for a while to seed
 manx                         # or: manx https://news.ycombinator.com/
 ```
 
-`xmanx` is the same browser in an X11 window, with the mouse: a click
+`xmanx` is the same browser in an X11 window, with controls in the OPEN
+LOOK manner of both systems' desktops (Back, Forward, Reload and Stop
+buttons, a URL field, a scrollbar with an elevator) and the mouse: a click
 follows a link, the wheel scrolls, the keys are the same. On Atari System V
 it opens `$DISPLAY` over TCP (`:0` becomes `thishost:0`), because AMIX's
 X11R5 library and ASV's X11R6.3 server have no local transport in common.

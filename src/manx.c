@@ -274,6 +274,10 @@ static void draw(int full)
 			draw_line(1 + i, ln);
 		}
 	draw_status();
+	/* the window's controls, where there are any */
+	scr_url(g_url);
+	scr_scroll(g_top, rows, g_have_page ? (long)g_page.nlines : 0);
+	scr_state(g_hpos > 0, g_hpos + 1 < g_nhist, g_loading);
 	scr_cursor(-1, -1);
 	scr_flush(full);
 }
@@ -425,7 +429,8 @@ static int stop_asked(void)
 	int k;
 
 	while ((k = scr_getkey(0)) >= 0)
-		if (k == 'z' || k == 27 || k == 3 || k == 7 || k == 'q')
+		if (k == 'z' || k == 27 || k == 3 || k == 7 || k == 'q'
+			|| k == K_CLOSE)
 			return 1;
 	return 0;
 }
@@ -1844,6 +1849,9 @@ int main(int argc, char **argv)
 			break;
 		case K_WHEELDN:
 			scroll_to(g_top + 3);
+			break;
+		case K_SCROLL:
+			scroll_to(scr_scroll_target);
 			break;
 		case K_DOWN:
 			move_link(1);

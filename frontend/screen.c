@@ -34,6 +34,7 @@ int scr_color = 1;
 int scr_link_color = 6;
 enum term_cs scr_cs = TCS_ASCII;
 int scr_mouse_row, scr_mouse_col;
+long scr_scroll_target;
 const char *scr_font;
 const char *scr_needs = "a terminal";
 
@@ -680,4 +681,24 @@ void scr_bell(void)
 void scr_title(const char *title)
 {
 	(void)title;
+}
+
+/* (a terminal has no controls) */
+void scr_url(const char *url)
+{
+	(void)url;
+}
+
+void scr_scroll(long top, long rows, long total)
+{
+	(void)top;
+	(void)rows;
+	(void)total;
+}
+
+void scr_state(int can_back, int can_forward, int loading)
+{
+	(void)can_back;
+	(void)can_forward;
+	(void)loading;
 }

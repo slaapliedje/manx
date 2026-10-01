@@ -1,7 +1,11 @@
 /*
  * xscreen.c - the screen of screen.h in an X11 window: the same cells,
- * drawn with a server font, plus the mouse. Raw Xlib, nothing newer than
- * X11R5 (AMIX's static libX11 talks to ASV's X11R6.3 server).
+ * drawn with a server font, plus the mouse and the window's controls in
+ * the OPEN LOOK manner, which both targets' desktops use (ASV's olvwm,
+ * AMIX's olwm): a control area with Back, Forward, Reload and Stop
+ * buttons and a URL field, and a scrollbar with an elevator. Raw Xlib,
+ * nothing newer than X11R5 (AMIX's static libX11 talks to ASV's X11R6.3
+ * server), and no toolkit: OLIT is AMIX's only and XView too big.
  *
  * X core fonts are 8-bit, so the page comes in Latin-1 whatever the
  * locale says.
@@ -27,10 +31,13 @@ int scr_color = 1;
 int scr_link_color = 4;		/* blue: links on a white page */
 enum term_cs scr_cs = TCS_LATIN1;
 int scr_mouse_row, scr_mouse_col;
+long scr_scroll_target;
 const char *scr_font;
 const char *scr_needs = "an X display ($DISPLAY)";
 
 #define PAD	2			/* pixels around the cells */
+#define SBW	17			/* the scrollbar's width */
+#define CPAD	4			/* around the control area's buttons */
 
 struct cell {
 	unsigned char ch;
@@ -46,12 +53,17 @@ static Atom wm_delete;
 static int win_w, win_h;		/* the window's size */
 static int closing;
 
+/* where things are: the control area (0..ctrl_h), the cells (from gx,
+ * gy), the scrollbar (sb_x..win_w, gy..win_h) */
+static int ctrl_h, bh, gx, gy, sb_x;
+
 static struct cell *cur, *nxt;		/* in the window / being built */
 static int cur_row = -1, cur_col = -1;	/* where scr_cursor asked */
 static int drawn_row = -1, drawn_col = -1;	/* where the cursor is drawn */
 
-/* the colours */
+/* the colours: the page, and OPEN LOOK's BG1-3 and highlight */
 static unsigned long px_fg, px_bg, px_mark, px_link[8];
+static unsigned long px_bg1, px_bg2, px_bg3, px_hi;
 static int link_px_ok;
 
 /* ANSI colours 0-7 for links, darkened for a white page */
@@ -59,6 +71,30 @@ static const char *const ansi_x[8] = {
 	"#000000", "#b00000", "#007000", "#806000",
 	"#0000c0", "#a000a0", "#007878", "#606060"
 };
+
+/* --- the controls' state ------------------------------------------------- */
+
+struct button {
+	const char *label;
+	int key;
+	int x, w;
+	int on;				/* it can act now */
+};
+
+static struct button buttons[] = {
+	{ "Back", 'u', 0, 0, 0 },
+	{ "Forward", 'f', 0, 0, 0 },
+	{ "Reload", 'r', 0, 0, 1 },
+	{ "Stop", 'z', 0, 0, 0 },
+};
+#define NBUTTONS ((int)(sizeof buttons / sizeof buttons[0]))
+
+static int pressed = -1;		/* the button held down, or -1 */
+static int url_x, url_label_w;		/* the URL field: label at url_x */
+static char url_text[512];
+static long sc_top, sc_rows, sc_total;	/* the page, for the scrollbar */
+static int dragging, drag_dy;		/* the elevator, held */
+static int controls_dirty = 1, scroll_dirty = 1;
 
 /* (XParseColor, not XAllocNamedColor: R5's sends "#rrggbb" to the server,
  * whose colour database knows only names) */
@@ -157,6 +193,24 @@ static int alloc_cells(void)
 	return 0;
 }
 
+/* where the buttons and the URL field go (they don't move with the width) */
+static void place_controls(void)
+{
+	int i, x = 6, r = bh / 2;
+
+	for (i = 0; i < NBUTTONS; i++) {
+		buttons[i].x = x;
+		buttons[i].w = XTextWidth(font, (char *)buttons[i].label,
+			(int)strlen(buttons[i].label)) + 2 * r + 8;
+		x += buttons[i].w + 8;
+	}
+	url_x = x + 8;
+	url_label_w = XTextWidth(font, "URL:", 4) + 6;
+	ctrl_h = bh + 2 * CPAD + 1;
+	gx = PAD;
+	gy = ctrl_h + PAD;
+}
+
 int scr_open(const char *cs_env)
 {
 	XSetWindowAttributes wa;
@@ -180,6 +234,8 @@ int scr_open(const char *cs_env)
 	cw = font->max_bounds.width;
 	ch = font->ascent + font->descent;
 	ascent = font->ascent;
+	bh = ch + 6;
+	place_controls();
 
 	px_fg = color("black", BlackPixel(dpy, scr), NULL);
 	px_bg = color("white", WhitePixel(dpy, scr), NULL);
@@ -191,26 +247,32 @@ int scr_open(const char *cs_env)
 		px_link[i] = color(ansi_x[i], px_fg, &ok);
 		link_px_ok &= ok;
 	}
+	/* OPEN LOOK's 3D look on a colour screen; outlines on a mono one */
+	px_bg1 = color("#cccccc", px_bg, NULL);
+	px_bg2 = color("#b2b2b2", px_bg, NULL);
+	px_bg3 = color("#7f7f7f", px_fg, NULL);
+	px_hi = color("white", px_bg, NULL);
 
-	win_w = 2 * PAD + scr_cols * cw;
-	win_h = 2 * PAD + scr_rows * ch;
+	win_w = 2 * PAD + scr_cols * cw + SBW;
+	win_h = gy + PAD + scr_rows * ch;
+	sb_x = win_w - SBW;
 	wa.background_pixel = px_bg;
 	wa.border_pixel = px_fg;
-	wa.event_mask = KeyPressMask | ButtonPressMask | ExposureMask
-		| StructureNotifyMask;
+	wa.event_mask = KeyPressMask | ButtonPressMask | ButtonReleaseMask
+		| ButtonMotionMask | ExposureMask | StructureNotifyMask;
 	win = XCreateWindow(dpy, RootWindow(dpy, scr), 0, 0,
 		(unsigned)win_w, (unsigned)win_h, 1, CopyFromParent, InputOutput,
 		CopyFromParent, CWBackPixel | CWBorderPixel | CWEventMask, &wa);
 
-	/* the window manager: steps of one cell, at least 20x5 */
+	/* the window manager: steps of one cell, at least 40x5 */
 	if ((sh = XAllocSizeHints()) != NULL) {
 		sh->flags = PResizeInc | PMinSize | PBaseSize;
 		sh->width_inc = cw;
 		sh->height_inc = ch;
-		sh->base_width = 2 * PAD;
-		sh->base_height = 2 * PAD;
-		sh->min_width = 2 * PAD + 20 * cw;
-		sh->min_height = 2 * PAD + 5 * ch;
+		sh->base_width = 2 * PAD + SBW;
+		sh->base_height = gy + PAD;
+		sh->min_width = sh->base_width + 40 * cw;
+		sh->min_height = sh->base_height + 5 * ch;
 	}
 	if ((wh = XAllocWMHints()) != NULL) {
 		wh->flags = InputHint;
@@ -267,9 +329,19 @@ void scr_resume(void)
 	scr_flush(1);
 }
 
+static int rows_fit(void)
+{
+	return (win_h - gy - PAD) / ch;
+}
+
+static int cols_fit(void)
+{
+	return (win_w - SBW - 2 * PAD) / cw;
+}
+
 int scr_check_size(void)
 {
-	int r = (win_h - 2 * PAD) / ch, c = (win_w - 2 * PAD) / cw;
+	int r = rows_fit(), c = cols_fit();
 
 	if (r < 3)
 		r = 3;
@@ -279,11 +351,13 @@ int scr_check_size(void)
 		r = 200;
 	if (c > 400)
 		c = 400;
+	sb_x = win_w - SBW;
 	if (r == scr_rows && c == scr_cols && cur)
 		return 0;
 	scr_rows = r;
 	scr_cols = c;
 	alloc_cells();
+	controls_dirty = scroll_dirty = 1;
 	return 1;
 }
 
@@ -301,6 +375,188 @@ void scr_title(const char *title)
 	else
 		strcpy(b, "Manx");
 	XStoreName(dpy, win, b);
+}
+
+/* --- the controls --------------------------------------------------------- */
+
+void scr_url(const char *url)
+{
+	if (url == NULL || strncmp(url, url_text, sizeof url_text - 1) == 0)
+		return;
+	strncpy(url_text, url, sizeof url_text - 1);
+	url_text[sizeof url_text - 1] = '\0';
+	controls_dirty = 1;
+}
+
+void scr_state(int can_back, int can_forward, int loading)
+{
+	int on[NBUTTONS], i;
+
+	on[0] = can_back;
+	on[1] = can_forward;
+	on[2] = !loading;
+	on[3] = loading;
+	for (i = 0; i < NBUTTONS; i++)
+		if (buttons[i].on != on[i]) {
+			buttons[i].on = on[i];
+			controls_dirty = 1;
+		}
+}
+
+void scr_scroll(long top, long rows, long total)
+{
+	if (top == sc_top && rows == sc_rows && total == sc_total)
+		return;
+	sc_top = top;
+	sc_rows = rows;
+	sc_total = total;
+	scroll_dirty = 1;
+}
+
+/* an OPEN LOOK button: an oblong, lit from the top left (pressed: from the
+ * bottom right); a label in grey when it can't act */
+static void draw_button(const struct button *b, int down)
+{
+	int x = b->x, y = CPAD, w = b->w, r = bh / 2;
+	unsigned long top = down ? px_bg3 : px_hi, bot = down ? px_hi : px_bg3;
+	int tw = XTextWidth(font, (char *)b->label, (int)strlen(b->label));
+
+	XSetForeground(dpy, gc, down ? px_bg2 : px_bg1);
+	XFillArc(dpy, win, gc, x, y, (unsigned)bh, (unsigned)bh, 90 * 64, 180 * 64);
+	XFillArc(dpy, win, gc, x + w - bh, y, (unsigned)bh, (unsigned)bh, -90 * 64, 180 * 64);
+	XFillRectangle(dpy, win, gc, x + r, y, (unsigned)(w - 2 * r), (unsigned)bh);
+	/* the upper half lit, the lower half in shadow */
+	XSetForeground(dpy, gc, top);
+	XDrawArc(dpy, win, gc, x, y, (unsigned)(bh - 1), (unsigned)(bh - 1), 90 * 64, 90 * 64);
+	XDrawArc(dpy, win, gc, x + w - bh, y, (unsigned)(bh - 1), (unsigned)(bh - 1), 45 * 64, 45 * 64);
+	XDrawLine(dpy, win, gc, x + r, y, x + w - r, y);
+	XSetForeground(dpy, gc, bot);
+	XDrawArc(dpy, win, gc, x, y, (unsigned)(bh - 1), (unsigned)(bh - 1), 180 * 64, 45 * 64);
+	XDrawArc(dpy, win, gc, x + w - bh, y, (unsigned)(bh - 1), (unsigned)(bh - 1), -90 * 64, 135 * 64);
+	XDrawLine(dpy, win, gc, x + r, y + bh - 1, x + w - r, y + bh - 1);
+	/* on a mono screen the 3D is lost: an outline instead */
+	if (px_bg1 == px_bg) {
+		XSetForeground(dpy, gc, px_fg);
+		XDrawArc(dpy, win, gc, x, y, (unsigned)(bh - 1), (unsigned)(bh - 1), 90 * 64, 180 * 64);
+		XDrawArc(dpy, win, gc, x + w - bh, y, (unsigned)(bh - 1), (unsigned)(bh - 1), -90 * 64, 180 * 64);
+		XDrawLine(dpy, win, gc, x + r, y, x + w - r, y);
+		XDrawLine(dpy, win, gc, x + r, y + bh - 1, x + w - r, y + bh - 1);
+	}
+	XSetForeground(dpy, gc, b->on ? px_fg : px_bg3);
+	XSetFont(dpy, gc, font->fid);
+	XDrawString(dpy, win, gc, x + (w - tw) / 2, y + 3 + ascent,
+		(char *)b->label, (int)strlen(b->label));
+}
+
+/* the control area: the buttons, then "URL:" and the address on a line */
+static void draw_controls(void)
+{
+	int i, fx = url_x + url_label_w, fw = win_w - 8 - fx, n, y = CPAD + 3 + ascent;
+
+	XSetForeground(dpy, gc, px_bg1);
+	XFillRectangle(dpy, win, gc, 0, 0, (unsigned)win_w, (unsigned)ctrl_h);
+	XSetForeground(dpy, gc, px_bg3);
+	XDrawLine(dpy, win, gc, 0, ctrl_h - 1, win_w, ctrl_h - 1);
+	for (i = 0; i < NBUTTONS; i++)
+		draw_button(&buttons[i], i == pressed);
+	XSetFont(dpy, gc, font->fid);
+	XSetForeground(dpy, gc, px_fg);
+	XDrawString(dpy, win, gc, url_x, y, "URL:", 4);
+	if (fw > cw) {
+		n = (int)strlen(url_text);
+		if (n * cw > fw)
+			n = fw / cw;
+		XDrawString(dpy, win, gc, fx, y, url_text, n);
+		XSetForeground(dpy, gc, px_bg3);
+		XDrawLine(dpy, win, gc, fx, y + 3, fx + fw, y + 3);
+	}
+	controls_dirty = 0;
+}
+
+/* the scrollbar's parts: anchors, the cable between them, and the
+ * elevator (up arrow, drag area, down arrow) on it */
+#define ANCHOR	6
+static int cable_top(void) { return gy + ANCHOR + 2; }
+static int cable_len(void) { return win_h - PAD - ANCHOR - 2 - cable_top(); }
+static int elev_h(void) { return 3 * (SBW - 3); }
+static long max_top(void) { return sc_total > sc_rows ? sc_total - sc_rows : 0; }
+
+static int elev_y(void)
+{
+	int room = cable_len() - elev_h();
+
+	if (room <= 0 || max_top() == 0)
+		return cable_top();
+	return cable_top() + (int)((long)room * (sc_top < max_top() ? sc_top
+		: max_top()) / max_top());
+}
+
+static void bevel(int x, int y, int w, int h, int down)
+{
+	XSetForeground(dpy, gc, down ? px_bg2 : px_bg1);
+	XFillRectangle(dpy, win, gc, x, y, (unsigned)w, (unsigned)h);
+	XSetForeground(dpy, gc, down ? px_bg3 : px_hi);
+	XDrawLine(dpy, win, gc, x, y, x + w - 1, y);
+	XDrawLine(dpy, win, gc, x, y, x, y + h - 1);
+	XSetForeground(dpy, gc, down ? px_hi : px_bg3);
+	XDrawLine(dpy, win, gc, x, y + h - 1, x + w - 1, y + h - 1);
+	XDrawLine(dpy, win, gc, x + w - 1, y, x + w - 1, y + h - 1);
+	if (px_bg1 == px_bg) {
+		XSetForeground(dpy, gc, px_fg);
+		XDrawRectangle(dpy, win, gc, x, y, (unsigned)(w - 1), (unsigned)(h - 1));
+	}
+}
+
+static void triangle(int cx, int cy, int up)
+{
+	XPoint p[3];
+	int s = (SBW - 3) / 3;
+
+	p[0].x = (short)(cx - s);
+	p[0].y = (short)(up ? cy + s / 2 : cy - s / 2);
+	p[1].x = (short)(cx + s);
+	p[1].y = p[0].y;
+	p[2].x = (short)cx;
+	p[2].y = (short)(up ? cy - s / 2 - 1 : cy + s / 2 + 1);
+	XSetForeground(dpy, gc, px_fg);
+	XFillPolygon(dpy, win, gc, p, 3, Convex, CoordModeOrigin);
+}
+
+static void draw_scrollbar(void)
+{
+	int x = sb_x, w = SBW, ct = cable_top(), cl = cable_len(), ey = elev_y();
+	int eh = elev_h(), part = eh / 3, cx = x + w / 2;
+
+	XSetForeground(dpy, gc, px_bg1);
+	XFillRectangle(dpy, win, gc, x, gy - PAD, (unsigned)w, (unsigned)(win_h - gy + PAD));
+	XSetForeground(dpy, gc, px_bg3);
+	XDrawLine(dpy, win, gc, x, gy - PAD, x, win_h);
+	/* the anchors */
+	bevel(x + 3, gy, w - 5, ANCHOR, 0);
+	bevel(x + 3, win_h - PAD - ANCHOR, w - 5, ANCHOR, 0);
+	/* the cable, darker where the page in view is */
+	if (cl > 0) {
+		XSetForeground(dpy, gc, px_bg3);
+		XFillRectangle(dpy, win, gc, cx - 1, ct, 3, (unsigned)cl);
+		if (sc_total > sc_rows && sc_total > 0) {
+			int py = ct + (int)((long)cl * sc_top / sc_total);
+			int ph = (int)((long)cl * sc_rows / sc_total);
+
+			if (ph < 2)
+				ph = 2;
+			XSetForeground(dpy, gc, px_fg);
+			XFillRectangle(dpy, win, gc, cx - 1, py, 3, (unsigned)ph);
+		}
+	}
+	/* the elevator */
+	bevel(x + 2, ey, w - 3, part, 0);
+	bevel(x + 2, ey + part, w - 3, part, dragging);
+	bevel(x + 2, ey + 2 * part, w - 3, eh - 2 * part, 0);
+	triangle(cx, ey + part / 2, 1);
+	triangle(cx, ey + 2 * part + (eh - 2 * part) / 2, 0);
+	XSetForeground(dpy, gc, px_bg3);
+	XDrawLine(dpy, win, gc, cx - 3, ey + part + part / 2, cx + 3, ey + part + part / 2);
+	scroll_dirty = 0;
 }
 
 /* --- cells ------------------------------------------------------------- */
@@ -353,7 +609,7 @@ void scr_cursor(int row, int col)
 static void draw_run(int row, int col, const struct cell *c, int n, int cursor)
 {
 	char buf[512];
-	int a = c->a, x = PAD + col * cw, y = PAD + row * ch + ascent, i;
+	int a = c->a, x = gx + col * cw, y = gy + row * ch + ascent, i;
 	unsigned long fg = px_fg, bg = px_bg;
 
 	if (n > (int)sizeof buf)
@@ -418,7 +674,12 @@ void scr_flush(int full)
 	if (full) {
 		XClearWindow(dpy, win);
 		drawn_row = drawn_col = -1;
+		controls_dirty = scroll_dirty = 1;
 	}
+	if (controls_dirty)
+		draw_controls();
+	if (scroll_dirty)
+		draw_scrollbar();
 	/* the old cursor's cell comes back as it is */
 	if (drawn_row >= 0 && drawn_row < scr_rows && drawn_col < scr_cols)
 		cur[(size_t)drawn_row * (size_t)scr_cols + (size_t)drawn_col].a = 0xFF;
@@ -440,6 +701,8 @@ static void redraw(void)
 	int r, c;
 
 	XClearWindow(dpy, win);
+	draw_controls();
+	draw_scrollbar();
 	for (r = 0; r < scr_rows; r++) {
 		const struct cell *cl = cur + (size_t)r * (size_t)scr_cols;
 
@@ -511,10 +774,62 @@ static int key_of(XKeyEvent *e)
 	return -1;			/* a modifier, or nothing we use */
 }
 
+static int button_at(int x, int y)
+{
+	int i;
+
+	if (y < CPAD || y >= CPAD + bh)
+		return -1;
+	for (i = 0; i < NBUTTONS; i++)
+		if (x >= buttons[i].x && x < buttons[i].x + buttons[i].w)
+			return i;
+	return -1;
+}
+
+/* a line on the elevator's drag area: where the page would start */
+static long drag_target(int y)
+{
+	int room = cable_len() - elev_h();
+	long t;
+
+	if (room <= 0 || max_top() == 0)
+		return 0;
+	t = (long)(y - drag_dy - cable_top()) * max_top() / room;
+	return t < 0 ? 0 : t > max_top() ? max_top() : t;
+}
+
+/* button 1 down on the scrollbar: K_SCROLL, or -1 (a drag begins) */
+static int scrollbar_press(int y)
+{
+	int ey = elev_y(), part = elev_h() / 3;
+	long page = sc_rows > 1 ? sc_rows - 1 : 1;
+
+	if (y < cable_top())
+		scr_scroll_target = 0;
+	else if (y >= win_h - PAD - ANCHOR - 2)
+		scr_scroll_target = max_top();
+	else if (y < ey)
+		scr_scroll_target = sc_top - page;
+	else if (y < ey + part)
+		scr_scroll_target = sc_top - 1;
+	else if (y < ey + 2 * part) {
+		dragging = 1;
+		drag_dy = y - ey;
+		scroll_dirty = 1;
+		draw_scrollbar();
+		return -1;
+	} else if (y < ey + elev_h())
+		scr_scroll_target = sc_top + 1;
+	else
+		scr_scroll_target = sc_top + page;
+	return K_SCROLL;
+}
+
 /* one event: a key, or -1 */
 static int event(void)
 {
 	XEvent ev;
+	int b, x, y;
 
 	XNextEvent(dpy, &ev);
 	switch (ev.type) {
@@ -529,12 +844,49 @@ static int event(void)
 			return K_WHEELDN;
 		if (ev.xbutton.button != Button1)
 			return -1;
-		scr_mouse_row = (ev.xbutton.y - PAD) / ch;
-		scr_mouse_col = (ev.xbutton.x - PAD) / cw;
-		if (ev.xbutton.y < PAD || ev.xbutton.x < PAD
-			|| scr_mouse_row >= scr_rows || scr_mouse_col >= scr_cols)
+		x = ev.xbutton.x;
+		y = ev.xbutton.y;
+		if (y < ctrl_h) {
+			/* a button acts when it is let go over it */
+			if ((b = button_at(x, y)) >= 0 && buttons[b].on) {
+				pressed = b;
+				draw_button(&buttons[b], 1);
+				return -1;
+			}
+			return x >= url_x ? 'G' : -1;
+		}
+		if (x >= sb_x)
+			return scrollbar_press(y);
+		scr_mouse_row = (y - gy) / ch;
+		scr_mouse_col = (x - gx) / cw;
+		if (y < gy || x < gx || scr_mouse_row >= scr_rows
+			|| scr_mouse_col >= scr_cols)
 			return -1;
 		return K_MOUSE;
+	case ButtonRelease:
+		if (ev.xbutton.button != Button1)
+			return -1;
+		if (dragging) {
+			dragging = 0;
+			draw_scrollbar();
+			return -1;
+		}
+		if (pressed >= 0) {
+			b = pressed;
+			pressed = -1;
+			draw_button(&buttons[b], 0);
+			if (button_at(ev.xbutton.x, ev.xbutton.y) == b && buttons[b].on)
+				return buttons[b].key;
+		}
+		return -1;
+	case MotionNotify:
+		if (!dragging)
+			return -1;
+		/* only where the pointer is now */
+		while (XCheckTypedWindowEvent(dpy, win, MotionNotify, &ev))
+			;
+		scr_scroll_target = drag_target(ev.xmotion.y);
+		return scr_scroll_target != sc_top ? K_SCROLL : -1;
 	case Expose:
 		if (ev.xexpose.count == 0)
 			redraw();
@@ -542,6 +894,7 @@ static int event(void)
 	case ConfigureNotify:
 		win_w = ev.xconfigure.width;
 		win_h = ev.xconfigure.height;
+		sb_x = win_w - SBW;
 		return -1;
 	case MappingNotify:
 		XRefreshKeyboardMapping(&ev.xmapping);
@@ -571,8 +924,7 @@ int scr_getkey(int timeout_ms)
 			if (k >= 0)
 				return k;
 			/* a size change: let the caller look */
-			if ((win_w - 2 * PAD) / cw != scr_cols
-				|| (win_h - 2 * PAD) / ch != scr_rows)
+			if (cols_fit() != scr_cols || rows_fit() != scr_rows)
 				return -1;
 		}
 		if (timeout_ms >= 0) {

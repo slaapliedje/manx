@@ -17,7 +17,8 @@ enum {
 	K_BTAB, K_DEL, K_INS, K_F1,
 	K_MOUSE,		/* button 1 at scr_mouse_row/col */
 	K_WHEELUP, K_WHEELDN,	/* the scroll wheel */
-	K_CLOSE			/* the window is being closed; repeats */
+	K_CLOSE,		/* the window is being closed; repeats */
+	K_SCROLL		/* the scrollbar: show from line scr_scroll_target */
 };
 
 /* cell attributes */
@@ -32,6 +33,7 @@ extern enum term_cs scr_cs;
 extern int scr_color;			/* 0: no colours even if available */
 extern int scr_link_color;		/* ANSI colour 0-7 for links (6: cyan) */
 extern int scr_mouse_row, scr_mouse_col;	/* where K_MOUSE was */
+extern long scr_scroll_target;		/* where K_SCROLL goes */
 extern const char *scr_font;		/* X11: the font (NULL: "fixed") */
 extern const char *scr_needs;		/* what scr_open needs, for errors */
 
@@ -64,6 +66,16 @@ void scr_bell(void);
 
 /* What the window is called (X11; a no-op on a terminal). */
 void scr_title(const char *title);
+
+/*
+ * The window's own controls (X11; a terminal has none, and these do
+ * nothing there): Back, Forward, Reload and Stop buttons, which send u,
+ * f, r and z, a URL field, which sends G when clicked, and a scrollbar,
+ * which sends K_SCROLL.
+ */
+void scr_url(const char *url);
+void scr_scroll(long top, long rows, long total);
+void scr_state(int can_back, int can_forward, int loading);
 
 /* Leave the screen for a moment (e.g. to show a long message) and come
  * back. */
