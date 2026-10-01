@@ -33,6 +33,7 @@ struct img_info {
 	int full_w, full_h;	/* the image's own size */
 	int alpha;		/* it has transparent pixels */
 	int scalable;		/* the decoder honours *shift (a JPEG) */
+	int interlaced;		/* rows come out of order (an interlaced GIF) */
 };
 
 struct img_sink {

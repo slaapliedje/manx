@@ -2,8 +2,9 @@
  * fuzz_image - the image decoders under ASan/UBSan: tests/gen_images.py's
  * images mutated (bit flips, bytes inserted, deleted or overwritten, cut
  * short), fed in random pieces, with random scale requests and sinks
- * that sometimes stop. Nothing may crash, read or write out of bounds,
- * send a row outside the image, or take long.
+ * that sometimes stop; half of them through image/pixels to a random
+ * screen format and size. Nothing may crash, read or write out of
+ * bounds, send a row outside the image, or take long.
  *
  *   fuzz_image ITERATIONS SEED DIR
  */
@@ -13,6 +14,7 @@
 #include <time.h>
 #include "os.h"
 #include "image.h"
+#include "pixels.h"
 
 static unsigned long s_rng = 1;
 
@@ -54,6 +56,61 @@ static int on_row(void *ctx, int y, const unsigned char *rgba)
 		sink ^= rgba[i];	/* (ASan: the whole row is readable) */
 	(void)sink;
 	return o->stop_at && ++o->rows >= o->stop_at ? -1 : 0;
+}
+
+/* through image/pixels */
+struct pxo {
+	int w, h, masked;
+	const struct px_format *f;
+};
+
+static int px_size(void *ctx, int w, int h, int masked)
+{
+	struct pxo *o = ctx;
+
+	if (w <= 0 || h <= 0)
+		abort();
+	o->w = w;
+	o->h = h;
+	o->masked = masked;
+	return rnd(50) == 0 ? -1 : 0;
+}
+
+static int px_row(void *ctx, int y, const unsigned char *px, const unsigned char *mask)
+{
+	struct pxo *o = ctx;
+	volatile unsigned char sink = 0;
+	size_t i, n = px_row_bytes(o->f, o->w);
+
+	if (y < 0 || y >= o->h || (o->masked && mask == NULL))
+		abort();
+	for (i = 0; i < n; i++)
+		sink ^= px[i];
+	for (i = 0; mask && i < ((size_t)o->w + 7) / 8; i++)
+		sink ^= mask[i];
+	(void)sink;
+	return rnd(200) == 0 ? -1 : 0;
+}
+
+static void random_format(struct px_format *f)
+{
+	static const int bpps[5] = { 1, 8, 16, 24, 32 };
+	int i;
+
+	memset(f, 0, sizeof *f);
+	f->kind = (enum px_kind)rnd(3);
+	f->bpp = bpps[rnd(5)];
+	f->byte_msb = (int)rnd(2);
+	f->bit_msb = (int)rnd(2);
+	f->mask[0] = rnd(2) ? 0xff000000UL : 0xf800UL;
+	f->mask[1] = rnd(2) ? 0xff0000UL : 0x7e0UL;
+	f->mask[2] = rnd(2) ? 0xff00UL : 0x1fUL;
+	for (i = 0; i < 3; i++)
+		f->levels[i] = 2 + (int)rnd(6);
+	if (f->kind == PX_GRAY)
+		f->levels[0] = 2 + (int)rnd(255);
+	for (i = 0; i < 256; i++)
+		f->pixel[i] = rnd(1UL << 30);
 }
 
 static unsigned char *slurp(const char *path, size_t *n)
@@ -110,6 +167,10 @@ int main(int argc, char **argv)
 		struct img_sink s;
 		struct img_dec *d;
 		struct out o;
+		struct px_format pf;
+		struct px_out po;
+		struct pxo pxo;
+		int use_px = (int)rnd(2);
 		clock_t t0 = clock();
 
 		memcpy(b, img[k], len);
@@ -143,6 +204,21 @@ int main(int argc, char **argv)
 		s.size = on_size;
 		s.row = on_row;
 		s.ctx = &o;
+		if (use_px) {
+			random_format(&pf);
+			memset(&po, 0, sizeof po);
+			memset(&pxo, 0, sizeof pxo);
+			pxo.f = &pf;
+			po.fmt = &pf;
+			po.want_w = rnd(3) ? 0 : (int)rnd(300);
+			po.want_h = rnd(3) ? 0 : (int)rnd(300);
+			po.max_w = rnd(2) ? 0 : 1 + (int)rnd(200);
+			po.max_h = rnd(4) ? 0 : 1 + (int)rnd(200);
+			po.size = px_size;
+			po.row = px_row;
+			po.ctx = &pxo;
+			px_sink(&po, &s);
+		}
 		d = img_new(img_sniff(b, len) != IMG_NONE ? img_sniff(b, len)
 			: (enum img_type)(1 + rnd(3)), &s, rnd(4) ? 0 : 4096 + rnd(65536));
 		if (d) {
@@ -157,6 +233,10 @@ int main(int argc, char **argv)
 			if (r == IMG_OK)
 				img_finish(d);
 			img_free(d);
+		}
+		if (use_px) {
+			px_finish(&po);
+			px_free(&po);
 		}
 		free(b);
 		if ((clock() - t0) / CLOCKS_PER_SEC > 2) {

@@ -212,6 +212,7 @@ static int frame_begin(struct img_dec *d, struct gif *g)
 	in.w = in.full_w = g->w;
 	in.h = in.full_h = g->h;
 	in.alpha = g->transp >= 0 || g->fx || g->fy || g->fw < g->w || g->fh < g->h;
+	in.interlaced = g->interlaced;
 	return d->sink.size(d->sink.ctx, &in, &shift) < 0 ? IMG_STOP : IMG_OK;
 }
 

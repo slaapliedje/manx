@@ -64,6 +64,28 @@ So on the TT the levers are:
 - showing rows as they come;
 - the transputers.
 
+## 6b: the pixel sink
+
+| Module | What it does |
+|---|---|
+| `image/pixels` | sits between a decoder and the screen: each row scaled to the size shown, dithered to the screen's colours and packed as its server packs pixels (1, 8, 16, 24 or 32 bits a pixel, either byte and bit order), so X takes it as it is. Size: the image's own, or `width`/`height` (one alone keeps the proportions), within a maximum (the pane's width). A JPEG decodes at the smallest of 1/2, 1/4, 1/8 that is still no smaller than shown. Scaling: a box filter, averaging as rows arrive in order; an interlaced GIF's rows come out of order, so there each target row is the nearest source row. Transparency becomes an X mask: a pixel is shown when at least half of what it covers is opaque. Colours: TrueColor straight through (any masks, the TT's 0xRRGGBBxx included); a colour cube, greys or black and white, and TrueColor channels under 8 bits, through an 8x8 ordered (Bayer) dither. That needs no state between rows, so any row order works, and costs a lookup and a comparison per channel |
+
+The decoders now say when rows come out of order (`img_info.interlaced`,
+set by GIF).
+
+| Test | Cases |
+|---|---|
+| `test_pixels` | 125 checks: the TT's 32-bit and a PC's 24-bit packing; 16-bit 565 and colour cubes of 6x6x6, 8x8x4 and 2x2x2, where an 8x8 tile of a flat colour must average to that colour (within a 64th of a level); black and white with a server whose black is 1, and both bit orders; box means, uneven groups (10 to 4), growing; nine size cases; JPEG scale choice; an interlaced GIF's order halved and at full size; masks with scaling and the alpha threshold; stopping; and 3000 random sizes, in order and interlaced, each target row sent exactly once |
+| `fuzz_image` | now half its iterations go through `image/pixels`, with a random format and size: 600,000 more clean |
+| `imgconv` | an image as a screen would get it, back out as a PPM, to look at |
+| `bench_image` | `-f FORMAT -w WIDTH`: time through `image/pixels` too |
+
+A real photo (1184x664, shown 320 wide) in 24-bit, a 6x6x6 cube, 4x4x4
+and black and white came out as they should. On the PC that takes 7 ms
+(the JPEG decodes at 1/2, then the box filter). Two of the three JPEG
+photos on the PC were progressive, which the decoder refuses: progressive
+support will be needed for real pages.
+
 ## The displays
 
 | Server | Depth | Images |
@@ -91,8 +113,8 @@ spend.
 
 ## Left for 6
 
-- 6b: the sink: scaling to the size shown, dithering for each display
-  above.
+- Timing 6b on the TT.
+- Progressive JPEG.
 - 6c: image boxes in the layout (size from `width`/`height` or the
   header); the terminal keeps `[alt]`.
 - 6d: fetching images after the page: interruptible, cached.
