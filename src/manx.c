@@ -510,6 +510,9 @@ static void load_string(const char *html, const char *url)
 	snprintf(g_url, sizeof g_url, "%s", url);
 	url_parse(url, &g_base);
 	g_ctype[0] = '\0';
+	/* (not what the page before came with) */
+	snprintf(g_info, sizeof g_info, "%s",
+		strncmp(url, "about:", 6) == 0 ? "Manx's own page" : "");
 	make_forms();
 	relayout(0);
 	g_top = 0;
@@ -520,7 +523,7 @@ static const char help_html[] =
 	"<title>Manx help</title><h1>Keys</h1><pre>"
 	"Up/Down        previous/next link\n"
 	"Right, Enter   follow the link\n"
-	"Left, u, BkSp  back\n"
+	"Left, u, BkSp  back             f         forward\n"
 	"Tab/Shift-Tab  next/previous link anywhere\n"
 	"Space, PgDn    page down        b, PgUp   page up\n"
 	"j/k            line down/up     Home/End  top/bottom\n"
@@ -825,6 +828,7 @@ static int load(const char *url_in, const struct fetch_opts *opts, int mode,
 	g_msg[0] = '\0';
 	snprintf(g_info, sizeof g_info, "%s%s  %lu KB%s%s",
 		res.tls ? "TLS" : strncmp(g_url, "gopher:", 7) == 0 ? "gopher"
+		: strncmp(g_url, "file:", 5) == 0 ? "a local file"
 		: "HTTP (not encrypted)", res.tls_resumed ? " (resumed)" : "",
 		(unsigned long)res.body_bytes / 1024, "",
 		g_doc.truncated || g_page.truncated ? "  truncated" : "");
@@ -951,6 +955,23 @@ static void back(void)
 	}
 	hist_save_pos();
 	g_hpos--;
+	h = &g_hist[g_hpos];
+	reload_entry(h, L_HISTORY);
+	scroll_to(h->top);
+	if (link_visible(h->sel))
+		g_sel = h->sel;
+}
+
+static void forward(void)
+{
+	struct hist *h;
+
+	if (g_hpos + 1 >= g_nhist) {
+		message("No page to go forward to.", NULL);
+		return;
+	}
+	hist_save_pos();
+	g_hpos++;
 	h = &g_hist[g_hpos];
 	reload_entry(h, L_HISTORY);
 	scroll_to(h->top);
@@ -1841,6 +1862,9 @@ int main(int argc, char **argv)
 			break;
 		case K_LEFT: case 'u': case 8: case 127:
 			back();
+			break;
+		case 'f':
+			forward();
 			break;
 		case ' ': case K_PGDN: case 6:
 			scroll_to(g_top + view_rows() - 1);
