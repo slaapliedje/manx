@@ -38,7 +38,20 @@ static const char *const frags[] = {
 	"\xC3", "\xE2\x82", "\xF0\x9F\x98", "\xFF", "\x00", "<html>", "<body>",
 	"</body></html>", "<head>", "<div", "<xmp>", "</xmp>", "<noscript>",
 	"<iframe>", "</iframe>", "<!DOCTYPE html>", "<![CDATA[", "]]>",
+	"<img src=x width=50 height=20>", "<img src=y alt=why>", "<img width=100%>",
+	"<a href=z><img src=q height=3000></a>", "<img src=w width=9999>",
 };
+
+/* the fake font's images: some of known size (by node), some not */
+static int fake_image(void *ctx, nodeid node, int *w, int *h)
+{
+	(void)ctx;
+	if (node % 3 == 0)
+		return 0;
+	*w = (int)(node * 37 % 900) + (node % 5 == 0 ? 0 : 1);
+	*h = (int)(node * 11 % 500) + 1;
+	return 1;
+}
 
 static char *dump_of(const unsigned char *s, size_t n, int chunked, size_t cap)
 {
@@ -67,13 +80,16 @@ static char *dump_of(const unsigned char *s, size_t n, int chunked, size_t cap)
 		/* and lay it out: any width, charset, cap, line limit; half
 		 * the time in a made-up proportional font (pixels) */
 		static const enum term_cs cs[] = { TCS_ASCII, TCS_LATIN1, TCS_UTF8 };
-		static const struct lmetrics fake = { fake_width, fake_height, NULL, 7 };
+		static const struct lmetrics fake = { fake_width, fake_height, NULL, 7,
+			fake_image, NULL };
 		const struct lmetrics *m = rnd(2) ? &fake : NULL;
 		struct page pg;
+		int lw = m ? 1 + (int)rnd(2000) : 1 + (int)rnd(200);
+		enum term_cs lcs = cs[rnd(3)];
+		unsigned long lmax = rnd(4) == 0 ? 1 + rnd(50) : 0;
+		size_t lcap = rnd(4) == 0 ? 1 + rnd(20000) : 0;
 
-		if (layout_run_m(&pg, &d, m ? 1 + (int)rnd(2000) : 1 + (int)rnd(200),
-			cs[rnd(3)], rnd(4) == 0 ? 1 + rnd(50) : 0,
-			rnd(4) == 0 ? 1 + rnd(20000) : 0, NULL, m) == 0) {
+		if (layout_run_m(&pg, &d, lw, lcs, lmax, lcap, NULL, m) == 0) {
 			unsigned long i;
 
 			/* with metrics, every line has a height */
@@ -92,6 +108,40 @@ static char *dump_of(const unsigned char *s, size_t n, int chunked, size_t cap)
 				if (pg.spans[i].off < pg.spans[i - 1].off
 					|| pg.spans[i].link > pg.nlinks)
 					abort();
+			/* images: only with metrics, whole, each a real one */
+			for (i = 0; i < pg.nspans; i++) {
+				unsigned long e = i + 1 < pg.nspans ? pg.spans[i + 1].off : pg.text_len, o;
+
+				if (!(pg.spans[i].face & LF_IMAGE))
+					continue;
+				if (!m || (e - pg.spans[i].off) % LAYOUT_IMG_BYTES)
+					abort();
+				for (o = pg.spans[i].off; o < e; o += LAYOUT_IMG_BYTES)
+					if (layout_image(&pg, pg.text + o) < 0)
+						abort();
+			}
+			/* each on a line (or the one still open when a line
+			 * limit stopped the layout) as tall as it */
+			for (i = 0; i < pg.nimages; i++) {
+				unsigned long ln = pg.images[i].line;
+
+				if (pg.images[i].w == 0 || pg.images[i].h == 0
+					|| ln > pg.nlines
+					|| (ln < pg.nlines && pg.heights[ln].ascent < pg.images[i].h)) {
+					FILE *ff = fopen("fuzz-fail.html", "wb");
+
+					fprintf(stderr, "image %lu: %ux%u on line %lu of %lu (ascent %d);"
+						" width %d cs %d max_lines %lu cap %lu: fuzz-fail.html\n",
+						i, pg.images[i].w, pg.images[i].h, ln, pg.nlines,
+						ln < pg.nlines ? pg.heights[ln].ascent : -1,
+						lw, (int)lcs, lmax, (unsigned long)lcap);
+					if (ff) {
+						fwrite(s, 1, n, ff);
+						fclose(ff);
+					}
+					abort();
+				}
+			}
 			layout_free(&pg);
 		}
 		/* the forms: collect, lay out with them, change, submit */

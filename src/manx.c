@@ -36,6 +36,7 @@
 #include "cookie.h"
 #include "config.h"
 #include "cache.h"
+#include "pageimg.h"
 #include <time.h>
 
 #define HIST_MAX	64
@@ -59,6 +60,12 @@ static char g_info[200];		/* how the page came (TLS etc.) */
 static struct forms g_forms;		/* its form fields */
 static int g_have_forms;
 static const char *g_search = SEARCH_URL;
+static int g_images = 1;		/* config images: show them (X11) */
+static int g_img_busy;			/* the page's images aren't all in */
+static int g_img_relayout;		/* sizes came in: lay out again */
+static unsigned long g_img_drawn, g_img_relaid;	/* when last drawn, laid out */
+static int g_keyq[16];			/* keys read while images loaded */
+static int g_nkeyq;
 
 /* loading */
 static int g_loading, g_started, g_gopher, g_aborted, g_unsupported;
@@ -206,12 +213,39 @@ static void draw_line(int row, long ln)
 	}
 }
 
+/* how wide n bytes at s are in span sp's look: text in its font, or the
+ * images the bytes stand for */
+static int run_w(const struct lspan *sp, const char *s, int n)
+{
+	const struct lmetrics *m = scr_metrics();
+
+	if (sp->face & LF_IMAGE)
+		return layout_images_w(&g_page, s, n);
+	return m->width(m->ctx, sp->attr, sp->face, s, n);
+}
+
+/* the images n bytes at s stand for, x across, sitting on the baseline
+ * base */
+static void draw_images(int x, int base, const char *s, int n, int attr)
+{
+	const struct page *p = &g_page;
+
+	for (; n >= LAYOUT_IMG_BYTES; s += LAYOUT_IMG_BYTES, n -= LAYOUT_IMG_BYTES) {
+		long k = layout_image(p, s);
+
+		if (k < 0)
+			continue;
+		scr_image_draw(pimg_screen(p, k), x, base - p->images[k].h,
+			p->images[k].w, p->images[k].h, attr);
+		x += p->images[k].w;
+	}
+}
+
 /* how wide text of line ln is, from byte off for n bytes, in its spans'
  * looks (fonts) */
 static int text_w_px(const struct lline *l, unsigned long s, unsigned long off,
 	unsigned long n)
 {
-	const struct lmetrics *m = scr_metrics();
 	const struct page *p = &g_page;
 	unsigned long end = off + n;
 	int w = 0;
@@ -225,8 +259,7 @@ static int text_w_px(const struct lline *l, unsigned long s, unsigned long off,
 		sp = &p->spans[s];
 		if (s + 1 < p->nspans && p->spans[s + 1].off < end)
 			next = p->spans[s + 1].off;
-		w += m->width(m->ctx, sp->attr, sp->face, p->text + off,
-			(int)(next - off));
+		w += run_w(sp, p->text + off, (int)(next - off));
 		off = next;
 	}
 	return w;
@@ -235,7 +268,6 @@ static int text_w_px(const struct lline *l, unsigned long s, unsigned long off,
 /* line ln of the page in fonts, its top at y in the pane */
 static void draw_line_px(int y, long ln)
 {
-	const struct lmetrics *m = scr_metrics();
 	const struct page *p = &g_page;
 	const struct lline *l = &p->lines[ln];
 	const struct lheight *lh = &p->heights[ln];
@@ -252,11 +284,14 @@ static void draw_line_px(int y, long ln)
 			next = p->spans[s + 1].off;
 		/* (in fonts, italics and headings look like what they are:
 		 * no underline standing in for them, as on a terminal) */
-		scr_text(x, y, lh->ascent, p->text + off, (int)(next - off),
-			cell_attr(sp->attr & (sp->face & (LF_ITALIC | LF_HMASK) ?
-			~SA_UNDER : 0xFF), sp->link), sp->face);
-		x += m->width(m->ctx, sp->attr, sp->face, p->text + off,
-			(int)(next - off));
+		if (sp->face & LF_IMAGE)
+			draw_images(x, y + lh->ascent, p->text + off, (int)(next - off),
+				cell_attr(sp->attr, sp->link));
+		else
+			scr_text(x, y, lh->ascent, p->text + off, (int)(next - off),
+				cell_attr(sp->attr & (sp->face & (LF_ITALIC | LF_HMASK) ?
+				~SA_UNDER : 0xFF), sp->link), sp->face);
+		x += run_w(sp, p->text + off, (int)(next - off));
 		off = next;
 	}
 	/* a find match on this line */
@@ -338,6 +373,12 @@ static void draw_status(void)
 		else if (k->kind == LK_FIELD)
 			describe_field(k->node, buf, sizeof buf);
 		xfree(u);
+	} else if (g_img_busy) {
+		int total, done;
+
+		pimg_count(&total, &done);
+		snprintf(buf, sizeof buf, "%s%simages %d of %d  (z: stop)", g_info,
+			g_info[0] ? "  " : "", done, total);
 	} else
 		snprintf(buf, sizeof buf, "%s", g_info);
 	scr_put(r, 0, buf, (int)strlen(buf), 0);
@@ -391,12 +432,34 @@ static void draw(int full)
 	/* the window's controls, where there are any */
 	scr_url(g_url);
 	scr_scroll(g_top, rows, g_have_page ? (long)g_page.nlines : 0);
-	scr_state(g_hpos > 0, g_hpos + 1 < g_nhist, g_loading);
+	scr_state(g_hpos > 0, g_hpos + 1 < g_nhist, g_loading || g_img_busy);
 	scr_cursor(-1, -1);
 	scr_flush(full);
 }
 
 /* --- the page ------------------------------------------------------------ */
+
+static struct lmetrics g_lm;		/* the screen's, with images' sizes */
+
+static int image_size(void *ctx, nodeid node, int *w, int *h)
+{
+	(void)ctx;
+	return pimg_size(node, w, h);
+}
+
+/* how the page is measured: the screen's metrics and, when it shows
+ * them, images' own sizes; NULL on a terminal */
+static const struct lmetrics *page_metrics(void)
+{
+	const struct lmetrics *m = scr_metrics();
+
+	if (m == NULL)
+		return NULL;
+	g_lm = *m;
+	g_lm.image = g_images && scr_pixels() ? image_size : NULL;
+	g_lm.image_ctx = NULL;
+	return &g_lm;
+}
 
 static void relayout(long max_lines)
 {
@@ -404,12 +467,15 @@ static void relayout(long max_lines)
 		layout_free(&g_page);
 	if (layout_run_m(&g_page, &g_doc, scr_metrics() ? scr_pane_w() : scr_cols,
 		scr_cs, (unsigned long)max_lines, 0, g_have_forms ? &g_forms : NULL,
-		scr_metrics()) < 0) {
+		page_metrics()) < 0) {
 		g_have_page = 0;
 		message("out of memory for the layout", NULL);
 		return;
 	}
 	g_have_page = 1;
+	/* (sizes may have changed: images to decode again) */
+	if (g_lm.image)
+		g_img_busy = 1;
 }
 
 static long max_top(void)
@@ -604,6 +670,7 @@ static int on_body(void *ctx, const unsigned char *d, size_t n)
 static void on_reset(void *ctx)
 {
 	(void)ctx;
+	pimg_end();
 	doc_free(&g_doc);
 	doc_init(&g_doc, 0);
 	g_started = 0;
@@ -634,6 +701,8 @@ static void load_string(const char *html, const char *url)
 		layout_free(&g_page);
 		g_have_page = 0;
 	}
+	pimg_end();
+	g_img_busy = 0;
 	doc_free(&g_doc);
 	doc_init(&g_doc, 0);
 	html_load_begin(&g_load, &g_doc, "utf-8", 0);
@@ -742,6 +811,9 @@ static void doc_reset(void)
 		layout_free(&g_page);
 		g_have_page = 0;
 	}
+	pimg_end();
+	g_img_busy = 0;
+	g_img_relayout = 0;
 	doc_free(&g_doc);
 	doc_init(&g_doc, 0);
 	g_started = g_gopher = g_aborted = g_unsupported = 0;
@@ -772,6 +844,7 @@ static void finish_doc(const char *frag)
 			g_base = b;
 	}
 	make_forms();
+	pimg_begin(&g_doc, &g_base, g_url);
 	relayout(0);
 	g_top = 0;
 	if (frag[0]) {
@@ -1552,7 +1625,6 @@ static long link_at(int row, int col)
 /* the link (0-based) under x, y of the pane, in fonts; or -1 */
 static long link_at_px(int x, int y)
 {
-	const struct lmetrics *m = scr_metrics();
 	const struct page *p = &g_page;
 	const struct lline *l;
 	unsigned long off, end, s;
@@ -1582,8 +1654,7 @@ static long link_at_px(int x, int y)
 		sp = &p->spans[s];
 		if (s + 1 < p->nspans && p->spans[s + 1].off < end)
 			next = p->spans[s + 1].off;
-		w = m->width(m->ctx, sp->attr, sp->face, p->text + off,
-			(int)(next - off));
+		w = run_w(sp, p->text + off, (int)(next - off));
 		if (x >= c && x < c + w)
 			return sp->link ? (long)sp->link - 1 : -1;
 		c += w;
@@ -1941,6 +2012,139 @@ static void tls_note(const char *msg)
 	fprintf(stderr, "%s\n", msg);
 }
 
+/* lay out again, keeping the same text at the top (lines may have moved) */
+static void relayout_same_text(void)
+{
+	unsigned long off = g_have_page && g_top < (long)g_page.nlines ?
+		g_page.lines[g_top].off : 0;
+	long i;
+
+	relayout(0);
+	for (i = 0; i + 1 < (long)g_page.nlines
+		&& g_page.lines[i + 1].off <= off; i++)
+		;
+	g_top = i;
+	scroll_to(g_top);
+}
+
+/* a key that only moves the view (scrolling, the selected link): done,
+ * 1; else 0 */
+static int view_key(int k)
+{
+	switch (k) {
+	case K_WHEELUP:
+		scroll_to(g_top - 3);
+		return 1;
+	case K_WHEELDN:
+		scroll_to(g_top + 3);
+		return 1;
+	case K_SCROLL:
+		scroll_to(scr_scroll_target);
+		return 1;
+	case K_DOWN:
+		move_link(1);
+		return 1;
+	case K_UP:
+		move_link(-1);
+		return 1;
+	case '\t':
+		jump_link(1);
+		return 1;
+	case K_BTAB:
+		jump_link(-1);
+		return 1;
+	case ' ': case K_PGDN: case 6:
+		scroll_to(g_top + view_rows() - 1);
+		return 1;
+	case 'b': case K_PGUP: case 2:
+		scroll_to(g_top - (view_rows() - 1));
+		return 1;
+	case 'j': case 5:
+		scroll_to(g_top + 1);
+		return 1;
+	case 'k': case 25:
+		scroll_to(g_top - 1);
+		return 1;
+	case K_HOME: case '<':
+		scroll_to(0);
+		return 1;
+	case K_END: case '>':
+		scroll_to(max_top());
+		return 1;
+	case 'm':
+		if (g_page.content_line >= 0)
+			scroll_to(g_page.content_line);
+		else if (g_page.main_line >= 0)
+			scroll_to(g_page.main_line);
+		else if (layout_anchor(&g_page, "content") >= 0)
+			scroll_to(layout_anchor(&g_page, "content"));
+		else
+			message("This page doesn't mark its main content.", NULL);
+		return 1;
+	case 12:
+		draw(1);
+		return 1;
+	}
+	return 0;
+}
+
+static int next_key(int timeout)
+{
+	int k;
+
+	if (g_nkeyq == 0)
+		return scr_getkey(timeout);
+	k = g_keyq[0];
+	memmove(g_keyq, g_keyq + 1, (size_t)--g_nkeyq * sizeof g_keyq[0]);
+	return k;
+}
+
+/*
+ * While an image is fetched or decoded: keys that only move the view are
+ * done there and then; any other stops the image (it goes on later) and
+ * waits for the main loop. What has come of the image is shown now and
+ * then.
+ */
+static int img_poll(void *ctx, int shown)
+{
+	unsigned long now;
+	int k;
+
+	(void)ctx;
+	while ((k = scr_getkey(0)) >= 0) {
+		if (view_key(k)) {
+			draw(0);
+			continue;
+		}
+		if (g_nkeyq < (int)(sizeof g_keyq / sizeof g_keyq[0]))
+			g_keyq[g_nkeyq++] = k;
+		return -1;
+	}
+	if (shown && (now = os_msec()) - g_img_drawn > 400) {
+		g_img_drawn = now;
+		draw(0);
+	}
+	return 0;
+}
+
+/* a piece of the page's image work, while no key waits */
+static void img_work(void)
+{
+	int r = pimg_step(&g_page, g_top, view_rows(), img_poll, NULL);
+	unsigned long now = os_msec();
+
+	if (r == PIMG_IDLE)
+		g_img_busy = 0;
+	if (r == PIMG_SIZED)
+		g_img_relayout = 1;
+	/* new sizes: lay out again, but not more often than every 2 s */
+	if (g_img_relayout && (r == PIMG_IDLE || now - g_img_relaid > 2000)) {
+		g_img_relayout = 0;
+		g_img_relaid = now;
+		relayout_same_text();
+	}
+}
+
 int main(int argc, char **argv)
 {
 	char path[600], in[URL_MAX], go[URL_MAX];
@@ -1956,6 +2160,7 @@ int main(int argc, char **argv)
 	scr_color = config_bool("color", 1);
 	scr_font = config_str("font", NULL);
 	scr_proportional = config_bool("proportional", 1);
+	g_images = config_bool("images", 1);
 	{
 		/* link_color: a colour name, or 0-7 (unset: the screen's own,
 		 * cyan on a terminal, blue in a window) */
@@ -2002,51 +2207,29 @@ int main(int argc, char **argv)
 		int k;
 
 		if (scr_check_size()) {
-			/* keep the same text at the top */
-			unsigned long off = g_have_page && g_top < (long)g_page.nlines ?
-				g_page.lines[g_top].off : 0;
-			long i;
-
-			relayout(0);
-			for (i = 0; i + 1 < (long)g_page.nlines
-				&& g_page.lines[i + 1].off <= off; i++)
-				;
-			g_top = i;
-			scroll_to(g_top);
+			relayout_same_text();
 			draw(1);
 		} else
 			draw(0);
-		k = scr_getkey(-1);
+		if (g_img_busy && g_nkeyq == 0) {
+			if ((k = scr_getkey(0)) < 0) {
+				/* nothing typed: on with the images */
+				img_work();
+				continue;
+			}
+		} else
+			k = next_key(-1);
 		if (!g_msg_sticky)
 			g_msg[0] = '\0';
 		g_msg_sticky = 0;
+		if (view_key(k))
+			continue;
 		switch (k) {
 		case 'q': case 'Q': case K_CLOSE:
 			quit = 1;
 			break;
 		case K_MOUSE:
 			click(scr_mouse_row, scr_mouse_col);
-			break;
-		case K_WHEELUP:
-			scroll_to(g_top - 3);
-			break;
-		case K_WHEELDN:
-			scroll_to(g_top + 3);
-			break;
-		case K_SCROLL:
-			scroll_to(scr_scroll_target);
-			break;
-		case K_DOWN:
-			move_link(1);
-			break;
-		case K_UP:
-			move_link(-1);
-			break;
-		case '\t':
-			jump_link(1);
-			break;
-		case K_BTAB:
-			jump_link(-1);
 			break;
 		case K_RIGHT: case '\r':
 			follow();
@@ -2056,34 +2239,6 @@ int main(int argc, char **argv)
 			break;
 		case 'f':
 			forward();
-			break;
-		case ' ': case K_PGDN: case 6:
-			scroll_to(g_top + view_rows() - 1);
-			break;
-		case 'b': case K_PGUP: case 2:
-			scroll_to(g_top - (view_rows() - 1));
-			break;
-		case 'j': case 5:
-			scroll_to(g_top + 1);
-			break;
-		case 'k': case 25:
-			scroll_to(g_top - 1);
-			break;
-		case K_HOME: case '<':
-			scroll_to(0);
-			break;
-		case K_END: case '>':
-			scroll_to(max_top());
-			break;
-		case 'm':
-			if (g_page.content_line >= 0)
-				scroll_to(g_page.content_line);
-			else if (g_page.main_line >= 0)
-				scroll_to(g_page.main_line);
-			else if (layout_anchor(&g_page, "content") >= 0)
-				scroll_to(layout_anchor(&g_page, "content"));
-			else
-				message("This page doesn't mark its main content.", NULL);
 			break;
 		case 'g': case 'G':
 			in[0] = '\0';
@@ -2119,9 +2274,6 @@ int main(int argc, char **argv)
 				scroll_to(t);
 			}
 			break;
-		case 12:
-			draw(1);
-			break;
 		case '=':
 			show_info();
 			break;
@@ -2133,6 +2285,12 @@ int main(int argc, char **argv)
 			break;
 		case '?': case 'h': case K_F1:
 			go_url("about:help");
+			break;
+		case 'z':
+			if (g_img_busy) {
+				pimg_cancel();
+				message("No more images for this page.", NULL);
+			}
 			break;
 		case -1:
 			break;

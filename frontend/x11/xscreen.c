@@ -26,6 +26,7 @@
 #include "entropy.h"
 #include "style.h"
 #include "screen.h"
+#include "pixels.h"
 
 int scr_rows = 25, scr_cols = 80;
 int scr_color = 1;
@@ -644,6 +645,18 @@ struct run {
 
 static struct run *runs;
 static int nruns, runs_cap;
+
+/* an image drawn this frame (im NULL: a frame where one will be) */
+struct ximg;
+struct idraw {
+	struct ximg *im;
+	unsigned long version;		/* its rows so far (repaint on change) */
+	short x, y, w, h;
+	int attr;
+};
+
+static struct idraw *idraws;
+static int nidraws, idraws_cap;
 static char *rtext;
 static unsigned rtext_len, rtext_cap;
 static unsigned long pane_sum = 1, drawn_sum;	/* what's in the pixmap */
@@ -794,6 +807,10 @@ static unsigned long pane_checksum(void)
 		h = h * 33 + p[i];
 	for (i = 0; i < rtext_len; i++)
 		h = h * 33 + (unsigned char)rtext[i];
+	p = (const unsigned char *)idraws;
+	n = (size_t)nidraws * sizeof *idraws;
+	for (i = 0; i < n; i++)
+		h = h * 33 + p[i];
 	p = (const unsigned char *)(nxt + scr_cols);
 	n = (size_t)(scr_rows - 2) * (size_t)scr_cols * sizeof *nxt;
 	for (i = 0; i < n; i++)
@@ -834,6 +851,296 @@ static void paint_run(const struct run *r)
 		XDrawLine(dpy, pane_pm, gc, x, base + 1, x + w - 1, base + 1);
 }
 
+/* --- images ----------------------------------------------------------------- */
+
+struct ximg {
+	Pixmap pm, mask;		/* mask: None without one */
+	int w, h;
+	unsigned long version;
+	XImage *row, *mrow;		/* a row of each: data pointed in */
+};
+
+static struct px_format pxf;
+static int pxf_state;			/* 0 not yet, 1 ready, -1 no images */
+static GC mask_gc;
+static unsigned long img_serial;
+static int x_error;			/* the last X error's code, 0: none */
+
+/* X errors aren't fatal (Xlib's own handler exits): the image that
+ * didn't fit in the server's memory simply isn't shown */
+static int on_x_error(Display *d, XErrorEvent *e)
+{
+	(void)d;
+	x_error = e->error_code;
+	return 0;
+}
+
+/* a PseudoColor screen: a colour cube in the shared colormap, as big as
+ * the other clients leave room for */
+static int make_cube(void)
+{
+	static const int tries[5] = { 6, 5, 4, 3, 2 };
+	Colormap cm = DefaultColormap(dpy, DefaultScreen(dpy));
+	int t;
+
+	for (t = 0; t < 5; t++) {
+		int l = tries[t], n = l * l * l, i;
+
+		for (i = 0; i < n; i++) {
+			XColor c;
+
+			c.red = (unsigned short)(i / (l * l) * 65535 / (l - 1));
+			c.green = (unsigned short)(i / l % l * 65535 / (l - 1));
+			c.blue = (unsigned short)(i % l * 65535 / (l - 1));
+			c.flags = DoRed | DoGreen | DoBlue;
+			if (!XAllocColor(dpy, cm, &c))
+				break;
+			pxf.pixel[i] = c.pixel;
+		}
+		if (i == n) {
+			pxf.kind = PX_CUBE;
+			pxf.levels[0] = pxf.levels[1] = pxf.levels[2] = l;
+			return 1;
+		}
+		if (i > 0)
+			XFreeColors(dpy, cm, pxf.pixel, i, 0);
+	}
+	return 0;
+}
+
+/* a GrayScale screen: a ramp of greys allocated, as many as fit */
+static int make_ramp(void)
+{
+	static const int tries[5] = { 64, 32, 16, 8, 4 };
+	Colormap cm = DefaultColormap(dpy, DefaultScreen(dpy));
+	int t;
+
+	for (t = 0; t < 5; t++) {
+		int n = tries[t], i;
+
+		for (i = 0; i < n; i++) {
+			XColor c;
+
+			c.red = c.green = c.blue = (unsigned short)(i * 65535 / (n - 1));
+			c.flags = DoRed | DoGreen | DoBlue;
+			if (!XAllocColor(dpy, cm, &c))
+				break;
+			pxf.pixel[i] = c.pixel;
+		}
+		if (i == n) {
+			pxf.kind = PX_GRAY;
+			pxf.levels[0] = n;
+			return 1;
+		}
+		if (i > 0)
+			XFreeColors(dpy, cm, pxf.pixel, i, 0);
+	}
+	return 0;
+}
+
+static int make_format(void)
+{
+	int s = DefaultScreen(dpy), depth = DefaultDepth(dpy, s);
+	Visual *v = DefaultVisual(dpy, s);
+	XImage *t;
+
+	memset(&pxf, 0, sizeof pxf);
+	if (!px_mode)
+		return 0;
+	/* how the server packs pixels of this depth: a test image says */
+	t = XCreateImage(dpy, v, (unsigned)depth, ZPixmap, 0, NULL, 1, 1, 8, 0);
+	if (t == NULL)
+		return 0;
+	pxf.bpp = t->bits_per_pixel;
+	pxf.byte_msb = t->byte_order == MSBFirst;
+	pxf.bit_msb = t->bitmap_bit_order == MSBFirst;
+	XDestroyImage(t);
+	if (pxf.bpp != 1 && pxf.bpp != 8 && pxf.bpp != 16 && pxf.bpp != 24
+		&& pxf.bpp != 32)
+		return 0;
+	XSetErrorHandler(on_x_error);
+	if (depth == 1) {
+		pxf.kind = PX_GRAY;
+		pxf.levels[0] = 2;
+		pxf.pixel[0] = BlackPixel(dpy, s);
+		pxf.pixel[1] = WhitePixel(dpy, s);
+		return 1;
+	}
+	switch (v->class) {
+	case TrueColor:
+		pxf.kind = PX_TRUE;
+		pxf.mask[0] = v->red_mask;
+		pxf.mask[1] = v->green_mask;
+		pxf.mask[2] = v->blue_mask;
+		return 1;
+	case PseudoColor:
+		return make_cube();
+	case GrayScale:
+		return make_ramp();
+	case StaticGray:
+		/* a fixed ramp, black at 0: pixel i is grey i */
+		pxf.kind = PX_GRAY;
+		pxf.levels[0] = depth >= 8 ? 256 : 1 << depth;
+		{
+			int i;
+
+			for (i = 0; i < pxf.levels[0]; i++)
+				pxf.pixel[i] = (unsigned long)i;
+		}
+		return 1;
+	}
+	return 0;	/* (StaticColor, DirectColor: rare, not done) */
+}
+
+const struct px_format *scr_pixels(void)
+{
+	if (pxf_state == 0)
+		pxf_state = dpy && make_format() ? 1 : -1;
+	return pxf_state > 0 ? &pxf : NULL;
+}
+
+void scr_image_free(void *img)
+{
+	struct ximg *im = img;
+
+	if (im == NULL)
+		return;
+	if (im->pm)
+		XFreePixmap(dpy, im->pm);
+	if (im->mask)
+		XFreePixmap(dpy, im->mask);
+	if (im->row)
+		XDestroyImage(im->row);		/* (data: none of its own) */
+	if (im->mrow)
+		XDestroyImage(im->mrow);
+	xfree(im);
+}
+
+void *scr_image_new(int w, int h, int masked)
+{
+	int s = DefaultScreen(dpy), depth = DefaultDepth(dpy, s);
+	Visual *v = DefaultVisual(dpy, s);
+	struct ximg *im;
+
+	if (scr_pixels() == NULL || w <= 0 || h <= 0 || w > 8192 || h > 8192
+		|| (im = xmalloc(sizeof *im)) == NULL)
+		return NULL;
+	memset(im, 0, sizeof *im);
+	im->w = w;
+	im->h = h;
+	x_error = 0;
+	im->pm = XCreatePixmap(dpy, win, (unsigned)w, (unsigned)h, (unsigned)depth);
+	if (masked)
+		im->mask = XCreatePixmap(dpy, win, (unsigned)w, (unsigned)h, 1);
+	XSync(dpy, False);
+	if (x_error) {
+		/* (the server's out of memory: no picture) */
+		scr_image_free(im);
+		return NULL;
+	}
+	/* rows not yet come: the background (and, masked, not shown) */
+	XSetForeground(dpy, gc, px_bg);
+	XFillRectangle(dpy, im->pm, gc, 0, 0, (unsigned)w, (unsigned)h);
+	if (masked) {
+		if (mask_gc == 0)
+			mask_gc = XCreateGC(dpy, im->mask, 0, NULL);
+		XSetForeground(dpy, mask_gc, 0);
+		XFillRectangle(dpy, im->mask, mask_gc, 0, 0, (unsigned)w, (unsigned)h);
+		XSetForeground(dpy, mask_gc, 1);
+		XSetBackground(dpy, mask_gc, 0);
+		im->mrow = XCreateImage(dpy, v, 1, XYBitmap, 0, NULL, (unsigned)w, 1, 8, 0);
+	}
+	im->row = XCreateImage(dpy, v, (unsigned)depth, ZPixmap, 0, NULL, (unsigned)w, 1, 8, 0);
+	if (im->row == NULL || (masked && im->mrow == NULL)
+		|| im->row->bytes_per_line != (int)px_row_bytes(&pxf, w)) {
+		scr_image_free(im);
+		return NULL;
+	}
+	return im;
+}
+
+void scr_image_row(void *img, int y, const unsigned char *px,
+	const unsigned char *mask)
+{
+	struct ximg *im = img;
+
+	if (im == NULL || y < 0 || y >= im->h)
+		return;
+	im->row->data = (char *)px;
+	XPutImage(dpy, im->pm, gc, im->row, 0, 0, 0, y, (unsigned)im->w, 1);
+	im->row->data = NULL;
+	if (im->mask) {
+		if (mask) {
+			im->mrow->data = (char *)mask;
+			XPutImage(dpy, im->mask, mask_gc, im->mrow, 0, 0, 0, y, (unsigned)im->w, 1);
+			im->mrow->data = NULL;
+		} else
+			XFillRectangle(dpy, im->mask, mask_gc, 0, y, (unsigned)im->w, 1);
+	}
+	im->version = ++img_serial;
+}
+
+void scr_image_draw(void *img, int x, int y, int w, int h, int attr)
+{
+	struct idraw *d;
+
+	if (!px_mode || w <= 0 || h <= 0)
+		return;
+	if (nidraws == idraws_cap) {
+		int c = idraws_cap ? idraws_cap * 2 : 32;
+		struct idraw *q = xrealloc(idraws, (size_t)c * sizeof *q);
+
+		if (q == NULL)
+			return;
+		idraws = q;
+		idraws_cap = c;
+	}
+	d = &idraws[nidraws++];
+	memset(d, 0, sizeof *d);	/* (padding too: it is checksummed) */
+	d->im = img;
+	d->version = img ? ((struct ximg *)img)->version : 0;
+	d->x = (short)x;
+	d->y = (short)y;
+	d->w = (short)w;
+	d->h = (short)h;
+	d->attr = attr;
+}
+
+/* an image, into the pixmap */
+static void paint_image(const struct idraw *d)
+{
+	int x = PANE_IN + d->x, y = d->y;
+	unsigned long fg = (d->attr & CA_LINK) && link_px_ok ?
+		px_link[scr_link_color & 7] : px_fg;
+
+	if (d->im) {
+		if (d->im->mask) {
+			XSetClipMask(dpy, gc, d->im->mask);
+			XSetClipOrigin(dpy, gc, x, y);
+		}
+		XCopyArea(dpy, d->im->pm, pane_pm, gc, 0, 0, (unsigned)d->w,
+			(unsigned)d->h, x, y);
+		if (d->im->mask) {
+			XSetClipMask(dpy, gc, None);
+			XSetClipOrigin(dpy, gc, 0, 0);
+		}
+	} else if (d->w > 2 && d->h > 2) {
+		/* not here yet: a frame */
+		XSetForeground(dpy, gc, DefaultDepth(dpy, DefaultScreen(dpy)) > 1 ?
+			px_bg3 : px_fg);
+		XDrawRectangle(dpy, pane_pm, gc, x, y, (unsigned)(d->w - 1),
+			(unsigned)(d->h - 1));
+	}
+	if (d->attr & CA_REV) {
+		/* the selected link: a frame round it */
+		XSetForeground(dpy, gc, fg);
+		XDrawRectangle(dpy, pane_pm, gc, x - 2, y - 2, (unsigned)(d->w + 3),
+			(unsigned)(d->h + 3));
+		XDrawRectangle(dpy, pane_pm, gc, x - 1, y - 1, (unsigned)(d->w + 1),
+			(unsigned)(d->h + 1));
+	}
+}
+
 /* the pane, painted afresh: the page's runs, then the cells over them */
 static void paint_pane(void)
 {
@@ -856,6 +1163,8 @@ static void paint_pane(void)
 	XFillRectangle(dpy, pane_pm, gc, 0, 0, (unsigned)w, (unsigned)h);
 	for (i = 0; i < nruns; i++)
 		paint_run(&runs[i]);
+	for (i = 0; i < nidraws; i++)
+		paint_image(&idraws[i]);
 	/* cells written over the pane this frame (ch 0: none) */
 	for (r = 1; r < scr_rows - 1; r++) {
 		const struct cell *cl = nxt + (size_t)r * (size_t)scr_cols;
@@ -897,6 +1206,7 @@ void scr_erase(void)
 		nxt[i].a = 0;
 	}
 	nruns = 0;
+	nidraws = 0;
 	rtext_len = 0;
 }
 

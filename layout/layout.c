@@ -87,7 +87,8 @@ static size_t used(const struct page *p)
 		+ p->heights_cap * sizeof(struct lheight)
 		+ p->spans_cap * sizeof(struct lspan)
 		+ p->links_cap * sizeof(struct llink)
-		+ p->anchors_cap * sizeof(struct lanchor);
+		+ p->anchors_cap * sizeof(struct lanchor)
+		+ p->images_cap * sizeof(struct limage);
 }
 
 /* grow *arr (of *cap elements of size sz) to hold need; 0 or -1 */
@@ -409,6 +410,7 @@ static void settle(struct lay *L, int w)
 			if (p->nspans >= 2
 				&& p->spans[p->nspans - 1].off == p->text_len - (unsigned long)k
 				&& p->spans[p->nspans - 1].off > L->line_off
+				&& !(p->spans[p->nspans - 2].face & LF_IMAGE)
 				&& plainer(&p->spans[p->nspans - 2],
 				&p->spans[p->nspans - 1]))
 				p->spans[p->nspans - 1].off += (unsigned long)k;
@@ -898,6 +900,100 @@ static void render_textarea(struct lay *L, nodeid id)
 }
 
 /* the last path segment of a URL, for a link with nothing to show */
+/* a width or height attribute in units ("120", "120px"; "50%" of pct),
+ * or 0 */
+static long dim(const struct lay *L, const char *v, long pct)
+{
+	long n = 0;
+
+	if (v == NULL)
+		return 0;
+	while (*v == ' ')
+		v++;
+	while (*v >= '0' && *v <= '9' && n < 100000)
+		n = n * 10 + (*v++ - '0');
+	if (*v == '.')
+		while (*++v >= '0' && *v <= '9')
+			;
+	if (*v == '%')
+		return pct > 0 ? pct * n / 100 : 0;
+	(void)L;
+	return n;
+}
+
+/*
+ * An <img> as itself, when its size is known: from width and height, or
+ * from one of them and the image's own proportions, or its own size; no
+ * wider than the line, in proportion. A break is allowed on either side,
+ * as around any image. 0, or -1 when its size isn't known (yet).
+ */
+static int put_image(struct lay *L, nodeid id)
+{
+	struct page *p = L->p;
+	long avail = L->width - L->indent, w, h;
+	long aw = dim(L, doc_attr(L->d, id, ATTR_WIDTH), avail);
+	long ah = dim(L, doc_attr(L->d, id, ATTR_HEIGHT), 0);
+	int iw = 0, ih = 0, face = L->face;
+	unsigned long k;
+	char b[LAYOUT_IMG_BYTES];
+
+	if (aw > 0 && ah > 0) {
+		w = aw;
+		h = ah;
+	} else if (L->m->image(L->m->image_ctx, id, &iw, &ih) && iw > 0 && ih > 0) {
+		if (aw > 0) {
+			w = aw;
+			h = ((long)ih * aw + iw / 2) / iw;
+		} else if (ah > 0) {
+			h = ah;
+			w = ((long)iw * ah + ih / 2) / ih;
+		} else {
+			w = iw;
+			h = ih;
+		}
+	} else
+		return -1;
+	if (avail < 1)
+		avail = 1;
+	if (w > avail) {
+		h = (h * avail + w / 2) / w;
+		w = avail;
+	}
+	if (w < 1)
+		w = 1;
+	if (h < 1)
+		h = 1;
+	if (h > 8192)
+		h = 8192;
+	if (p->nimages >= LAYOUT_MAX_IMAGES
+		|| GROW(L, images, images_cap, p->nimages + 1, 16) < 0)
+		return -1;
+	k = p->nimages++;
+	p->images[k].node = id;
+	p->images[k].w = (unsigned short)w;
+	p->images[k].h = (unsigned short)h;
+	b[0] = '\001';
+	b[1] = (char)(2 + k / 900);
+	b[2] = (char)(2 + k / 30 % 30);
+	b[3] = (char)(2 + k % 30);
+
+	L->in_word = 0;
+	settle(L, (int)w);
+	if (L->col + w > L->width)
+		make_room(L, (int)w);
+	p->images[k].line = p->nlines;	/* (the open line's number) */
+	L->face = face | LF_IMAGE;
+	set_span(L);
+	put_bytes(L, b, sizeof b);
+	L->face = face;
+	set_span(L);
+	if (h > L->line_a)
+		L->line_a = (int)h;	/* (on the baseline: all above it) */
+	L->col += (int)w;
+	L->in_word = 0;
+	return 0;
+}
+
 static void url_name(const char *href, char *out, size_t max)
 {
 	const char *e = href + strcspn(href, "?#"), *b = e;
@@ -1020,6 +1116,8 @@ static int enter(struct lay *L, nodeid id, int depth)
 	}
 	case TAG_IMG:
 	case TAG_IMAGE:
+		if (L->m && L->m->image && put_image(L, id) == 0)
+			return 0;
 		v = doc_attr(d, id, ATTR_ALT);
 		if (v && *v) {
 			char buf[128];
@@ -1305,7 +1403,31 @@ void layout_free(struct page *p)
 	xfree(p->spans);
 	xfree(p->links);
 	xfree(p->anchors);
+	xfree(p->images);
 	memset(p, 0, sizeof *p);
+}
+
+long layout_image(const struct page *p, const char *s)
+{
+	long k;
+
+	if (s[0] != '\001' || s[1] < 2 || s[2] < 2 || s[3] < 2)
+		return -1;
+	k = (long)(s[1] - 2) * 900 + (s[2] - 2) * 30 + (s[3] - 2);
+	return k < (long)p->nimages ? k : -1;
+}
+
+int layout_images_w(const struct page *p, const char *s, int n)
+{
+	int w = 0;
+
+	for (; n >= LAYOUT_IMG_BYTES; s += LAYOUT_IMG_BYTES, n -= LAYOUT_IMG_BYTES) {
+		long k = layout_image(p, s);
+
+		if (k >= 0)
+			w += p->images[k].w;
+	}
+	return w;
 }
 
 unsigned long layout_span_at(const struct page *p, unsigned long s,

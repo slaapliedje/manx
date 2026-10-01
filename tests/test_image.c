@@ -144,6 +144,15 @@ int main(int argc, char **argv)
 			fails++;
 			continue;
 		}
+		if (shift == 0 && strcmp(expect, "ok") == 0) {
+			int pw = 0, ph = 0;
+
+			if (!img_probe(b, len, &pw, &ph) || pw != w || ph != h) {
+				printf("  %-20s probe says %dx%d, want %dx%d\n", name, pw, ph, w, h);
+				fails++;
+				ok = 0;
+			}
+		}
 		memset(&whole, 0, sizeof whole);
 		memset(&parts, 0, sizeof parts);
 		whole.shift = parts.shift = shift;

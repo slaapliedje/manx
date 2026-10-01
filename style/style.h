@@ -29,6 +29,7 @@ enum display {
 #define LF_HMASK	0x03	/* a heading, 1-3 */
 #define LF_MONO		0x04	/* fixed width: pre, code, kbd... */
 #define LF_ITALIC	0x08	/* em, i, cite... */
+#define LF_IMAGE	0x10	/* not text: images (layout.h, LAYOUT_IMG_BYTES) */
 
 struct style {
 	unsigned char display;

@@ -103,6 +103,24 @@ int scr_pane_h(void);
 void scr_text(int x, int y, int ascent, const char *s, int n, int attr,
 	int face);
 
+/*
+ * Images (X11; a terminal shows none). scr_pixels(): the format an
+ * image's rows are to come in (image/pixels.h), or NULL when the screen
+ * shows no images. scr_image_new(): an image w x h, with a mask if
+ * masked, filled a row at a time by scr_image_row() (mask: a bit a pixel,
+ * 1 shown; NULL: all of the row shown); NULL when it can't be made. Rows
+ * not yet sent show as the background. scr_image_draw(): at x, y of the
+ * pane, its top left, w x h; img NULL: a frame where one will be. attr:
+ * CA_* (CA_REV: a selected link's highlight).
+ */
+struct px_format;
+const struct px_format *scr_pixels(void);
+void *scr_image_new(int w, int h, int masked);
+void scr_image_row(void *img, int y, const unsigned char *px,
+	const unsigned char *mask);
+void scr_image_draw(void *img, int x, int y, int w, int h, int attr);
+void scr_image_free(void *img);
+
 /* Leave the screen for a moment (e.g. to show a long message) and come
  * back. */
 void scr_suspend(void);

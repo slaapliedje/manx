@@ -199,6 +199,11 @@ int main(int argc, char **argv)
 				len = at;
 			}
 		}
+		{
+			int pw, ph;
+
+			(void)img_probe(b, len, &pw, &ph);
+		}
 		memset(&o, 0, sizeof o);
 		o.stop_at = rnd(8) == 0 ? 1 + (int)rnd(20) : 0;
 		s.size = on_size;

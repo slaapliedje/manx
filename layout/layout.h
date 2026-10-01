@@ -48,6 +48,25 @@ struct lmetrics {
 	int (*height)(void *ctx, int attr, int face, int *ascent);
 	void *ctx;
 	int em;
+	/* An <img>'s own size in units, if known yet: 1, else 0. NULL, or
+	 * not known and no width and height given: its alt text instead. */
+	int (*image)(void *ctx, nodeid node, int *w, int *h);
+	void *image_ctx;
+};
+
+/*
+ * With metrics, an image is shown in the text as LAYOUT_IMG_BYTES bytes
+ * (control characters, which text never has) in a span of face LF_IMAGE,
+ * standing for p->images[layout_image(p, s)]; a run of that face holds
+ * one or more. It sits on the baseline, as wide as the image.
+ */
+#define LAYOUT_IMG_BYTES	4
+#define LAYOUT_MAX_IMAGES	4096
+
+struct limage {
+	nodeid node;			/* the <img> */
+	unsigned short w, h;		/* the size it is shown at, in units */
+	unsigned long line;		/* the line it is on */
 };
 
 enum { LK_HREF = 1, LK_FIELD };
@@ -81,6 +100,8 @@ struct page {
 	unsigned long nlinks, links_cap;
 	struct lanchor *anchors;
 	unsigned long nanchors, anchors_cap;
+	struct limage *images;		/* NULL without metrics */
+	unsigned long nimages, images_cap;
 	size_t byte_cap;		/* all of the above together */
 	long main_line;			/* where <main> begins, or -1 */
 	long content_line;		/* the first real paragraph (or its
@@ -110,6 +131,13 @@ void layout_free(struct page *p);
 /* The span index in effect at text offset off, searching from span s. */
 unsigned long layout_span_at(const struct page *p, unsigned long s,
 	unsigned long off);
+
+/* The image whose bytes begin at s (see LAYOUT_IMG_BYTES): its index in
+ * p->images, or -1. */
+long layout_image(const struct page *p, const char *s);
+
+/* How wide n bytes of a run of face LF_IMAGE are: its images' widths. */
+int layout_images_w(const struct page *p, const char *s, int n);
 
 /* The line of the anchor named name (id= or <a name=>), or -1. */
 long layout_anchor(const struct page *p, const char *name);

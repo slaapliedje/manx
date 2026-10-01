@@ -735,3 +735,41 @@ void scr_text(int x, int y, int ascent, const char *s, int n, int attr,
 	(void)face;
 	scr_put(1 + y, x, s, n, attr);
 }
+
+/* a terminal shows no images */
+const struct px_format *scr_pixels(void)
+{
+	return NULL;
+}
+
+void *scr_image_new(int w, int h, int masked)
+{
+	(void)w;
+	(void)h;
+	(void)masked;
+	return NULL;
+}
+
+void scr_image_row(void *img, int y, const unsigned char *px,
+	const unsigned char *mask)
+{
+	(void)img;
+	(void)y;
+	(void)px;
+	(void)mask;
+}
+
+void scr_image_draw(void *img, int x, int y, int w, int h, int attr)
+{
+	(void)img;
+	(void)x;
+	(void)y;
+	(void)w;
+	(void)h;
+	(void)attr;
+}
+
+void scr_image_free(void *img)
+{
+	(void)img;
+}

@@ -20,6 +20,59 @@ enum img_type img_sniff(const unsigned char *b, size_t n)
 	return IMG_NONE;
 }
 
+/*
+ * The size from the header alone. GIF: the logical screen; PNG: IHDR;
+ * JPEG: the first frame header (SOFn), found by walking the markers
+ * before it.
+ */
+int img_probe(const unsigned char *b, size_t n, int *w, int *h)
+{
+	size_t i;
+
+	switch (img_sniff(b, n)) {
+	case IMG_GIF:
+		if (n < 10)
+			return 0;
+		*w = b[6] | b[7] << 8;
+		*h = b[8] | b[9] << 8;
+		return *w > 0 && *h > 0;
+	case IMG_PNG:
+		if (n < 24 || memcmp(b + 12, "IHDR", 4) != 0 || b[16] || b[20])
+			return 0;
+		*w = (int)((unsigned long)b[17] << 16 | (unsigned long)b[18] << 8 | b[19]);
+		*h = (int)((unsigned long)b[21] << 16 | (unsigned long)b[22] << 8 | b[23]);
+		return *w > 0 && *h > 0;
+	case IMG_JPEG:
+		for (i = 2; i + 4 <= n; ) {
+			unsigned m;
+
+			if (b[i] != 0xFF)
+				return 0;
+			m = b[i + 1];
+			if (m == 0xFF) {		/* fill bytes */
+				i++;
+				continue;
+			}
+			if (m >= 0xC0 && m <= 0xCF && m != 0xC4 && m != 0xC8 && m != 0xCC) {
+				if (i + 9 > n)
+					return 0;
+				*h = b[i + 5] << 8 | b[i + 6];
+				*w = b[i + 7] << 8 | b[i + 8];
+				return *w > 0 && *h > 0;
+			}
+			if (m == 0xD9 || m == 0xDA)
+				return 0;	/* the end, or data: no frame header */
+			if (m == 0x01 || (m >= 0xD0 && m <= 0xD8))
+				i += 2;		/* (no length) */
+			else
+				i += 2 + (size_t)(b[i + 2] << 8 | b[i + 3]);
+		}
+		return 0;
+	default:
+		return 0;
+	}
+}
+
 void *img_alloc(struct img_dec *d, size_t n)
 {
 	void *p;

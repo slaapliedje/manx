@@ -86,6 +86,23 @@ and black and white came out as they should. On the PC that takes 7 ms
 photos on the PC were progressive, which the decoder refuses: progressive
 support will be needed for real pages.
 
+## 6c-6e: images on the page
+
+| Module | What it does |
+|---|---|
+| `layout` | with metrics (X), an `<img>` whose size is known is laid out as itself: `LAYOUT_IMG_BYTES` control bytes in a span of the new face `LF_IMAGE`, standing for `page.images[k]` (node, the size shown, its line). Its size comes from `width` and `height`, or one of them and the image's own proportions, or its own size (a new `lmetrics.image` callback), no wider than the line; it sits on the baseline, and lines break on either side of it. Until its size is known it is its `[alt]` text, as on a terminal. The terminal layout is unchanged (216 corpus dumps byte-identical) |
+| `src/pageimg` | the page's images: every `<img src>` fetched after the page (the page as Referer), its file kept, its size read from the header (`img_probe`, new: GIF, PNG IHDR, JPEG SOFn), then decoded through `image/pixels` straight to the screen at the size shown, showing rows as they come. Those on screen first, then those of no known size (once one is known, the page is laid out again, at most every 2 s), then the rest, nearest first. `data:` URLs (base64) need no fetch; 1x1 tracking pixels aren't fetched; one that can't be decoded (a progressive JPEG, a WebP) goes back to its alt text. Files kept past 2 MB in all are dropped once shown. The terminal manx links `pageimg_none.c` instead, and no decoders |
+| `src/manx.c` | image work is done while no key waits. During a fetch or a decode, keys that only move the view (scrolling, the wheel, the scrollbar, moving between links) are done at once; any other stops the image, which goes on later. `z` stops fetching more; the status line counts them; `images = off` in the config shows alt text only. Clicks land on linked images; the selected one is framed |
+| `xscreen` | `scr_pixels()`: the format from a test XImage (bits per pixel, byte and bit order as the server has them). TrueColor straight, PseudoColor through a colour cube allocated in the shared colormap (6x6x6, else 5, 4, 3, 2 levels), GrayScale a ramp of greys, StaticGray its own, depth 1 black and white. An image is a pixmap (and a mask pixmap when it has transparency), filled a row at a time with XPutImage, drawn with XCopyArea through the mask; one not here yet is a frame. X errors no longer end the program: an image the server has no room for is simply not shown |
+
+Tested in Xvfb at 24-bit, 8-bit PseudoColor and 8-bit StaticGray with a
+page of every case: a JPEG given only a width, a transparent PNG of no
+given size (laid out again when it came), a `data:` URL, a linked GIF, a
+missing file and a progressive JPEG (their alt text), a tracking pixel,
+an interlaced GIF. `fuzz_html` now lays images out in its made-up
+proportional font (60,000 iterations clean). On the way it found an older
+bug, fixed separately: an `<hr>` in a table cell lost what came before it.
+
 ## The displays
 
 | Server | Depth | Images |
@@ -113,10 +130,9 @@ spend.
 
 ## Left for 6
 
-- Timing 6b on the TT.
-- Progressive JPEG.
-- 6c: image boxes in the layout (size from `width`/`height` or the
-  header); the terminal keeps `[alt]`.
-- 6d: fetching images after the page: interruptible, cached.
-- 6e: drawing in xmanx through server pixmaps, on the TT and in AMIX.
+- On the TT (it was off the network): images at 24 bits through AMIX's
+  R5 Xlib, and the time each step takes there; AMIX's Xdmi in black and
+  white.
+- Progressive JPEG (two of the three photos on the PC were).
+- Images in the disk cache, so that Back doesn't fetch them again.
 - The transputer offload, behind the same sink.

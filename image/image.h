@@ -59,6 +59,10 @@ struct img_dec;
 /* What the first bytes are (8 are enough). */
 enum img_type img_sniff(const unsigned char *b, size_t n);
 
+/* An image's size from its header, without decoding it: 1, or 0 when the
+ * bytes don't say (yet). (A JPEG's may be some way in.) */
+int img_probe(const unsigned char *b, size_t n, int *w, int *h);
+
 /* A decoder of type t into sink, using no more than cap bytes of memory
  * for its own state and buffers (0: a default of 512 KB); NULL when out
  * of memory. */
