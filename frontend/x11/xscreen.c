@@ -51,6 +51,7 @@ struct cell {
 static Display *dpy;
 static Window win;
 static GC gc;
+static GC sgc;				/* scrolling: reports what it can't copy */
 static XFontStruct *font, *bold;	/* bold: NULL to overstrike */
 static int cw, ch, ascent;		/* cell size, baseline */
 static Atom wm_delete;
@@ -317,6 +318,10 @@ int scr_open(const char *cs_env)
 
 	gc = XCreateGC(dpy, win, 0, NULL);
 	XSetFont(dpy, gc, font->fid);
+	/* copies with gc make no events; scrolling's (sgc) say what part of
+	 * the pane another window hid, which is then painted */
+	XSetGraphicsExposures(dpy, gc, False);
+	sgc = XCreateGC(dpy, win, 0, NULL);
 	if (alloc_cells() < 0) {
 		XCloseDisplay(dpy);
 		dpy = NULL;
@@ -658,9 +663,28 @@ static struct idraw *idraws;
 static int nidraws, idraws_cap;
 static char *rtext;
 static unsigned rtext_len, rtext_cap;
-static unsigned long pane_sum = 1, drawn_sum;	/* what's in the pixmap */
-static Pixmap pane_pm;
-static int pm_w, pm_h;
+static unsigned long pane_sum = 1, drawn_sum;	/* this frame's, the shown one's */
+
+/*
+ * The pane is drawn straight onto the window (a back-buffer pixmap cost a
+ * whole pane's copy over the VME bus for every change: 258 ms at 500x350
+ * and 32 bits a pixel on the TT, 828 ms at 1000x650). What is on the
+ * window is kept as the shown frame: its runs, their text and its images
+ * here, the cells over the pane in cur[]. A new frame is compared with
+ * it: when most of it is the shown frame moved up or down, the window's
+ * pixels are moved (window to window, which Xatw does with the ATW800's
+ * 2D engine: 35-58 ms), and only what is new or different is painted,
+ * in bands across the pane.
+ */
+static struct run *sruns;
+static int nsruns, sruns_cap;
+static char *stext;
+static unsigned stext_len, stext_cap;
+static struct idraw *sidraws;
+static int nsidraws, sidraws_cap;
+static int shown_ok;			/* the window's pane shows that frame */
+static int shown_w, shown_h;		/* at this pane size */
+static int shown_over;			/* with cells over the pane */
 
 /* fonts by look: [bold][face] */
 static XFontStruct *faces[2][16];
@@ -825,12 +849,25 @@ static unsigned long pane_checksum(void)
 	return h | 1;
 }
 
-/* one run, into the pixmap */
-static void paint_run(const struct run *r)
+/* the pane rows [*y0, *y1) run r can touch: glyphs, a fill behind them,
+ * the underline */
+static void run_rows(const struct run *r, int *y0, int *y1)
 {
 	XFontStruct *f = face_font(r->attr, r->face);
-	int x = PANE_IN + r->x, base = r->y + r->a;
-	int w = XTextWidth(f, rtext + r->off, (int)r->n);
+	int base = r->y + r->a;
+	int up = f->max_bounds.ascent > f->ascent ? f->max_bounds.ascent : f->ascent;
+	int down = f->max_bounds.descent > f->descent ? f->max_bounds.descent : f->descent;
+
+	*y0 = base - up;
+	*y1 = base + (down > 2 ? down : 2) + 1;
+}
+
+/* one run (its text in text), onto the window */
+static void paint_run(const struct run *r, const char *text)
+{
+	XFontStruct *f = face_font(r->attr, r->face);
+	int x = pane_x() + PANE_IN + r->x, base = pane_y() + r->y + r->a;
+	int w = XTextWidth(f, text + r->off, (int)r->n);
 	unsigned long fg = px_fg, bg = px_bg;
 	int fill = 0;
 
@@ -848,14 +885,14 @@ static void paint_run(const struct run *r)
 	}
 	if (fill) {
 		XSetForeground(dpy, gc, bg);
-		XFillRectangle(dpy, pane_pm, gc, x - 1, base - f->ascent, (unsigned)(w + 2),
+		XFillRectangle(dpy, win, gc, x - 1, base - f->ascent, (unsigned)(w + 2),
 			(unsigned)(f->ascent + f->descent));
 	}
 	XSetForeground(dpy, gc, fg);
 	XSetFont(dpy, gc, f->fid);
-	XDrawString(dpy, pane_pm, gc, x, base, rtext + r->off, (int)r->n);
+	XDrawString(dpy, win, gc, x, base, text + r->off, (int)r->n);
 	if ((r->attr & CA_UNDER) || ((r->attr & CA_LINK) && !(r->attr & CA_MARK)))
-		XDrawLine(dpy, pane_pm, gc, x, base + 1, x + w - 1, base + 1);
+		XDrawLine(dpy, win, gc, x, base + 1, x + w - 1, base + 1);
 }
 
 /* --- images ----------------------------------------------------------------- */
@@ -867,6 +904,10 @@ struct ximg {
 					 * (new0 > new1: none) */
 	XImage *row, *mrow;		/* a row of each: data pointed in */
 };
+
+/* an image's place on the window freed under it (scr_image_free): never
+ * the same as a new one's, and painted as a frame */
+static struct ximg gone;
 
 static struct px_format pxf;
 static int pxf_state;			/* 0 not yet, 1 ready, -1 no images */
@@ -1009,9 +1050,17 @@ const struct px_format *scr_pixels(void)
 void scr_image_free(void *img)
 {
 	struct ximg *im = img;
+	int i;
 
 	if (im == NULL)
 		return;
+	/* (the shown frame's places for it: a frame, if painted again) */
+	for (i = 0; i < nsidraws; i++)
+		if (sidraws[i].im == im)
+			sidraws[i].im = &gone;
+	for (i = 0; i < nidraws; i++)
+		if (idraws[i].im == im)
+			idraws[i].im = &gone;
 	if (im->pm)
 		XFreePixmap(dpy, im->pm);
 	if (im->mask)
@@ -1117,131 +1166,102 @@ void scr_image_draw(void *img, int x, int y, int w, int h, int attr)
 	d->attr = attr;
 }
 
-/* rows y0 to y1 of an image, into the pixmap */
+/* the band being painted: its clip rectangle, which an image's mask
+ * replaces for a moment */
+static XRectangle band_clip;
+static int band_on;
+
+static void clip_band(int b0, int b1)
+{
+	band_clip.x = (short)pane_x();
+	band_clip.y = (short)(pane_y() + b0);
+	band_clip.width = (unsigned short)pane_wpx();
+	band_clip.height = (unsigned short)(b1 - b0);
+	XSetClipRectangles(dpy, gc, 0, 0, &band_clip, 1, Unsorted);
+	band_on = 1;
+}
+
+static void clip_none(void)
+{
+	XSetClipMask(dpy, gc, None);
+	XSetClipOrigin(dpy, gc, 0, 0);
+	band_on = 0;
+}
+
+/* rows y0 to y1 - 1 of an image (those inside the pane), onto the window */
 static void copy_rows(const struct idraw *d, int y0, int y1)
 {
-	int x = PANE_IN + d->x, y = d->y;
+	int x = pane_x() + PANE_IN + d->x, y = pane_y() + d->y, H = pane_hpx();
+	int w = d->w;
 
+	/* (rows of the image, and in the pane) */
+	if (y0 < 0)
+		y0 = 0;
+	if (y0 < -d->y)
+		y0 = -d->y;
+	if (y1 > d->im->h)
+		y1 = d->im->h;
+	if (y1 > H - d->y)
+		y1 = H - d->y;
+	if (w > pane_x() + pane_wpx() - x)
+		w = pane_x() + pane_wpx() - x;
+	if (y0 >= y1 || w <= 0)
+		return;
 	if (d->im->mask) {
 		XSetClipMask(dpy, gc, d->im->mask);
 		XSetClipOrigin(dpy, gc, x, y);
 	}
-	XCopyArea(dpy, d->im->pm, pane_pm, gc, 0, y0, (unsigned)d->w,
-		(unsigned)(y1 - y0 + 1), x, y + y0);
+	XCopyArea(dpy, d->im->pm, win, gc, 0, y0, (unsigned)w, (unsigned)(y1 - y0),
+		x, y + y0);
 	if (d->im->mask) {
-		XSetClipMask(dpy, gc, None);
-		XSetClipOrigin(dpy, gc, 0, 0);
+		if (band_on)
+			XSetClipRectangles(dpy, gc, 0, 0, &band_clip, 1, Unsorted);
+		else
+			clip_none();
 	}
 }
 
-/*
- * The page is as it was, but images have new rows: copy just those into
- * the pixmap and onto the window (a whole pane at 32 bits a pixel is most
- * of a second on a TT). Not with cells over the pane (a menu): the rows
- * would go over them.
- */
-static int paint_new_rows(void)
+/* an image, the part of it in pane rows [b0, b1) */
+static void paint_image(const struct idraw *d, int b0, int b1)
 {
-	int i;
-
-	if (cells_over)
-		return 0;
-	for (i = 0; i < nidraws; i++) {
-		const struct idraw *d = &idraws[i];
-		int y0, y1, wy0, wy1, wx0, wx1;
-
-		if (d->im == NULL || d->im->new0 > d->im->new1)
-			continue;
-		y0 = d->im->new0;
-		y1 = d->im->new1 < d->h - 1 ? d->im->new1 : d->h - 1;
-		if (y0 > y1)
-			continue;
-		copy_rows(d, y0, y1);
-		/* that part of the pane, onto the window */
-		wx0 = PANE_IN + d->x;
-		wx1 = wx0 + d->w;
-		wy0 = d->y + y0;
-		wy1 = d->y + y1 + 1;
-		if (wx0 < 0)
-			wx0 = 0;
-		if (wy0 < 0)
-			wy0 = 0;
-		if (wx1 > pm_w)
-			wx1 = pm_w;
-		if (wy1 > pm_h)
-			wy1 = pm_h;
-		if (wx0 < wx1 && wy0 < wy1)
-			XCopyArea(dpy, pane_pm, win, gc, wx0, wy0, (unsigned)(wx1 - wx0),
-				(unsigned)(wy1 - wy0), pane_x() + wx0, pane_y() + wy0);
-	}
-	for (i = 0; i < nidraws; i++)
-		if (idraws[i].im) {
-			idraws[i].im->new0 = idraws[i].im->h;
-			idraws[i].im->new1 = -1;
-		}
-	return 1;
-}
-
-/* an image, into the pixmap */
-static void paint_image(const struct idraw *d)
-{
-	int x = PANE_IN + d->x, y = d->y;
+	int x = pane_x() + PANE_IN + d->x, y = pane_y() + d->y;
 	unsigned long fg = (d->attr & CA_LINK) && link_px_ok ?
 		px_link[scr_link_color & 7] : px_fg;
 
-	if (d->im) {
-		copy_rows(d, 0, d->h - 1);
-		d->im->new0 = d->im->h;
-		d->im->new1 = -1;
-	} else if (d->w > 2 && d->h > 2) {
+	if (d->im && d->im != &gone)
+		copy_rows(d, b0 - d->y, b1 - d->y);
+	else if (d->w > 2 && d->h > 2) {
 		/* not here yet: a frame */
 		XSetForeground(dpy, gc, DefaultDepth(dpy, DefaultScreen(dpy)) > 1 ?
 			px_bg3 : px_fg);
-		XDrawRectangle(dpy, pane_pm, gc, x, y, (unsigned)(d->w - 1),
+		XDrawRectangle(dpy, win, gc, x, y, (unsigned)(d->w - 1),
 			(unsigned)(d->h - 1));
 	}
 	if (d->attr & CA_REV) {
 		/* the selected link: a frame round it */
 		XSetForeground(dpy, gc, fg);
-		XDrawRectangle(dpy, pane_pm, gc, x - 2, y - 2, (unsigned)(d->w + 3),
+		XDrawRectangle(dpy, win, gc, x - 2, y - 2, (unsigned)(d->w + 3),
 			(unsigned)(d->h + 3));
-		XDrawRectangle(dpy, pane_pm, gc, x - 1, y - 1, (unsigned)(d->w + 1),
+		XDrawRectangle(dpy, win, gc, x - 1, y - 1, (unsigned)(d->w + 1),
 			(unsigned)(d->h + 1));
 	}
 }
 
-/* the pane, painted afresh: the page's runs, then the cells over them */
-static void paint_pane(void)
+/* the cells over the pane (ch 0: none) in pane rows [b0, b1), from the
+ * grid g */
+static void paint_cells(const struct cell *g, int b0, int b1)
 {
-	int w = pane_wpx(), h = pane_hpx(), i, r, c;
-	Window root;
-	int dx, dy;
-	unsigned int bw, depth, pw, ph;
+	int r, c;
 
-	if (w <= 0 || h <= 0)
-		return;
-	if (pane_pm == 0 || pm_w != w || pm_h != h) {
-		if (pane_pm)
-			XFreePixmap(dpy, pane_pm);
-		XGetGeometry(dpy, win, &root, &dx, &dy, &pw, &ph, &bw, &depth);
-		pane_pm = XCreatePixmap(dpy, win, (unsigned)w, (unsigned)h, depth);
-		pm_w = w;
-		pm_h = h;
-	}
-	XSetForeground(dpy, gc, px_bg);
-	XFillRectangle(dpy, pane_pm, gc, 0, 0, (unsigned)w, (unsigned)h);
-	for (i = 0; i < nruns; i++)
-		paint_run(&runs[i]);
-	for (i = 0; i < nidraws; i++)
-		paint_image(&idraws[i]);
-	/* cells written over the pane this frame (ch 0: none) */
 	for (r = 1; r < scr_rows - 1; r++) {
-		const struct cell *cl = nxt + (size_t)r * (size_t)scr_cols;
+		const struct cell *cl = g + (size_t)r * (size_t)scr_cols;
+		int y = (r - 1) * ch;
 
+		if (y >= b1 || y + ch <= b0)
+			continue;
 		for (c = 0; c < scr_cols; c++) {
 			char b = (char)(cl[c].ch ? cl[c].ch : ' ');
 			unsigned long fg = px_fg, bg = px_bg;
-			int x = c * cw, y = (r - 1) * ch;
 
 			if (cl[c].ch == 0)
 				continue;
@@ -1256,10 +1276,429 @@ static void paint_pane(void)
 			XSetForeground(dpy, gc, fg);
 			XSetBackground(dpy, gc, bg);
 			XSetFont(dpy, gc, (cl[c].a & CA_BOLD) && bold ? bold->fid : font->fid);
-			XDrawImageString(dpy, pane_pm, gc, x, y + ascent, &b, 1);
+			XDrawImageString(dpy, win, gc, pane_x() + c * cw, pane_y() + y + ascent,
+				&b, 1);
 		}
 	}
+}
+
+/* a frame: runs (their text in text), images, the grid of cells over the
+ * pane */
+struct fview {
+	const struct run *runs;
+	int nruns;
+	const char *text;
+	const struct idraw *idraws;
+	int nidraws;
+	const struct cell *cells;
+};
+
+/* pane rows [b0, b1) of frame v, painted afresh */
+static void paint_band(const struct fview *v, int b0, int b1)
+{
+	int i, y0, y1;
+
+	if (b0 >= b1)
+		return;
+	clip_band(b0, b1);
+	XSetForeground(dpy, gc, px_bg);
+	XFillRectangle(dpy, win, gc, band_clip.x, band_clip.y, band_clip.width,
+		band_clip.height);
+	for (i = 0; i < v->nruns; i++) {
+		run_rows(&v->runs[i], &y0, &y1);
+		if (y1 > b0 && y0 < b1)
+			paint_run(&v->runs[i], v->text);
+	}
+	for (i = 0; i < v->nidraws; i++) {
+		const struct idraw *d = &v->idraws[i];
+
+		if (d->y + d->h + 2 > b0 && d->y - 2 < b1)
+			paint_image(d, b0, b1);
+	}
+	paint_cells(v->cells, b0, b1);
+	clip_none();
+}
+
+/* --- what changed --------------------------------------------------------- */
+
+struct band {
+	int y0, y1;			/* pane rows [y0, y1) */
+};
+
+static struct band *bands;
+static int nbands, bands_cap;
+
+/* pane rows [y0, y1) to paint again */
+static void damage(int y0, int y1)
+{
+	int h = pane_hpx();
+
+	if (y0 < 0)
+		y0 = 0;
+	if (y1 > h)
+		y1 = h;
+	if (y0 >= y1)
+		return;
+	if (nbands == bands_cap) {
+		int c = bands_cap ? bands_cap * 2 : 64;
+		struct band *q = xrealloc(bands, (size_t)c * sizeof *q);
+
+		if (q == NULL) {
+			/* (no room to say which: all of it) */
+			if (nbands > 0) {
+				bands[0].y0 = 0;
+				bands[0].y1 = h;
+				nbands = 1;
+			}
+			return;
+		}
+		bands = q;
+		bands_cap = c;
+	}
+	bands[nbands].y0 = y0;
+	bands[nbands].y1 = y1;
+	nbands++;
+}
+
+/* the bands in order, overlapping and touching ones joined */
+static void merge_bands(void)
+{
+	int i, j, n = 0;
+
+	for (i = 1; i < nbands; i++) {
+		struct band t = bands[i];
+
+		for (j = i; j > 0 && bands[j - 1].y0 > t.y0; j--)
+			bands[j] = bands[j - 1];
+		bands[j] = t;
+	}
+	for (i = 0; i < nbands; i++) {
+		if (n > 0 && bands[i].y0 <= bands[n - 1].y1) {
+			if (bands[i].y1 > bands[n - 1].y1)
+				bands[n - 1].y1 = bands[i].y1;
+		} else
+			bands[n++] = bands[i];
+	}
+	nbands = n;
+}
+
+/* a run's hash, all but its y */
+static unsigned long run_hash(const struct run *r, const char *text)
+{
+	unsigned long h = 5381;
+	unsigned i;
+
+	h = h * 33 + (unsigned short)r->x;
+	h = h * 33 + (unsigned short)r->a;
+	h = h * 33 + r->attr;
+	h = h * 33 + r->face;
+	h = h * 33 + r->n;
+	for (i = 0; i < r->n; i++)
+		h = h * 33 + (unsigned char)text[r->off + i];
+	return h;
+}
+
+/* the same run but for its y */
+static int run_like(const struct run *a, const char *ta, const struct run *b,
+	const char *tb)
+{
+	return a->x == b->x && a->a == b->a && a->attr == b->attr
+		&& a->face == b->face && a->n == b->n
+		&& memcmp(ta + a->off, tb + b->off, (size_t)a->n) == 0;
+}
+
+/* (arg: char *, as R5 has no XPointer) */
+static Bool copy_event(Display *d, XEvent *e, char *arg)
+{
+	(void)d;
+	(void)arg;
+	return (e->type == GraphicsExpose && e->xgraphicsexpose.drawable == win)
+		|| (e->type == NoExpose && e->xnoexpose.drawable == win);
+}
+
+/* move the pane's pixels by s rows (s < 0: up), and mark the rows that
+ * leaves to paint: the strip uncovered, and any part another window hid
+ * (nothing there to copy) */
+static void scroll_pane(int s)
+{
+	int W = pane_wpx(), H = pane_hpx(), a = s < 0 ? -s : s;
+	int px = pane_x(), py = pane_y();
+	XEvent ev;
+
+	if (s < 0) {
+		XCopyArea(dpy, win, win, sgc, px, py + a, (unsigned)W, (unsigned)(H - a),
+			px, py);
+		damage(H - a, H);
+	} else {
+		XCopyArea(dpy, win, win, sgc, px, py, (unsigned)W, (unsigned)(H - a),
+			px, py + a);
+		damage(0, a);
+	}
+	for (;;) {
+		XIfEvent(dpy, &ev, copy_event, NULL);
+		if (ev.type == NoExpose)
+			break;
+		damage(ev.xgraphicsexpose.y - py,
+			ev.xgraphicsexpose.y - py + ev.xgraphicsexpose.height);
+		if (ev.xgraphicsexpose.count == 0)
+			break;
+	}
+}
+
+/*
+ * The new frame (runs, rtext, idraws, nxt) against the shown one: find a
+ * scroll, do it, and mark what is different afterwards. A run or image
+ * the same as a shown one, moved by the scroll, is on the window
+ * already; one that isn't is painted, and where a shown one was that
+ * isn't any more is painted over.
+ */
+static void diff_frames(void)
+{
+	static int *slot;		/* hash table of shown runs: index, -1 */
+	static unsigned char *used;
+	static int slot_n, used_n;
+	int votes_s[16], votes_n[16], nv = 0, i, k, s = 0, best = 0, mask;
+	unsigned long h;
+	int y0, y1;
+
+	/* the shown runs, by hash */
+	for (k = 64; k < 2 * nsruns; k *= 2)
+		;
+	if (k > slot_n) {
+		int *q = xrealloc(slot, (size_t)k * sizeof *q);
+
+		if (q == NULL) {
+			damage(0, pane_hpx());
+			return;
+		}
+		slot = q;
+		slot_n = k;
+	}
+	if (nsruns > used_n) {
+		unsigned char *q = xrealloc(used, (size_t)nsruns);
+
+		if (q == NULL) {
+			damage(0, pane_hpx());
+			return;
+		}
+		used = q;
+		used_n = nsruns;
+	}
+	mask = k - 1;
+	for (i = 0; i < k; i++)
+		slot[i] = -1;
+	for (i = 0; i < nsruns; i++) {
+		h = run_hash(&sruns[i], stext);
+		while (slot[h & (unsigned long)mask] >= 0)
+			h++;
+		slot[h & (unsigned long)mask] = i;
+	}
+	memset(used, 0, (size_t)nsruns);
+
+	/* a scroll: the shift most runs agree on */
+	for (i = 0; i < nruns; i++) {
+		int tries = 0;
+
+		h = run_hash(&runs[i], rtext);
+		for (; slot[h & (unsigned long)mask] >= 0 && tries < 4; h++) {
+			const struct run *o = &sruns[slot[h & (unsigned long)mask]];
+			int d, v;
+
+			if (!run_like(&runs[i], rtext, o, stext))
+				continue;
+			tries++;
+			d = runs[i].y - o->y;
+			for (v = 0; v < nv && votes_s[v] != d; v++)
+				;
+			if (v == nv) {
+				if (nv == 16)
+					continue;
+				votes_s[nv] = d;
+				votes_n[nv++] = 0;
+			}
+			votes_n[v]++;
+		}
+	}
+	for (i = 0; i < nv; i++)
+		if (votes_n[i] > best) {
+			best = votes_n[i];
+			s = votes_s[i];
+		}
+	if (s == 0 || best < 3 || best * 3 < nruns || (s < 0 ? -s : s) >= pane_hpx()
+		|| shown_over || cells_over)
+		s = 0;
+	if (s != 0)
+		scroll_pane(s);
+
+	/* the runs: kept, new, gone */
+	for (i = 0; i < nruns; i++) {
+		int found = 0;
+
+		h = run_hash(&runs[i], rtext);
+		for (; slot[h & (unsigned long)mask] >= 0; h++) {
+			int j = slot[h & (unsigned long)mask];
+
+			if (!used[j] && sruns[j].y + s == runs[i].y
+				&& run_like(&runs[i], rtext, &sruns[j], stext)) {
+				used[j] = 1;
+				found = 1;
+				break;
+			}
+		}
+		if (!found) {
+			run_rows(&runs[i], &y0, &y1);
+			damage(y0, y1);
+		}
+	}
+	for (i = 0; i < nsruns; i++)
+		if (!used[i]) {
+			run_rows(&sruns[i], &y0, &y1);
+			damage(y0 + s, y1 + s);
+		}
+
+	/* the images (few: each against each) */
+	for (i = 0; i < nidraws; i++) {
+		const struct idraw *d = &idraws[i];
+
+		for (k = 0; k < nsidraws; k++) {
+			const struct idraw *o = &sidraws[k];
+
+			if (o->im == d->im && o->x == d->x && o->y + s == d->y
+				&& o->w == d->w && o->h == d->h && o->attr == d->attr)
+				break;
+		}
+		if (k == nsidraws)
+			damage(d->y - 2, d->y + d->h + 2);
+	}
+	for (k = 0; k < nsidraws; k++) {
+		const struct idraw *o = &sidraws[k];
+
+		for (i = 0; i < nidraws; i++) {
+			const struct idraw *d = &idraws[i];
+
+			if (o->im == d->im && o->x == d->x && o->y + s == d->y
+				&& o->w == d->w && o->h == d->h && o->attr == d->attr)
+				break;
+		}
+		if (i == nidraws)
+			damage(o->y - 2 + s, o->y + o->h + 2 + s);
+	}
+
+	/* the cells over the pane (a menu): rows where they changed */
+	if (s == 0 && (shown_over || cells_over)) {
+		int r;
+
+		for (r = 1; r < scr_rows - 1; r++)
+			if (memcmp(cur + (size_t)r * (size_t)scr_cols,
+				nxt + (size_t)r * (size_t)scr_cols,
+				(size_t)scr_cols * sizeof *cur) != 0)
+				damage((r - 1) * ch, r * ch);
+	}
+}
+
+/* the new frame becomes the shown one */
+static void keep_shown(void)
+{
+	if (nruns > sruns_cap) {
+		struct run *q = xrealloc(sruns, (size_t)nruns * sizeof *q);
+
+		if (q == NULL) {
+			shown_ok = 0;
+			return;
+		}
+		sruns = q;
+		sruns_cap = nruns;
+	}
+	if (rtext_len > stext_cap) {
+		char *q = xrealloc(stext, rtext_len);
+
+		if (q == NULL) {
+			shown_ok = 0;
+			return;
+		}
+		stext = q;
+		stext_cap = rtext_len;
+	}
+	if (nidraws > sidraws_cap) {
+		struct idraw *q = xrealloc(sidraws, (size_t)nidraws * sizeof *q);
+
+		if (q == NULL) {
+			shown_ok = 0;
+			return;
+		}
+		sidraws = q;
+		sidraws_cap = nidraws;
+	}
+	if (nruns)
+		memcpy(sruns, runs, (size_t)nruns * sizeof *runs);
+	if (rtext_len)
+		memcpy(stext, rtext, rtext_len);
+	if (nidraws)
+		memcpy(sidraws, idraws, (size_t)nidraws * sizeof *idraws);
+	nsruns = nruns;
+	stext_len = rtext_len;
+	nsidraws = nidraws;
+	shown_ok = 1;
+}
+
+/*
+ * Images with rows come since they were painted: just those rows onto
+ * the window (and the cells over them again, if a menu is open).
+ */
+static void paint_new_rows(void)
+{
+	int i;
+
+	for (i = 0; i < nidraws; i++) {
+		const struct idraw *d = &idraws[i];
+		int y0, y1;
+
+		if (d->im == NULL || d->im == &gone || d->im->new0 > d->im->new1)
+			continue;
+		y0 = d->im->new0;
+		y1 = d->im->new1 + 1;
+		copy_rows(d, y0, y1);
+		if (cells_over) {
+			clip_band(d->y + y0, d->y + y1);
+			paint_cells(nxt, d->y + y0, d->y + y1);
+			clip_none();
+		}
+	}
+	for (i = 0; i < nidraws; i++)
+		if (idraws[i].im && idraws[i].im != &gone) {
+			idraws[i].im->new0 = idraws[i].im->h;
+			idraws[i].im->new1 = -1;
+		}
+}
+
+/* the pane of this frame onto the window: only what changed */
+static void flush_pane(int full)
+{
+	struct fview v;
+	int W = pane_wpx(), H = pane_hpx(), i;
+
+	pane_sum = pane_checksum();
+	nbands = 0;
+	if (full || !shown_ok || shown_w != W || shown_h != H)
+		damage(0, H);
+	else if (pane_sum != drawn_sum)
+		diff_frames();
+	merge_bands();
+	v.runs = runs;
+	v.nruns = nruns;
+	v.text = rtext;
+	v.idraws = idraws;
+	v.nidraws = nidraws;
+	v.cells = nxt;
+	for (i = 0; i < nbands; i++)
+		paint_band(&v, bands[i].y0, bands[i].y1);
+	if (pane_sum != drawn_sum || !shown_ok || full)
+		keep_shown();
 	drawn_sum = pane_sum;
+	shown_w = W;
+	shown_h = H;
+	shown_over = cells_over;
+	paint_new_rows();
 }
 
 /* --- cells ------------------------------------------------------------- */
@@ -1393,12 +1832,7 @@ void scr_flush(int full)
 		cur[(size_t)drawn_row * (size_t)scr_cols + (size_t)drawn_col].a = 0xFF;
 	if (px_mode) {
 		/* the title and status rows as cells; the pane as a picture */
-		pane_sum = pane_checksum();
-		if (full || pane_sum != drawn_sum || pane_pm == 0 || !paint_new_rows()) {
-			paint_pane();
-			XCopyArea(dpy, pane_pm, win, gc, 0, 0, (unsigned)pm_w,
-				(unsigned)pm_h, pane_x(), pane_y());
-		}
+		flush_pane(full);
 		for (r = 1; r < scr_rows - 1; r++)
 			memcpy(cur + (size_t)r * (size_t)scr_cols,
 				nxt + (size_t)r * (size_t)scr_cols,
@@ -1426,9 +1860,17 @@ static void redraw(void)
 	XClearWindow(dpy, win);
 	draw_controls();
 	draw_scrollbar();
-	if (px_mode && pane_pm)
-		XCopyArea(dpy, pane_pm, win, gc, 0, 0, (unsigned)pm_w,
-			(unsigned)pm_h, pane_x(), pane_y());
+	if (px_mode && shown_ok) {
+		struct fview v;
+
+		v.runs = sruns;
+		v.nruns = nsruns;
+		v.text = stext;
+		v.idraws = sidraws;
+		v.nidraws = nsidraws;
+		v.cells = cur;
+		paint_band(&v, 0, pane_hpx());
+	}
 	for (r = 0; r < scr_rows; r++) {
 		const struct cell *cl = cur + (size_t)r * (size_t)scr_cols;
 

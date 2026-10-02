@@ -70,7 +70,7 @@ ifeq ($(X11),1)
 TOOLS  += $(B)/xmanx
 endif
 BENCH  := $(B)/bench_parse $(B)/bench_micro $(B)/bench_loops $(B)/bench_mem \
-	$(B)/bench_inflate $(B)/bench_image $(B)/imgconv
+	$(B)/bench_inflate $(B)/bench_image $(B)/imgconv $(B)/xkeys
 
 all: $(SPIKES) $(TOOLS) $(BENCH)
 
@@ -106,6 +106,9 @@ $(B)/bench_image: $(B)/tests/bench_image.o $(IMG_OBJ) $(B)/net/inflate.o $(OS_OB
 
 $(B)/imgconv: $(B)/tests/imgconv.o $(IMG_OBJ) $(B)/net/inflate.o $(OS_OBJ)
 	$(LD) -o $@ $^ $(LDLIBS)
+
+$(B)/xkeys: $(B)/tests/xkeys.o $(OS_OBJ)
+	$(LD) -o $@ $^ $(X11LIB) $(LDLIBS)
 
 $(B)/bench_mem: $(B)/tests/bench_mem.o $(OS_OBJ)
 	$(LD) -o $@ $^ $(LDLIBS)

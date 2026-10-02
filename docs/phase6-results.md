@@ -133,6 +133,53 @@ its first image, once 45 s in a 1 s decode; 11 s of CPU in 64 s). It
 isn't the network (traffic to the TT's own address goes over `lo0`).
 The desktop was in use meanwhile; to be measured when it's idle.
 
+## Scrolling with the ATW800's 2D engine
+
+xmanx painted the page into a pixmap and copied the whole pane to the
+window whenever anything changed. On the TT at 32 bits a pixel that copy
+is the CPU writing to the card over VME. Measured with a small X program
+(`XSync` after each operation):
+
+| On Xatw, 32 bpp | 500x350 pane | 1000x650 pane |
+|---|---|---|
+| pixmap to window, whole pane (each change, before) | 258 ms | 828 ms |
+| window to window, scrolled 14 rows (the 2D engine) | 35 ms | 58 ms |
+| pixmap to pixmap, scrolled 14 rows (CPU, TT RAM) | 118 ms | 399 ms |
+| fill on the window (2D engine) | 31 ms | 43 ms |
+| fill in a pixmap (CPU) | 78 ms | 212 ms |
+
+Keeping a back buffer in step by scrolling it costs nearly as much as
+the copy it saves, so there is no back buffer now. The pane is drawn
+straight onto the window, and the frame on the window is kept: runs,
+their text, images, the cells over the pane. Each new frame is compared
+with it. When most of its runs are the shown ones moved by the same
+number of pixels, the window's pixels are moved (window to window: Xatw
+gives that to the engine), and only what is new or different is painted,
+in bands across the pane, clipped. Parts another window hid can't be
+copied: X reports them (GraphicsExpose) and they're painted too. An
+Expose is painted from the kept frame. Moving between links repaints
+the two lines; a menu, its rows. The X server also no longer holds a
+pane-sized pixmap (0.7-2.5 MB at 32 bpp).
+
+Tested in Xvfb by painting each step both ways: after each key or wheel
+turn the window is captured, then again after `^L` (a full repaint), and
+the two must be identical. 20 steps on a Wikipedia page, the image page
+at 8 and 24 bits, the image page with another window covering part of
+xmanx (and after it went), and a form's option menu opened, moved in and
+closed: all identical. On the TT, the same page in the default window,
+ms per step with the server's work counted (`XSync` at each flush):
+
+| Step | before | now |
+|---|---|---|
+| j (a line down) | 328-438 | 94-109 |
+| the wheel (three lines) | 320-321 | 94-117 |
+| Down/Up (between links) | 288-336 | 47-62 |
+| k (a line up) | 313-368 | 93-110 |
+
+The old cost grows with the window (828 ms for the copy alone at
+1000x650); the new one hardly does. `tests/xkeys.c` sends keys and wheel
+turns to a window by name, for driving xmanx where there's no xdotool.
+
 ## The displays
 
 | Server | Depth | Images |
