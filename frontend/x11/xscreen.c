@@ -650,7 +650,6 @@ static int nruns, runs_cap;
 struct ximg;
 struct idraw {
 	struct ximg *im;
-	unsigned long version;		/* its rows so far (repaint on change) */
 	short x, y, w, h;
 	int attr;
 };
@@ -794,7 +793,11 @@ void scr_text(int x, int y, int ascent, const char *s, int n, int attr,
 	rtext_len += (unsigned)n;
 }
 
-/* a checksum of the frame's pane: its runs, and the cells over it */
+static int cells_over;			/* cells drawn over the pane this frame */
+
+/* a checksum of the frame's pane: its runs, its images' places, and the
+ * cells over it (not the images' rows: those come in as they decode, and
+ * are copied on their own) */
 static unsigned long pane_checksum(void)
 {
 	unsigned long h = 5381;
@@ -815,6 +818,10 @@ static unsigned long pane_checksum(void)
 	n = (size_t)(scr_rows - 2) * (size_t)scr_cols * sizeof *nxt;
 	for (i = 0; i < n; i++)
 		h = h * 33 + p[i];
+	cells_over = 0;
+	n = (size_t)(scr_rows - 2) * (size_t)scr_cols;
+	for (i = 0; i < n && !cells_over; i++)
+		cells_over = nxt[scr_cols + i].ch != 0;
 	return h | 1;
 }
 
@@ -856,14 +863,14 @@ static void paint_run(const struct run *r)
 struct ximg {
 	Pixmap pm, mask;		/* mask: None without one */
 	int w, h;
-	unsigned long version;
+	int new0, new1;			/* rows put since it was last painted
+					 * (new0 > new1: none) */
 	XImage *row, *mrow;		/* a row of each: data pointed in */
 };
 
 static struct px_format pxf;
 static int pxf_state;			/* 0 not yet, 1 ready, -1 no images */
 static GC mask_gc;
-static unsigned long img_serial;
 static int x_error;			/* the last X error's code, 0: none */
 
 /* X errors aren't fatal (Xlib's own handler exits): the image that
@@ -1028,6 +1035,8 @@ void *scr_image_new(int w, int h, int masked)
 	memset(im, 0, sizeof *im);
 	im->w = w;
 	im->h = h;
+	im->new0 = h;
+	im->new1 = -1;
 	x_error = 0;
 	im->pm = XCreatePixmap(dpy, win, (unsigned)w, (unsigned)h, (unsigned)depth);
 	if (masked)
@@ -1077,7 +1086,10 @@ void scr_image_row(void *img, int y, const unsigned char *px,
 		} else
 			XFillRectangle(dpy, im->mask, mask_gc, 0, y, (unsigned)im->w, 1);
 	}
-	im->version = ++img_serial;
+	if (y < im->new0)
+		im->new0 = y;
+	if (y > im->new1)
+		im->new1 = y;
 }
 
 void scr_image_draw(void *img, int x, int y, int w, int h, int attr)
@@ -1098,12 +1110,76 @@ void scr_image_draw(void *img, int x, int y, int w, int h, int attr)
 	d = &idraws[nidraws++];
 	memset(d, 0, sizeof *d);	/* (padding too: it is checksummed) */
 	d->im = img;
-	d->version = img ? ((struct ximg *)img)->version : 0;
 	d->x = (short)x;
 	d->y = (short)y;
 	d->w = (short)w;
 	d->h = (short)h;
 	d->attr = attr;
+}
+
+/* rows y0 to y1 of an image, into the pixmap */
+static void copy_rows(const struct idraw *d, int y0, int y1)
+{
+	int x = PANE_IN + d->x, y = d->y;
+
+	if (d->im->mask) {
+		XSetClipMask(dpy, gc, d->im->mask);
+		XSetClipOrigin(dpy, gc, x, y);
+	}
+	XCopyArea(dpy, d->im->pm, pane_pm, gc, 0, y0, (unsigned)d->w,
+		(unsigned)(y1 - y0 + 1), x, y + y0);
+	if (d->im->mask) {
+		XSetClipMask(dpy, gc, None);
+		XSetClipOrigin(dpy, gc, 0, 0);
+	}
+}
+
+/*
+ * The page is as it was, but images have new rows: copy just those into
+ * the pixmap and onto the window (a whole pane at 32 bits a pixel is most
+ * of a second on a TT). Not with cells over the pane (a menu): the rows
+ * would go over them.
+ */
+static int paint_new_rows(void)
+{
+	int i;
+
+	if (cells_over)
+		return 0;
+	for (i = 0; i < nidraws; i++) {
+		const struct idraw *d = &idraws[i];
+		int y0, y1, wy0, wy1, wx0, wx1;
+
+		if (d->im == NULL || d->im->new0 > d->im->new1)
+			continue;
+		y0 = d->im->new0;
+		y1 = d->im->new1 < d->h - 1 ? d->im->new1 : d->h - 1;
+		if (y0 > y1)
+			continue;
+		copy_rows(d, y0, y1);
+		/* that part of the pane, onto the window */
+		wx0 = PANE_IN + d->x;
+		wx1 = wx0 + d->w;
+		wy0 = d->y + y0;
+		wy1 = d->y + y1 + 1;
+		if (wx0 < 0)
+			wx0 = 0;
+		if (wy0 < 0)
+			wy0 = 0;
+		if (wx1 > pm_w)
+			wx1 = pm_w;
+		if (wy1 > pm_h)
+			wy1 = pm_h;
+		if (wx0 < wx1 && wy0 < wy1)
+			XCopyArea(dpy, pane_pm, win, gc, wx0, wy0, (unsigned)(wx1 - wx0),
+				(unsigned)(wy1 - wy0), pane_x() + wx0, pane_y() + wy0);
+	}
+	for (i = 0; i < nidraws; i++)
+		if (idraws[i].im) {
+			idraws[i].im->new0 = idraws[i].im->h;
+			idraws[i].im->new1 = -1;
+		}
+	return 1;
 }
 
 /* an image, into the pixmap */
@@ -1114,16 +1190,9 @@ static void paint_image(const struct idraw *d)
 		px_link[scr_link_color & 7] : px_fg;
 
 	if (d->im) {
-		if (d->im->mask) {
-			XSetClipMask(dpy, gc, d->im->mask);
-			XSetClipOrigin(dpy, gc, x, y);
-		}
-		XCopyArea(dpy, d->im->pm, pane_pm, gc, 0, 0, (unsigned)d->w,
-			(unsigned)d->h, x, y);
-		if (d->im->mask) {
-			XSetClipMask(dpy, gc, None);
-			XSetClipOrigin(dpy, gc, 0, 0);
-		}
+		copy_rows(d, 0, d->h - 1);
+		d->im->new0 = d->im->h;
+		d->im->new1 = -1;
 	} else if (d->w > 2 && d->h > 2) {
 		/* not here yet: a frame */
 		XSetForeground(dpy, gc, DefaultDepth(dpy, DefaultScreen(dpy)) > 1 ?
@@ -1325,7 +1394,7 @@ void scr_flush(int full)
 	if (px_mode) {
 		/* the title and status rows as cells; the pane as a picture */
 		pane_sum = pane_checksum();
-		if (full || pane_sum != drawn_sum || pane_pm == 0) {
+		if (full || pane_sum != drawn_sum || pane_pm == 0 || !paint_new_rows()) {
 			paint_pane();
 			XCopyArea(dpy, pane_pm, win, gc, 0, 0, (unsigned)pm_w,
 				(unsigned)pm_h, pane_x(), pane_y());

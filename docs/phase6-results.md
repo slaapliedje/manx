@@ -103,6 +103,36 @@ an interlaced GIF. `fuzz_html` now lays images out in its made-up
 proportional font (60,000 iterations clean). On the way it found an older
 bug, fixed separately: an `<hr>` in a table cell lost what came before it.
 
+### On the TT
+
+xmanx shows the test page's images on the TT's desktop (Xatw at
+1024x768, `-depth 32`, the card's 0xRRGGBBxx pixels) through AMIX's R5
+Xlib, colours right. Times there, through `image/pixels` to 32 bits:
+
+| Image | ms |
+|---|---|
+| JPEG 800x449, 46 KB, shown 320 wide (decoded at 1/2, then scaled) | 5400 |
+| PNG 64x64 with alpha | 660 |
+| GIF 88x130 | 340 |
+| GIF 200x112, interlaced | 700 |
+
+Two things found there:
+- While an image decoded, every new batch of rows redrew the whole pane
+  and copied it to the window: at 32 bits that is about 700 KB written
+  to the card over VME, about 300 ms a time. The photo's 22 redraws
+  took 6.7 of its 14 s. Now, when only images' rows have changed, just
+  those rows are copied: its 12 redraws took 0.55 s, the photo 9.4 s.
+- A page opened at a `#fragment` stayed at the top. Until their sizes
+  are known, images are their alt text, so the page fit the window and
+  the jump was clamped to the top line; as images came in the layout
+  kept that top line. Now each re-layout goes back to the fragment
+  until the user moves.
+
+Open: xmanx sometimes waits with the CPU idle (once nearly 5 min before
+its first image, once 45 s in a 1 s decode; 11 s of CPU in 64 s). It
+isn't the network (traffic to the TT's own address goes over `lo0`).
+The desktop was in use meanwhile; to be measured when it's idle.
+
 ## The displays
 
 | Server | Depth | Images |
@@ -130,9 +160,9 @@ spend.
 
 ## Left for 6
 
-- On the TT (it was off the network): images at 24 bits through AMIX's
-  R5 Xlib, and the time each step takes there; AMIX's Xdmi in black and
-  white.
+- Where xmanx waits on the TT (above); scaling the photo took 2.1 of
+  its 5.4 s, worth a profile.
+- AMIX's Xdmi in black and white.
 - Progressive JPEG (two of the three photos on the PC were).
 - Images in the disk cache, so that Back doesn't fetch them again.
 - The transputer offload, behind the same sink.
