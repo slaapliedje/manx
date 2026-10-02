@@ -66,6 +66,9 @@ static int g_img_relayout;		/* sizes came in: lay out again */
 static unsigned long g_img_drawn, g_img_relaid;	/* when last drawn, laid out */
 static int g_keyq[16];			/* keys read while images loaded */
 static int g_nkeyq;
+/* the #fragment the page was opened at: gone back to as images come in
+ * and the lines above it grow, until the user moves */
+static char g_frag[128];
 
 /* loading */
 static int g_loading, g_started, g_gopher, g_aborted, g_unsupported;
@@ -847,6 +850,7 @@ static void finish_doc(const char *frag)
 	pimg_begin(&g_doc, &g_base, g_url);
 	relayout(0);
 	g_top = 0;
+	snprintf(g_frag, sizeof g_frag, "%s", frag);
 	if (frag[0]) {
 		long ln = layout_anchor(&g_page, frag);
 
@@ -2031,6 +2035,8 @@ static void relayout_same_text(void)
  * 1; else 0 */
 static int view_key(int k)
 {
+	if (k >= 0)
+		g_frag[0] = '\0';	/* (the user has moved: stay put) */
 	switch (k) {
 	case K_WHEELUP:
 		scroll_to(g_top - 3);
@@ -2133,16 +2139,27 @@ static void img_work(void)
 	int r = pimg_step(&g_page, g_top, view_rows(), img_poll, NULL);
 	unsigned long now = os_msec();
 
-	if (r == PIMG_IDLE)
-		g_img_busy = 0;
 	if (r == PIMG_SIZED)
 		g_img_relayout = 1;
-	/* new sizes: lay out again, but not more often than every 2 s */
+	if (r == PIMG_IDLE)
+		g_img_busy = 0;
+	/* new sizes: lay out again, but not more often than every 2 s (this
+	 * makes g_img_busy again: what the new layout shows may need work) */
 	if (g_img_relayout && (r == PIMG_IDLE || now - g_img_relaid > 2000)) {
 		g_img_relayout = 0;
 		g_img_relaid = now;
 		relayout_same_text();
+		if (g_frag[0]) {
+			/* opened at a #fragment: the images above it have
+			 * moved it */
+			long ln = layout_anchor(&g_page, g_frag);
+
+			if (ln >= 0)
+				scroll_to(ln);
+		}
 	}
+	if (!g_img_busy)
+		g_frag[0] = '\0';
 }
 
 int main(int argc, char **argv)
@@ -2222,7 +2239,7 @@ int main(int argc, char **argv)
 		if (!g_msg_sticky)
 			g_msg[0] = '\0';
 		g_msg_sticky = 0;
-		if (view_key(k))
+		if (view_key(k))	/* (any key: g_frag dropped there) */
 			continue;
 		switch (k) {
 		case 'q': case 'Q': case K_CLOSE:
