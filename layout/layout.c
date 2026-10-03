@@ -26,7 +26,7 @@
 
 struct saved {
 	unsigned char attr, pre, tag, list;
-	unsigned char display, margin, face;
+	unsigned char display, margin, face, nomarker;
 	unsigned long para_mark, para_line;	/* <p>: where it began */
 	unsigned short link;
 	short indent;
@@ -75,6 +75,7 @@ struct lay {
 	long heading_line;		/* the last h1-h3 */
 	char marker[16];		/* a list item's marker, not yet shown */
 	int marker_w;
+	int nomarker;			/* list-style: none here */
 	struct list lists[MAX_LISTS];
 	int nlists;
 	int oom;
@@ -643,7 +644,7 @@ static void make_marker(struct lay *L, nodeid li)
 		L->marker[0] = bullets[depth % 4];
 		L->marker[1] = ' ';
 		L->marker[2] = '\0';
-		L->marker_w = 2;
+		L->marker_w = L->nomarker ? 0 : 2;	/* (list-style: none) */
 		return;
 	}
 	if ((v = doc_attr(L->d, li, ATTR_VALUE)) != NULL)
@@ -670,6 +671,8 @@ static void make_marker(struct lay *L, nodeid li)
 		num[12] = '\0';
 	sprintf(L->marker, "%s. ", num);
 	L->marker_w = (int)strlen(L->marker);
+	if (L->nomarker)
+		L->marker_w = 0;	/* (list-style: none; still counted) */
 }
 
 static void list_begin(struct lay *L, nodeid id, int tag)
@@ -1082,7 +1085,7 @@ static int enter(struct lay *L, nodeid id, int depth)
 	struct saved *sv;
 	struct eattr ea;
 	const char *v;
-	int tag = n->tag;
+	int tag = n->tag, cssf = 0;
 
 	if (n->data)
 		scan_attrs(d, id, &ea);
@@ -1091,11 +1094,12 @@ static int enter(struct lay *L, nodeid id, int depth)
 	style_for(tag, ea.hidden, ea.style, ea.id, &s);
 	/* the page's style sheet (an @media width is the window's: pixels,
 	 * or a terminal's columns at 8 pixels) */
-	if (s.display != D_NONE && L->d->sheet
-		&& css_display(L->d->sheet, L->d, id, ea.id, ea.cls,
-		L->m ? L->width : L->width * 8) == CSS_HIDE
-		&& !css_inline_shows(ea.style))
-		s.display = D_NONE;
+	if (s.display != D_NONE && L->d->sheet) {
+		cssf = css_display(L->d->sheet, L->d, id, ea.id, ea.cls,
+			L->m ? L->width : L->width * 8);
+		if ((cssf & CSS_HIDDEN) && !css_inline_shows(ea.style))
+			s.display = D_NONE;
+	}
 	if (s.display == D_NONE)
 		return 0;
 
@@ -1198,6 +1202,14 @@ static int enter(struct lay *L, nodeid id, int depth)
 	sv->display = s.display;
 	sv->margin = s.margin;
 	sv->face = (unsigned char)L->face;
+	sv->nomarker = (unsigned char)L->nomarker;
+	/* list-style: inherited, the element's own style="" last */
+	if (ea.style && css_inline_list(ea.style))
+		cssf = (cssf & ~(CSS_NO_MARKER | CSS_MARKER)) | css_inline_list(ea.style);
+	if (cssf & CSS_NO_MARKER)
+		L->nomarker = 1;
+	else if (cssf & CSS_MARKER)
+		L->nomarker = 0;
 
 	switch (s.display) {
 	case D_BLOCK:
@@ -1321,6 +1333,7 @@ static void leave(struct lay *L, nodeid id, int depth)
 	L->indent = sv->indent;
 	L->cell = sv->cell;
 	L->cell_mark = sv->cell_mark;
+	L->nomarker = sv->nomarker;
 	if (s.display == D_TABLE_CELL || tag == TAG_TABLE)
 		L->cell_break = 0;
 	if (sv->list && L->nlists)
@@ -1426,8 +1439,8 @@ static int el_hidden(struct lay *L, nodeid id)
 	scan_attrs(L->d, id, &ea);
 	style_for(L->d->nodes[id].tag, ea.hidden, ea.style, ea.id, &s);
 	if (s.display != D_NONE && L->d->sheet
-		&& css_display(L->d->sheet, L->d, id, ea.id, ea.cls,
-		L->m ? L->width : L->width * 8) == CSS_HIDE
+		&& (css_display(L->d->sheet, L->d, id, ea.id, ea.cls,
+		L->m ? L->width : L->width * 8) & CSS_HIDDEN)
 		&& !css_inline_shows(ea.style))
 		s.display = D_NONE;
 	return s.display == D_NONE;
@@ -1720,6 +1733,7 @@ static int lay_cell(struct lay *L, struct lay *S, struct gcell *gc, int width)
 	S->em = L->em;
 	S->width = width;
 	S->face = L->face;
+	S->nomarker = L->nomarker;
 	S->heading_line = -1;
 	style_of(L->d, gc->node, &s);	/* (a <th>: bold) */
 	S->attr = L->attr | s.attr;

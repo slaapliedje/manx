@@ -118,7 +118,16 @@ an 8 KB state (AMIX's memset is slow). Cell pages now start small, and
 one state serves a table's cells, its saved-element stack left as it
 is (written before it's read).
 
+## list-style
+
+`list-style: none` and `list-style-type: none` (from sheets or an element's
+own `style=""`) drop list markers. It is inherited, as in CSS: set on a
+`<ul>` it holds for its items and lists inside them, until a rule gives
+them a marker again (`list-style: square`). An ordered list without
+numbers still counts. The cascade is the same as display's. Nine corpus
+pages lose bullets this way (Wikipedia's infobox values, portal and
+category boxes; BBC's skip links). `test_css`: 6 more cases.
+
 ## Left for 7
 
-- `list-style: none` (lists styled bullet-less still show `*`).
 - Images in the disk cache, progressive JPEG (from Phase 6).

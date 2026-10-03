@@ -42,8 +42,8 @@ struct rule {
 	unsigned long order;
 	unsigned short cmp, ncmp;	/* s->cmps[cmp...], the subject first */
 	unsigned short media;		/* 0: all; else s->media[media - 1] */
-	unsigned char disp, vis;	/* CSS_SHOW / CSS_HIDE / CSS_UNSET */
-	unsigned char disp_imp, vis_imp;	/* !important */
+	unsigned char disp, vis, ls;	/* CSS_SHOW / CSS_HIDE / CSS_UNSET */
+	unsigned char disp_imp, vis_imp, ls_imp;	/* !important */
 	int next;			/* the next rule in its bucket, -1 */
 };
 
@@ -610,8 +610,8 @@ static unsigned bucket_of(const struct cmp *c)
 
 /* --- rules --------------------------------------------------------------------- */
 
-/* do declarations d (n bytes) mention display or visibility at all?
- * (most rules don't, and are dropped without reading them) */
+/* do declarations d (n bytes) mention display, visibility or list-style
+ * at all? (most rules don't, and are dropped without reading them) */
 static int mentions(const char *d, int n)
 {
 	int i;
@@ -619,9 +619,32 @@ static int mentions(const char *d, int n)
 	for (i = 1; i + 4 < n; i++)
 		if (d[i] == 'i' && d[i + 1] == 's'
 			&& ((d[i + 2] == 'p' && d[i + 3] == 'l' && d[i - 1] == 'd')
-			|| (d[i + 2] == 'i' && d[i + 3] == 'b' && d[i - 1] == 'v')))
+			|| (d[i + 2] == 'i' && d[i + 3] == 'b' && d[i - 1] == 'v')
+			|| (d[i + 2] == 't' && d[i + 3] == '-' && d[i - 1] == 'l')))
 			return 1;
 	return 0;
+}
+
+/* a list-style value: CSS_HIDE for no marker, else CSS_SHOW */
+static int list_style(const char *v, size_t vn, int type_only)
+{
+	size_t i = 0;
+
+	if (type_only)
+		return starts(v, vn, "none") ? CSS_HIDE : CSS_SHOW;
+	/* the shorthand: none among its words (url(...) none, none inside) */
+	while (i < vn) {
+		size_t j;
+
+		while (i < vn && is_space((unsigned char)v[i]))
+			i++;
+		for (j = i; j < vn && !is_space((unsigned char)v[j]) && v[j] != '!'; j++)
+			;
+		if (j - i == 4 && starts(v + i, j - i, "none"))
+			return CSS_HIDE;
+		i = j + 1;
+	}
+	return CSS_SHOW;
 }
 
 /* the rule just read: if it says something about display or visibility,
@@ -629,7 +652,7 @@ static int mentions(const char *d, int n)
 static void end_rule(struct css_sheet *s)
 {
 	const char *d = s->decl, *p, *e;
-	int disp = 0, vis = 0, disp_imp = 0, vis_imp = 0;
+	int disp = 0, vis = 0, ls = 0, disp_imp = 0, vis_imp = 0, ls_imp = 0;
 	unsigned short media = cur_media(s);
 
 	if (s->plong || s->plen == 0 || !mentions(d, s->dlen))
@@ -676,6 +699,12 @@ static void end_rule(struct css_sheet *s)
 			else if (starts(v, vn, "visible"))
 				vis = CSS_SHOW;
 			vis_imp = imp;
+		} else if (pn == 10 && starts(p, pn, "list-style")) {
+			ls = list_style(v, vn, 0);
+			ls_imp = imp;
+		} else if (pn == 15 && starts(p, pn, "list-style-type")) {
+			ls = list_style(v, vn, 1);
+			ls_imp = imp;
 		}
 		/*
 		 * (Text "visually hidden", clipped to nothing, stays: it is
@@ -684,7 +713,7 @@ static void end_rule(struct css_sheet *s)
 		 * minutes ago", "Search", a logo's name.)
 		 */
 	}
-	if (!disp && !vis)
+	if (!disp && !vis && !ls)
 		return;
 	/* the selectors */
 	for (p = s->pre; p < s->pre + s->plen; p = e + 1) {
@@ -738,6 +767,8 @@ static void end_rule(struct css_sheet *s)
 		r->vis = (unsigned char)vis;
 		r->disp_imp = (unsigned char)disp_imp;
 		r->vis_imp = (unsigned char)vis_imp;
+		r->ls = (unsigned char)ls;
+		r->ls_imp = (unsigned char)ls_imp;
 		b = (int)bucket_of(&sel[0]);
 		r->next = s->bucket[b];
 		s->bucket[b] = s->nrules++;
@@ -1094,7 +1125,7 @@ static int beats(int imp_a, const struct rule *a, int imp_b, const struct rule *
 /* the rules filed under key bucket b that hold, into the winners */
 static void try_bucket(const struct css_sheet *s, unsigned b, const struct doc *d,
 	const struct elinfo *e, int top, int vw,
-	const struct rule **dw, const struct rule **vwin)
+	const struct rule **dw, const struct rule **vwin, const struct rule **lw)
 {
 	int i;
 
@@ -1107,6 +1138,8 @@ static void try_bucket(const struct css_sheet *s, unsigned b, const struct doc *
 			*dw = r;
 		if (r->vis && beats(r->vis_imp, r, *vwin ? (*vwin)->vis_imp : 0, *vwin))
 			*vwin = r;
+		if (r->ls && beats(r->ls_imp, r, *lw ? (*lw)->ls_imp : 0, *lw))
+			*lw = r;
 	}
 }
 
@@ -1136,7 +1169,7 @@ static int set_path(struct css_sheet *s, const struct doc *d, nodeid node)
 int css_display(struct css_sheet *s, const struct doc *d, nodeid node,
 	const char *id, const char *cls, int vw)
 {
-	const struct rule *dw = NULL, *vwin = NULL;
+	const struct rule *dw = NULL, *vwin = NULL, *lw = NULL;
 	struct elinfo me;
 	struct cmp probe;
 	unsigned done[EL_CLASSES + 3];
@@ -1161,7 +1194,7 @@ int css_display(struct css_sheet *s, const struct doc *d, nodeid node,
 		s->memo_vw = vw;
 	}
 	if (s->memo && node < s->memo_n && s->memo[node])
-		return s->memo[node] == 2 ? CSS_HIDE : CSS_UNSET;
+		return s->memo[node] - 1;
 
 	top = set_path(s, d, node);
 	el_info(d, node, id, cls, &me);
@@ -1188,16 +1221,45 @@ int css_display(struct css_sheet *s, const struct doc *d, nodeid node,
 			for (k = 0; k < i && done[k] != done[i]; k++)
 				;
 			if (k == i)
-				try_bucket(s, done[i], d, &me, top, vw, &dw, &vwin);
+				try_bucket(s, done[i], d, &me, top, vw, &dw, &vwin, &lw);
 		}
 	}
-	k = (dw && dw->disp == CSS_HIDE) || (vwin && vwin->vis == CSS_HIDE);
+	k = (dw && dw->disp == CSS_HIDE) || (vwin && vwin->vis == CSS_HIDE) ?
+		CSS_HIDDEN : 0;
+	if (lw)
+		k |= lw->ls == CSS_HIDE ? CSS_NO_MARKER : CSS_MARKER;
 	if (s->memo && node < s->memo_n)
-		s->memo[node] = (unsigned char)(k ? 2 : 1);
+		s->memo[node] = (unsigned char)(k + 1);
 	/* its children's turn next: it is their parent */
 	if (s->npath < PATH_DEPTH)
 		s->path[s->npath++] = me;
-	return k ? CSS_HIDE : CSS_UNSET;
+	return k;
+}
+
+int css_inline_list(const char *css)
+{
+	const char *p, *v;
+
+	for (p = css; p && *p; p++) {
+		int type;
+
+		if ((*p != 'l' && *p != 'L') || !starts(p, strlen(p), "list-style"))
+			continue;
+		v = p + 10;
+		type = starts(v, strlen(v), "-type");
+		if (type)
+			v += 5;
+		while (is_space((unsigned char)*v))
+			v++;
+		if (*v != ':')
+			continue;
+		v++;
+		while (is_space((unsigned char)*v))
+			v++;
+		return list_style(v, strcspn(v, ";"), type) == CSS_HIDE ?
+			CSS_NO_MARKER : CSS_MARKER;
+	}
+	return 0;
 }
 
 int css_inline_shows(const char *css)

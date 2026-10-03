@@ -147,6 +147,18 @@ int main(void)
 	check("style in the body", "", "<p>a</p><style>.p{display:none}</style><p class=p>b</p>",
 		"a|");
 	check("no style: as before", "", "<p class=x>a</p><p hidden>b</p>", "a|");
+	/* list-style: markers or none, inherited */
+	check("list-style none", "ul{list-style:none}", "<ul><li>a<li>b</ul>", "    a|    b|");
+	check("list-style-type none on ol", ".n{list-style-type:none}",
+		"<ol class=n><li>a<li>b</ol><ol><li>c</ol>", "    a|    b|| 1. c|");
+	check("list-style inherited", ".a{list-style:none}",
+		"<ul class=a><li>x<ul><li>y</ul></ul>", "    x|        y|");
+	check("list-style back", ".a{list-style:none} ul ul{list-style:square}",
+		"<ul class=a><li>x<ul><li>y</ul></ul>", "    x|      + y|");
+	check("list-style on an item", "li.k{list-style:none}",
+		"<ul><li class=k>a<li>b</ul>", "    a|  * b|");
+	check("list-style inline", "", "<ul style='list-style: none inside'><li>a</ul>"
+		"<ul style='list-style:square'><li>b</ul>", "    a||  * b|");
 	printf("css: %d/%d passed\n", runs - fails, runs);
 	return fails ? 1 : 0;
 }
