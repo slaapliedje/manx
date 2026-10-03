@@ -38,6 +38,7 @@ int scr_mouse_x, scr_mouse_y;
 int scr_proportional;
 long scr_scroll_target;
 const char *scr_font;
+const char *scr_geometry;
 const char *scr_needs = "a terminal";
 
 struct cell {

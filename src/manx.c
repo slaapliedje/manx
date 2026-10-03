@@ -769,6 +769,7 @@ static const char help_html[] =
 	"link_color = blue      links' colour (cyan; blue suits white)\n"
 	"proportional = off     xmanx: the page in a fixed font\n"
 	"cookies = off          no cookies\n"
+	"geometry = 120x40+0+0  xmanx: the window's columns, rows (and place)\n"
 	"images = off           xmanx: no pictures, only their alt text\n"
 	"stylesheets = off      ignore pages' &lt;style&gt; (what they hide shows)\n"
 	"cache_kb = 2048        the disk cache's size (0: none)\n"
@@ -2224,6 +2225,7 @@ int main(int argc, char **argv)
 	g_search = config_str("search", SEARCH_URL);
 	scr_color = config_bool("color", 1);
 	scr_font = config_str("font", NULL);
+	scr_geometry = config_str("geometry", NULL);
 	scr_proportional = config_bool("proportional", 1);
 	g_images = config_bool("images", 1);
 	html_stylesheets = config_bool("stylesheets", 1);

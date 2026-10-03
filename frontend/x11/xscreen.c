@@ -37,6 +37,7 @@ int scr_mouse_x, scr_mouse_y;
 int scr_proportional = 1;
 long scr_scroll_target;
 const char *scr_font;
+const char *scr_geometry;
 const char *scr_needs = "an X display ($DISPLAY)";
 
 #define PAD	2			/* pixels around the cells */
@@ -61,6 +62,7 @@ static int closing;
 /* where things are: the control area (0..ctrl_h), the cells (from gx,
  * gy), the scrollbar (sb_x..win_w, gy..win_h) */
 static int ctrl_h, bh, gx, gy, sb_x;
+static int gx_at = -1, gy_at = -1;	/* where geometry asked to be put */
 
 static struct cell *cur, *nxt;		/* in the window / being built */
 static int px_mode;			/* the page in fonts, in a pane */
@@ -275,6 +277,19 @@ int scr_open(const char *cs_env)
 	metrics.ctx = NULL;
 	metrics.em = px_mode ? XTextWidth(face_font(0, 0), "0", 1) : 1;
 
+	/* the size asked for: columns and rows of cells, as xterm takes it */
+	if (scr_geometry) {
+		int c = 0, r = 0;
+		char sx = '+', sy = '+';
+
+		if (sscanf(scr_geometry, "%dx%d%c%d%c%d", &c, &r, &sx, &gx_at, &sy, &gy_at) >= 2
+			&& c >= 40 && c <= 400 && r >= 5 && r <= 200) {
+			scr_cols = c;
+			scr_rows = r;
+		}
+		if (sx == '-' || sy == '-')
+			gx_at = gy_at = -1;	/* (only +X+Y) */
+	}
 	win_w = 2 * PAD + scr_cols * cw + SBW;
 	win_h = gy + PAD + scr_rows * ch;
 	sb_x = win_w - SBW;
@@ -282,13 +297,24 @@ int scr_open(const char *cs_env)
 	wa.border_pixel = px_fg;
 	wa.event_mask = KeyPressMask | ButtonPressMask | ButtonReleaseMask
 		| ButtonMotionMask | ExposureMask | StructureNotifyMask;
-	win = XCreateWindow(dpy, RootWindow(dpy, scr), 0, 0,
+	win = XCreateWindow(dpy, RootWindow(dpy, scr), gx_at > 0 ? gx_at : 0,
+		gy_at > 0 ? gy_at : 0,
 		(unsigned)win_w, (unsigned)win_h, 1, CopyFromParent, InputOutput,
 		CopyFromParent, CWBackPixel | CWBorderPixel | CWEventMask, &wa);
 
 	/* the window manager: steps of one cell, at least 40x5 */
 	if ((sh = XAllocSizeHints()) != NULL) {
 		sh->flags = PResizeInc | PMinSize | PBaseSize;
+		if (scr_geometry) {
+			sh->flags |= USSize;
+			if (gx_at >= 0 && gy_at >= 0) {
+				sh->flags |= USPosition;
+				sh->x = gx_at;
+				sh->y = gy_at;
+			}
+			sh->width = win_w;
+			sh->height = win_h;
+		}
 		sh->width_inc = cw;
 		sh->height_inc = ch;
 		sh->base_width = 2 * PAD + SBW;

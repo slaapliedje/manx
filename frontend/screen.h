@@ -37,6 +37,7 @@ extern int scr_mouse_x, scr_mouse_y;	/* ... in the page's pane, in units */
 extern int scr_proportional;		/* X11: draw the page in fonts (1) */
 extern long scr_scroll_target;		/* where K_SCROLL goes */
 extern const char *scr_font;		/* X11: the font (NULL: "fixed") */
+extern const char *scr_geometry;	/* X11: "COLSxROWS[+X+Y]" (NULL: 80x25) */
 extern const char *scr_needs;		/* what scr_open needs, for errors */
 
 /*
