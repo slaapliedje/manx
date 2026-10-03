@@ -1,11 +1,14 @@
 # Manx
 
 A web browser for 68030 System V Unix: **Atari System V** on the TT030 and
-**Amiga UNIX** (AMIX). Text frontend today, X11 later. It does HTTPS itself,
-on the 68030, in a few megabytes.
+**Amiga UNIX** (AMIX). In a terminal (`manx`) or an X11 window with
+pictures (`xmanx`). It does HTTPS itself, and decodes its images, on the
+68030, in a few megabytes.
 
 Named after Lynx's tailless cousin, and after Manx Software Systems, whose
 Aztec C built a good share of the Amiga's and the Atari ST's software.
+
+![xmanx on the Atari TT030's own 24-bit display, showing Wikipedia's article about the TT030](docs/screenshots/11-xmanx-on-the-tt030.png)
 
 ![Hacker News in Manx on the TT030](docs/screenshots/03-hackernews.png)
 
@@ -13,7 +16,8 @@ Aztec C built a good share of the Amiga's and the Atari ST's software.
 
 ![Manx in colour in XFree86's xterm on the TT's own display](docs/screenshots/10-manx-in-colour-xterm.png)
 
-(Captured from the real TT030 over telnet, and from its X display. More in
+(Captured from the real TT030: its X display, on an ATW800/2 card at
+1024x768 in 24-bit colour, and over telnet. More in
 [docs/screenshots](docs/screenshots).)
 
 ## What it does
@@ -24,8 +28,12 @@ Aztec C built a good share of the Amiga's and the Atari ST's software.
 - gzip/deflate content, decoded as it arrives. Pages come 4-6x smaller,
   which matters at the TT's 35 KB/s.
 - HTML parsed as it streams, into a compact document (16-byte nodes, a
-  1.2 MB cap). Lists, `<pre>`, tables row by row, form fields, anchors.
-  UTF-8, windows-1252 and Latin-1 pages.
+  1.2 MB cap). Lists, `<pre>`, tables of data as grids (those framing a
+  page row by row), form fields, anchors. UTF-8, windows-1252 and Latin-1
+  pages.
+- What style sheets hide (`display:none`, `visibility:hidden`,
+  `list-style:none`), from `<style>` and linked sheets, with `@media`
+  widths and the cascade; never page layout.
 - Forms (GET and POST, every field type, `$EDITOR` for text areas), a
   cookie jar, a disk cache (Back without the network), bookmarks, gopher,
   `file:`.
@@ -33,8 +41,14 @@ Aztec C built a good share of the Amiga's and the Atari ST's software.
   can't do UTF-8. UTF-8, Latin-1 or plain ASCII (it asks the terminal which);
   colour where the terminal has it.
 - Lynx's keys: Up/Down between links, Right follows, Left goes back.
+- `xmanx`: the page in proportional fonts in an X11 window with OPEN LOOK
+  controls. GIF, PNG and JPEG (baseline and progressive) decoded on the
+  68030 as they arrive, scaled and dithered to the display (24-bit,
+  8-bit colour cube, black and white). On the ATW800 card, scrolling moves
+  the window's pixels with the card's 2D engine.
 
-What it doesn't do: JavaScript, CSS beyond `display:none`, images (yet).
+What it doesn't do: JavaScript, CSS layout (columns, positions, colours),
+SVG and WebP pictures.
 
 ## On the TT030 (68030, 32 MHz)
 
@@ -44,7 +58,7 @@ What it doesn't do: JavaScript, CSS beyond `display:none`, images (yet).
 | Wikipedia article fetched (131 KB, 26 KB gzipped), new TLS session | 13 s |
 | Hacker News, resumed session: first screen / whole page | 6.5 s / 13.6 s |
 | Back to a page in the cache | 1.2 s |
-| The browser binary (static, with TLS) | 370 KB |
+| The browser binary (static, with TLS): manx / xmanx | 400 KB / 530 KB |
 
 Checking a certificate chain takes the 68030 5-10 s, and many servers
 give up on an idle client well before that. So a request with nothing
