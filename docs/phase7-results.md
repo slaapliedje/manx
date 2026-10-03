@@ -45,9 +45,34 @@ as much (the Guardian 28.4 s). Reading now runs at about 3 us a byte of
 CSS; matching costs about a second on the first layout of a big page and
 next to nothing after (the answer per element is kept).
 
+## Linked style sheets
+
+Most pages keep their hiding rules in linked sheets (38 of the 54 corpus
+pages link 178 of them).
+
+| Module | What it does |
+|---|---|
+| `src/pagecss` | when a page is complete, its `<link rel=stylesheet>` (not alternate ones, not print-only), up to 16. While no key waits, each comes from the disk cache if fresh, else is fetched (with the page as Referer), kept whole up to 384 KB (one cut short by a key is fetched again later, not read in part), put in the cache, and read into the page's sheet. Sites share their sheets between pages: from the cache a sheet costs only its reading |
+| `style/css` | `css_begin` takes the sheet's place in the page (its element's node, which grows in document order): rule order is that times 65536 plus the rule's number, so a sheet linked early ranks below a later `<style>` whatever order they arrive in |
+| `src/manx.c` | sheets before images (they say what is laid out, images included); the page laid out again as they come, keeping the text at the top of the window (or going back to the page's `#fragment`), at most every 2 s. `z` stops both; the status line counts them; `stylesheets = off` skips them too |
+
+Tested with the terminal manx on local pages: a linked sheet hides, a
+print-only and an alternate sheet don't, and with equal specificity a
+`<style>` before the `<link>` loses to the sheet while one after it wins.
+Over HTTP (a local server sending `Cache-Control: max-age=3600`) the
+second visit took the sheet from the disk cache, with no request for it.
+On Wikipedia the first screen was the collapsed main menu's contents
+(Navigation, Contribute and their lists) and the search box's parts;
+with the sheets the article starts on the first screen. On the TT (a
+resumed session) the page showed within 20 s and its sheets were read
+and applied within 40 s.
+
+On the way: the 1997 SVR4 assembler dies on one of `manx.c`'s switch
+jump tables ("Can't extend frag 100. chars"), though the file's nine
+others like it assemble. `manx.c` is now compiled with
+`-fno-jump-tables`: its switches are keys, so compare chains cost
+nothing that matters.
+
 ## Left for 7
 
-- Linked style sheets (`<link rel=stylesheet>`): fetched after the page,
-  cached, then the page laid out again. Most pages keep their hiding
-  rules there.
 - Tables as grids.

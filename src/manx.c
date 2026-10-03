@@ -37,6 +37,7 @@
 #include "config.h"
 #include "cache.h"
 #include "pageimg.h"
+#include "pagecss.h"
 #include <time.h>
 
 #define HIST_MAX	64
@@ -62,6 +63,7 @@ static int g_have_forms;
 static const char *g_search = SEARCH_URL;
 static int g_images = 1;		/* config images: show them (X11) */
 static int g_img_busy;			/* the page's images aren't all in */
+static int g_css_busy;			/* nor its linked style sheets */
 static int g_img_relayout;		/* sizes came in: lay out again */
 static unsigned long g_img_drawn, g_img_relaid;	/* when last drawn, laid out */
 static int g_keyq[16];			/* keys read while images loaded */
@@ -376,6 +378,12 @@ static void draw_status(void)
 		else if (k->kind == LK_FIELD)
 			describe_field(k->node, buf, sizeof buf);
 		xfree(u);
+	} else if (g_css_busy) {
+		int total, done;
+
+		pcss_count(&total, &done);
+		snprintf(buf, sizeof buf, "%s%sstyle sheets %d of %d  (z: stop)", g_info,
+			g_info[0] ? "  " : "", done, total);
 	} else if (g_img_busy) {
 		int total, done;
 
@@ -435,7 +443,8 @@ static void draw(int full)
 	/* the window's controls, where there are any */
 	scr_url(g_url);
 	scr_scroll(g_top, rows, g_have_page ? (long)g_page.nlines : 0);
-	scr_state(g_hpos > 0, g_hpos + 1 < g_nhist, g_loading || g_img_busy);
+	scr_state(g_hpos > 0, g_hpos + 1 < g_nhist, g_loading || g_img_busy
+		|| g_css_busy);
 	scr_cursor(-1, -1);
 	scr_flush(full);
 }
@@ -674,6 +683,8 @@ static void on_reset(void *ctx)
 {
 	(void)ctx;
 	pimg_end();
+	pcss_end();
+	g_css_busy = 0;
 	doc_free(&g_doc);
 	doc_init(&g_doc, 0);
 	g_started = 0;
@@ -705,7 +716,8 @@ static void load_string(const char *html, const char *url)
 		g_have_page = 0;
 	}
 	pimg_end();
-	g_img_busy = 0;
+	pcss_end();
+	g_img_busy = g_css_busy = 0;
 	doc_free(&g_doc);
 	doc_init(&g_doc, 0);
 	html_load_begin(&g_load, &g_doc, "utf-8", 0);
@@ -817,7 +829,8 @@ static void doc_reset(void)
 		g_have_page = 0;
 	}
 	pimg_end();
-	g_img_busy = 0;
+	pcss_end();
+	g_img_busy = g_css_busy = 0;
 	g_img_relayout = 0;
 	doc_free(&g_doc);
 	doc_init(&g_doc, 0);
@@ -850,6 +863,10 @@ static void finish_doc(const char *frag)
 	}
 	make_forms();
 	pimg_begin(&g_doc, &g_base, g_url);
+	if (html_stylesheets) {
+		pcss_begin(&g_doc, &g_base, g_url);
+		g_css_busy = 1;
+	}
 	relayout(0);
 	g_top = 0;
 	snprintf(g_frag, sizeof g_frag, "%s", frag);
@@ -2138,9 +2155,33 @@ static int img_poll(void *ctx, int shown)
 /* a piece of the page's image work, while no key waits */
 static void img_work(void)
 {
-	int r = pimg_step(&g_page, g_top, view_rows(), img_poll, NULL);
-	unsigned long now = os_msec();
+	unsigned long now;
+	int r;
 
+	if (g_css_busy) {
+		/* the style sheets first: they say what is laid out at all,
+		 * images included */
+		r = pcss_step(img_poll, NULL);
+		if (r == PCSS_READ)
+			g_img_relayout = 1;
+		if (r == PCSS_IDLE)
+			g_css_busy = 0;
+		now = os_msec();
+		if (g_img_relayout && (r == PCSS_IDLE || now - g_img_relaid > 2000)) {
+			g_img_relayout = 0;
+			g_img_relaid = now;
+			relayout_same_text();
+			if (g_frag[0]) {
+				long ln = layout_anchor(&g_page, g_frag);
+
+				if (ln >= 0)
+					scroll_to(ln);
+			}
+		}
+		return;
+	}
+	r = pimg_step(&g_page, g_top, view_rows(), img_poll, NULL);
+	now = os_msec();
 	if (r == PIMG_SIZED)
 		g_img_relayout = 1;
 	if (r == PIMG_IDLE)
@@ -2231,7 +2272,7 @@ int main(int argc, char **argv)
 			draw(1);
 		} else
 			draw(0);
-		if (g_img_busy && g_nkeyq == 0) {
+		if ((g_img_busy || g_css_busy) && g_nkeyq == 0) {
 			if ((k = scr_getkey(0)) < 0) {
 				/* nothing typed: on with the images */
 				img_work();
@@ -2307,7 +2348,8 @@ int main(int argc, char **argv)
 			go_url("about:help");
 			break;
 		case 'z':
-			if (g_img_busy) {
+			if (g_img_busy || g_css_busy) {
+				pcss_cancel();
 				pimg_cancel();
 				message("No more images for this page.", NULL);
 			}

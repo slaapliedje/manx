@@ -77,10 +77,10 @@ all: $(SPIKES) $(TOOLS) $(BENCH)
 $(B)/tlsbench: $(B)/spikes/tlsbench.o $(OS_OBJ) $(BR_LIB)
 	$(LD) -o $@ $^ $(LDLIBS)
 
-$(B)/manx: $(B)/src/manx.o $(B)/src/pageimg_none.o $(FRONT_OBJ) $(HTML_OBJ) $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
+$(B)/manx: $(B)/src/manx.o $(B)/src/pagecss.o $(B)/src/pageimg_none.o $(FRONT_OBJ) $(HTML_OBJ) $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
 	$(LD) -o $@ $^ $(TERMLIB) $(LDLIBS)
 
-$(B)/xmanx: $(B)/src/manx.o $(B)/src/pageimg.o $(X11_OBJ) $(HTML_OBJ) $(IMG_OBJ) $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
+$(B)/xmanx: $(B)/src/manx.o $(B)/src/pagecss.o $(B)/src/pageimg.o $(X11_OBJ) $(HTML_OBJ) $(IMG_OBJ) $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
 	$(LD) -o $@ $^ $(X11LIB) $(LDLIBS)
 
 $(B)/ufetch: $(B)/src/ufetch.o $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
@@ -123,6 +123,11 @@ $(BR_LIB): $(BR_OBJ)
 $(B)/$(BEARSSL)/%.o: $(BEARSSL)/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(BRFLAGS) -I$(BEARSSL)/inc -I$(BEARSSL)/src -c $< -o $@
+
+# The SVR4 assembler of 1997 dies on one of manx.c's switch jump tables
+# ("Can't extend frag"); its switches are keys, so compare chains are
+# no loss.
+$(B)/src/manx.o: CFLAGS += -fno-jump-tables
 
 $(B)/%.o: %.c
 	@mkdir -p $(dir $@)

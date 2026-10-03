@@ -26,8 +26,10 @@ void css_free(struct css_sheet *s);
 
 /* A style sheet's text, in pieces of any size, between css_begin and
  * css_end. media: the <style media=""> (NULL: all); a sheet for print
- * only is read and dropped. */
-void css_begin(struct css_sheet *s, const char *media);
+ * only is read and dropped. pos: where the sheet is in the page (its
+ * element's node), which orders it in the cascade: a sheet linked
+ * early ranks below a later <style> whenever it arrives. */
+void css_begin(struct css_sheet *s, const char *media, nodeid pos);
 void css_feed(struct css_sheet *s, const char *text, size_t n);
 void css_end(struct css_sheet *s);
 

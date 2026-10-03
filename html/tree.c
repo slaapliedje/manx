@@ -439,7 +439,8 @@ static void style_tag(struct tree *b, const struct tok_tag *t)
 	for (i = 0; i < t->nattr; i++)
 		if (t->attr[i] == ATTR_MEDIA)
 			media = t->value[i];
-	css_begin(b->d->sheet, media);
+	/* (its node will be the next one: in the page's order) */
+	css_begin(b->d->sheet, media, (nodeid)b->d->nnodes);
 	b->in_style = 1;
 }
 

@@ -77,7 +77,7 @@ struct css_sheet {
 	struct media media[MAX_MEDIA];
 	int nmedia;
 	int bucket[NBUCKET];
-	unsigned long order;
+	unsigned long order;		/* pos << 16 | the rule's number in it */
 	unsigned gen;			/* bumped as rules are added */
 	/* the reader */
 	int on;				/* inside css_begin/css_end */
@@ -728,7 +728,9 @@ static void end_rule(struct css_sheet *s)
 		memcpy(s->cmps + s->ncmps, sel, (size_t)n * sizeof *sel);
 		r = &s->rules[s->nrules];
 		r->spec = spec;
-		r->order = s->order++;
+		r->order = s->order;
+		if ((s->order & 0xFFFF) != 0xFFFF)
+			s->order++;
 		r->cmp = (unsigned short)s->ncmps;
 		r->ncmp = (unsigned short)n;
 		r->media = media;
@@ -859,13 +861,14 @@ keep:
 		s->decl[s->dlen++] = (char)c;
 }
 
-void css_begin(struct css_sheet *s, const char *media)
+void css_begin(struct css_sheet *s, const char *media, nodeid pos)
 {
 	unsigned short m = 0;
 
 	if (s == NULL)
 		return;
 	s->on = 1;
+	s->order = (unsigned long)pos << 16;
 	s->state = P_PRELUDE;
 	s->depth = s->quote = s->esc = s->slash = s->star = s->comment = 0;
 	s->plen = s->plong = s->dlen = 0;
