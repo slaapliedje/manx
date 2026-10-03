@@ -258,6 +258,17 @@ jpeg_case("jpeg_420_restart", 64, 48, subsampling=2, tol=12, gentle=True,
 jpeg_case("jpeg_half", 64, 48, shift=1, tol=12, gentle=True)
 jpeg_case("jpeg_quarter", 64, 48, shift=2, tol=12, gentle=True)
 jpeg_case("jpeg_eighth", 64, 48, shift=3, tol=2)
-jpeg_case("jpeg_progressive", 37, 23, expect="unsupported", progressive=True)
+# progressive: scan by scan, the same coefficients in the end as a
+# sequential file's, so as exact
+jpeg_case("jpeg_prog_444", 37, 23, progressive=True)
+jpeg_case("jpeg_prog_gray", 37, 23, mode="L", progressive=True)
+jpeg_case("jpeg_prog_restart", 64, 48, progressive=True, restart_marker_blocks=3)
+jpeg_case("jpeg_prog_420", 37, 23, subsampling=2, tol=12, gentle=True, progressive=True)
+jpeg_case("jpeg_prog_half", 64, 48, shift=1, tol=12, gentle=True, progressive=True)
+jpeg_case("jpeg_prog_quarter", 64, 48, shift=2, tol=12, gentle=True, progressive=True)
+jpeg_case("jpeg_prog_eighth", 64, 48, shift=3, tol=2, progressive=True)
+# too big to keep every coefficient in the default budget (512 KB): kept
+# from a smaller corner and enlarged, so softer, but whole
+jpeg_case("jpeg_prog_big", 640, 480, subsampling=0, tol=24, gentle=True, progressive=True)
 
 print("\n".join(lines))

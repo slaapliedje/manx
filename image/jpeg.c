@@ -9,9 +9,17 @@
  * only each block's DC term is needed: no IDCT at all; at 1/2 and 1/4 a
  * reduced IDCT of the low frequencies, a quarter of the work or less.
  *
- * Progressive, arithmetic-coded, 12-bit and CMYK files are refused
- * (IMG_UNSUPPORTED), as is a sequential file whose components come in
- * separate scans.
+ * Progressive files are read scan by scan into every block's
+ * coefficients, kept until the end: only the S x S corner a block is
+ * shown at (with, when that is less than the whole block, a bit for each
+ * other position that is nonzero, which later scans need to know), and a
+ * scan with nothing in that corner is skipped; at 1/8 size only the DC
+ * scans are read. If that doesn't fit the memory allowed, a smaller corner
+ * is kept and its pixels enlarged: a big picture shows, if softer. A
+ * progressive file cut short shows what had come.
+ *
+ * Arithmetic-coded, 12-bit and CMYK files are refused (IMG_UNSUPPORTED),
+ * as is a sequential file whose components come in separate scans.
  */
 #include <string.h>
 #include "image_int.h"
@@ -31,6 +39,11 @@ struct comp {
 	int pw, ph;			/* the MCU row's samples (scaled) */
 	int pred;			/* DC predictor */
 	unsigned char *plane;		/* pw * ph samples */
+	/* progressive: every block's coefficients, kept until the end */
+	int cbw, cbh;			/* blocks a scan of it alone covers */
+	short *coef;			/* bw x (mcus_y * v) blocks x K */
+	unsigned int *nz;		/* 2 a block: the zigzag positions not
+					 * kept that are nonzero (1 < S2 < 8) */
 };
 
 struct jpeg {
@@ -44,6 +57,16 @@ struct jpeg {
 	struct comp c[3];
 	int ri;				/* restart interval (MCUs) */
 	int shift, S;			/* scaling: block side 8 >> shift */
+	/* progressive */
+	int prog, S2, K, maxk;		/* coefficients kept a block: the S2 x S2
+					 * corner (S2 = S, or less if they
+					 * wouldn't fit); its highest zigzag
+					 * position */
+	signed char kidx[64];		/* zigzag position -> where kept, -1 */
+	int ss, se, ah, al;		/* the scan's band and bit position */
+	int scomp[3], nscomp;		/* its components */
+	unsigned eobrun;
+	int scans;			/* scans read */
 	int ow, oh;			/* the size sent */
 	unsigned char *rgba;		/* ow * 4 */
 	long co[64];			/* a block's coefficients: all zero */
@@ -117,6 +140,15 @@ void jpeg_free(struct img_dec *d)
 	struct jpeg *j = d->fmt;
 	int i;
 
+	for (i = 0; i < 3; i++) {
+		struct comp *c = &j->c[i];
+		size_t nb = (size_t)c->bw * (size_t)j->mcus_y * (size_t)c->v;
+
+		if (c->coef)
+			img_release(d, c->coef, nb * (size_t)j->K * sizeof *c->coef);
+		if (c->nz)
+			img_release(d, c->nz, nb * 2 * sizeof *c->nz);
+	}
 	img_release(d, j->buf, j->cap);
 	img_release(d, j->rgba, (size_t)j->ow * 4);
 	for (i = 0; i < 3; i++)
@@ -286,6 +318,49 @@ static int read_sof(struct img_dec *d, struct jpeg *j, size_t at, size_t end)
 		if ((c->plane = img_alloc(d, (size_t)c->pw * (size_t)c->ph)) == NULL)
 			return IMG_TOOBIG;
 	}
+	if (j->prog) {
+		/* every block's coefficients: the corner shown (S x S), or a
+		 * smaller one if that won't fit what is left of the budget
+		 * (the rows of pixels still to come out of it too) */
+		size_t blocks = 0, room = d->cap - d->used, need;
+		int k;
+
+		for (i = 0; i < j->ncomp; i++)
+			blocks += (size_t)j->c[i].bw * (size_t)j->mcus_y * (size_t)j->c[i].v;
+		room = room > (size_t)j->ow * 4 + 4096 ? room - (size_t)j->ow * 4 - 4096 : 0;
+		for (j->S2 = j->S; ; j->S2 /= 2) {
+			need = blocks * ((size_t)j->S2 * (size_t)j->S2 * sizeof(short)
+				+ (j->S2 > 1 && j->S2 < 8 ? 2 * sizeof(unsigned int) : 0));
+			if (need <= room || j->S2 == 1)
+				break;
+		}
+		j->K = j->S2 * j->S2;
+		j->maxk = 0;
+		for (k = 0; k < 64; k++) {
+			int z = zz[k], row = z / 8, col = z % 8;
+
+			j->kidx[k] = (signed char)(row < j->S2 && col < j->S2 ?
+				row * j->S2 + col : -1);
+			if (j->kidx[k] >= 0)
+				j->maxk = k;
+		}
+		for (i = 0; i < j->ncomp; i++) {
+			struct comp *c = &j->c[i];
+			size_t nb = (size_t)c->bw * (size_t)j->mcus_y * (size_t)c->v;
+
+			c->cbw = ((j->w * c->h + j->hmax - 1) / j->hmax + 7) / 8;
+			c->cbh = ((j->h * c->v + j->vmax - 1) / j->vmax + 7) / 8;
+			if ((c->coef = img_alloc(d, nb * (size_t)j->K * sizeof *c->coef)) == NULL)
+				return IMG_TOOBIG;
+			memset(c->coef, 0, nb * (size_t)j->K * sizeof *c->coef);
+			/* (at 1/8 no AC scan is read: no mask) */
+			if (j->S2 > 1 && j->S2 < 8) {
+				if ((c->nz = img_alloc(d, nb * 2 * sizeof *c->nz)) == NULL)
+					return IMG_TOOBIG;
+				memset(c->nz, 0, nb * 2 * sizeof *c->nz);
+			}
+		}
+	}
 	if ((j->rgba = img_alloc(d, (size_t)j->ow * 4)) == NULL)
 		return IMG_TOOBIG;
 	/* opaque, once: emit() never writes alpha */
@@ -376,6 +451,14 @@ static int decode_long(struct jpeg *j, const struct huff *t)
 		(sym) = decode_long(j, (t));				\
 		SYNC_IN();						\
 	}								\
+} while (0)
+
+/* v = the next n (1-16) bits, unsigned */
+#define GETBITS(n, v) do {						\
+	NEED16();							\
+	(v) = (int)(bits >> (32 - (n)));				\
+	bits <<= (n);							\
+	nbits -= (n);							\
 } while (0)
 
 /* v = the next n (1-16) bits as a signed value of size n (JPEG's
@@ -763,6 +846,325 @@ static int read_sos(struct img_dec *d, struct jpeg *j, size_t at, size_t end)
 	return scan(d, j);
 }
 
+/* --- progressive ------------------------------------------------------------ */
+
+/* zigzag position k of a block (its kept values v, its mask m): nonzero? */
+#define NZ(k)	(j->kidx[k] >= 0 ? v[j->kidx[k]] != 0 : (int)(m[(k) >> 5] >> ((k) & 31) & 1))
+#define SET(k, x) do {							\
+	if (j->kidx[k] >= 0)						\
+		v[j->kidx[k]] = (short)(x);				\
+	else								\
+		m[(k) >> 5] |= 1U << ((k) & 31);			\
+} while (0)
+
+/* a refinement bit for a nonzero coefficient (only kept ones change) */
+#define REFINE(k) do {							\
+	int b_;								\
+									\
+	GETBITS(1, b_);							\
+	if (b_ && j->kidx[k] >= 0) {					\
+		short *p_ = &v[j->kidx[k]];				\
+									\
+		if ((*p_ & bit) == 0)					\
+			*p_ = (short)(*p_ >= 0 ? *p_ + bit : *p_ - bit);	\
+	}								\
+} while (0)
+
+/* one block of a progressive scan into its coefficients */
+static int prog_block(struct jpeg *j, struct comp *c, long bi)
+{
+	short *v = c->coef + bi * j->K;
+	unsigned int *m = c->nz ? c->nz + bi * 2 : NULL;
+	unsigned int bits = j->bits;
+	int nbits = j->nbits, k, r, s, sym;
+
+	if (j->pad > 64)
+		return IMG_BAD;
+	if (j->ss == 0) {		/* DC */
+		if (j->ah == 0) {
+			HUFF(&j->dc[c->td], sym);
+			if (sym < 0 || sym > 11)
+				return IMG_BAD;
+			if (sym) {
+				RECEIVE(sym, r);
+				c->pred += r;
+				/* (a corrupt file's: kept from overflowing) */
+				if (c->pred > 65535 || c->pred < -65535)
+					c->pred = c->pred > 0 ? 65535 : -65535;
+			}
+			v[0] = (short)((long)c->pred * (1L << j->al));
+		} else {
+			GETBITS(1, r);
+			if (r)
+				v[0] = (short)(v[0] | (1 << j->al));
+		}
+		SYNC_OUT();
+		return IMG_OK;
+	}
+	if (m == NULL) {
+		static unsigned int none[2];
+
+		m = none;		/* (all kept: the mask unused) */
+	}
+	if (j->ah == 0) {		/* an AC band, first */
+		if (j->eobrun) {
+			j->eobrun--;
+			return IMG_OK;
+		}
+		for (k = j->ss; k <= j->se; k++) {
+			HUFF(&j->ac[c->ta], sym);
+			if (sym < 0)
+				return IMG_BAD;
+			r = sym >> 4;
+			s = sym & 15;
+			if (s == 0) {
+				if (r < 15) {
+					j->eobrun = 1U << r;
+					if (r) {
+						int x;
+
+						GETBITS(r, x);
+						j->eobrun += (unsigned)x;
+					}
+					j->eobrun--;
+					break;
+				}
+				k += 15;
+				continue;
+			}
+			k += r;
+			if (k > 63)
+				return IMG_BAD;
+			RECEIVE(s, r);
+			SET(k, r * (1 << j->al));
+		}
+	} else {			/* an AC band, refined */
+		int bit = 1 << j->al;
+
+		k = j->ss;
+		if (j->eobrun == 0) {
+			while (k <= j->se) {
+				int x = 0;
+
+				HUFF(&j->ac[c->ta], sym);
+				if (sym < 0)
+					return IMG_BAD;
+				r = sym >> 4;
+				s = sym & 15;
+				if (s == 0) {
+					if (r < 15) {
+						j->eobrun = 1U << r;
+						if (r) {
+							int y;
+
+							GETBITS(r, y);
+							j->eobrun += (unsigned)y;
+						}
+						break;	/* the rest: as an end of band */
+					}
+				} else {
+					if (s != 1)
+						return IMG_BAD;
+					GETBITS(1, x);
+					x = x ? bit : -bit;
+				}
+				/* r zero coefficients passed (the nonzero ones
+				 * among them refined), then x into the next */
+				while (k <= j->se) {
+					if (NZ(k))
+						REFINE(k);
+					else {
+						if (r == 0) {
+							if (x)
+								SET(k, x);
+							k++;
+							break;
+						}
+						r--;
+					}
+					k++;
+				}
+			}
+		}
+		if (j->eobrun) {
+			/* the end of the band: its nonzero ones refined */
+			for (; k <= j->se; k++)
+				if (NZ(k))
+					REFINE(k);
+			j->eobrun--;
+		}
+	}
+	SYNC_OUT();
+	return IMG_OK;
+}
+
+/* where the entropy data of the scan ends: its marker's 0xFF, or len */
+static size_t scan_end(const struct jpeg *j, size_t p)
+{
+	while (p + 1 < j->len) {
+		if (j->buf[p] == 0xFF) {
+			int m = j->buf[p + 1];
+
+			if (m != 0 && m != 0xFF && !(m >= 0xD0 && m <= 0xD7))
+				return p;
+		}
+		p++;
+	}
+	return j->len;
+}
+
+/* a progressive scan, its header from at to end: decoded, or skipped
+ * when it has nothing kept. The position after it, or 0 on an error. */
+static size_t prog_scan(struct jpeg *j, size_t at, size_t end)
+{
+	int n = j->buf[at], i, k, r, todo = j->ri;
+
+	if (n < 1 || n > j->ncomp || end - at < 1 + 2 * (size_t)n + 3)
+		return 0;
+	for (i = 0; i < n; i++) {
+		int id = j->buf[at + 1 + 2 * i], t = j->buf[at + 2 + 2 * i];
+
+		for (k = 0; k < j->ncomp && j->c[k].id != id; k++)
+			;
+		if (k == j->ncomp)
+			return 0;
+		j->scomp[i] = k;
+		j->c[k].td = t >> 4;
+		j->c[k].ta = t & 15;
+		if (j->c[k].td > 3 || j->c[k].ta > 3)
+			return 0;
+	}
+	j->nscomp = n;
+	j->ss = j->buf[at + 1 + 2 * n];
+	j->se = j->buf[at + 2 + 2 * n];
+	j->ah = j->buf[at + 3 + 2 * n] >> 4;
+	j->al = j->buf[at + 3 + 2 * n] & 15;
+	if (j->ss > 63 || j->se > 63 || j->ss > j->se || j->al > 13
+		|| (j->ss == 0 && j->se != 0) || (j->ss > 0 && n != 1))
+		return 0;
+	for (i = 0; i < n; i++) {
+		struct comp *c = &j->c[j->scomp[i]];
+
+		if ((j->ss == 0 && j->ah == 0 && !j->dc[c->td].set)
+			|| (j->ss > 0 && !j->ac[c->ta].set))
+			return 0;
+	}
+	if (j->ss > j->maxk)
+		return scan_end(j, end);	/* nothing in it is kept */
+	j->pos = end;
+	j->bits = 0;
+	j->nbits = 0;
+	j->marker = 0;
+	j->pad = 0;
+	j->eobrun = 0;
+	for (i = 0; i < j->ncomp; i++)
+		j->c[i].pred = 0;
+	if (n == 1) {
+		/* one component: its blocks in order, each an MCU */
+		struct comp *c = &j->c[j->scomp[0]];
+		int bx, by;
+
+		for (by = 0; by < c->cbh; by++)
+			for (bx = 0; bx < c->cbw; bx++) {
+				if (j->ri && todo-- == 0) {
+					if (restart(j) != IMG_OK)
+						return 0;
+					j->eobrun = 0;
+					todo = j->ri - 1;
+				}
+				if (prog_block(j, c, (long)by * c->bw + bx) != IMG_OK)
+					return 0;
+			}
+	} else {
+		int mx, my;
+
+		for (my = 0; my < j->mcus_y; my++)
+			for (mx = 0; mx < j->mcus_x; mx++) {
+				if (j->ri && todo-- == 0) {
+					if (restart(j) != IMG_OK)
+						return 0;
+					todo = j->ri - 1;
+				}
+				for (i = 0; i < n; i++) {
+					struct comp *c = &j->c[j->scomp[i]];
+					int bx, by;
+
+					for (by = 0; by < c->v; by++)
+						for (bx = 0; bx < c->h; bx++)
+							if ((r = prog_block(j, c,
+								((long)my * c->v + by) * c->bw
+								+ mx * c->h + bx)) != IMG_OK)
+								return 0;
+				}
+			}
+	}
+	j->scans++;
+	return scan_end(j, j->pos);
+}
+
+/* the coefficients, all scans read: into pixels, an MCU row at a time
+ * (from a corner smaller than shown: each pixel f x f) */
+static int prog_output(struct img_dec *d, struct jpeg *j)
+{
+	int my, i, r, S = j->S, S2 = j->S2, f = j->S / j->S2;
+	unsigned char tmp[64];
+
+	for (my = 0; my < j->mcus_y; my++) {
+		for (i = 0; i < j->ncomp; i++) {
+			struct comp *c = &j->c[i];
+			const unsigned short *q = j->qt[c->tq];
+			int bx, by;
+
+			for (by = 0; by < c->v; by++)
+				for (bx = 0; bx < c->bw; bx++) {
+					const short *v = c->coef
+						+ (((long)my * c->v + by) * c->bw + bx) * j->K;
+					unsigned char *o = c->plane + (size_t)by * S * (size_t)c->pw
+						+ (size_t)bx * S;
+					unsigned char *out = f > 1 ? tmp : o;
+					int stride = f > 1 ? S2 : c->pw;
+					long *co = j->co;
+					int k, any = 0;
+
+					for (k = 0; k <= j->maxk; k++)
+						if (j->kidx[k] > 0 && v[j->kidx[k]]) {
+							co[zz[k]] = coef((long)v[j->kidx[k]] * q[k]);
+							any = 1;
+						}
+					co[0] = coef((long)v[0] * q[0]);
+					if (!any) {
+						/* the DC term alone: a flat block */
+						unsigned char flat = clamp(DESCALE(co[0], 3) + 128);
+						int y, x;
+
+						for (y = 0; y < S; y++, o += c->pw)
+							for (x = 0; x < S; x++)
+								o[x] = flat;
+					} else {
+						int y, x;
+
+						if (S2 == 8)
+							idct(co, out, stride);
+						else if (S2 == 4)
+							idct4(co, out, stride);
+						else
+							idct2(co, out, stride);
+						/* (each pixel f x f) */
+						for (y = 0; f > 1 && y < S; y++, o += c->pw)
+							for (x = 0; x < S; x++)
+								o[x] = tmp[(y / f) * S2 + x / f];
+					}
+					for (k = 0; k <= j->maxk; k++)
+						if (j->kidx[k] >= 0)
+							co[zz[k]] = 0;
+				}
+		}
+		if ((r = emit(d, j, my)) != IMG_OK)
+			return r;
+	}
+	return IMG_END;
+}
+
 int jpeg_finish(struct img_dec *d)
 {
 	struct jpeg *j = d->fmt;
@@ -778,22 +1180,25 @@ int jpeg_finish(struct img_dec *d)
 			at++;			/* (junk between markers) */
 		while (at < j->len && j->buf[at] == 0xFF)
 			at++;
-		if (at >= j->len)
-			return IMG_BAD;
+		if (at >= j->len)		/* (cut short: what came shows) */
+			return j->prog && j->scans ? prog_output(d, j) : IMG_BAD;
 		m = j->buf[at++];
 		if (m == 0xD8 || (m >= 0xD0 && m <= 0xD7) || m == 0x01)
 			continue;
-		if (m == 0xD9)
-			return IMG_BAD;		/* the end, and no image */
+		if (m == 0xD9)			/* the end */
+			return j->prog && j->scans ? prog_output(d, j) : IMG_BAD;
 		if ((len = u16(j, at)) < 2 || at + (size_t)len > j->len)
 			return IMG_BAD;
 		end = at + (size_t)len;
 		at += 2;
 		switch (m) {
-		case 0xC0: case 0xC1:
+		case 0xC0: case 0xC1: case 0xC2:
+			if (j->w)
+				return IMG_BAD;	/* a second frame */
+			j->prog = m == 0xC2;
 			r = read_sof(d, j, at, end);
 			break;
-		case 0xC2: case 0xC3: case 0xC5: case 0xC6: case 0xC7:
+		case 0xC3: case 0xC5: case 0xC6: case 0xC7:
 		case 0xC9: case 0xCA: case 0xCB: case 0xCD: case 0xCE: case 0xCF:
 			return IMG_UNSUPPORTED;
 		case 0xC4:
@@ -806,7 +1211,14 @@ int jpeg_finish(struct img_dec *d)
 			j->ri = u16(j, at);
 			break;
 		case 0xDA:
-			return read_sos(d, j, at, end);
+			if (!j->prog)
+				return read_sos(d, j, at, end);
+			if (j->w == 0 || !j->qset)
+				return IMG_BAD;
+			if ((at = prog_scan(j, at, end)) == 0)
+				/* (a scan in error: what came before it shows) */
+				return j->scans ? prog_output(d, j) : IMG_BAD;
+			continue;
 		default:
 			break;			/* APPn, COM... */
 		}

@@ -127,7 +127,7 @@ int main(int argc, char **argv)
 	o.size = on_size;
 	o.row = on_row;
 	px_sink(&o, &s);
-	if ((d = img_new(img_sniff(b, n), &s, 4UL << 20)) == NULL) {
+	if ((d = img_new(img_sniff(b, n), &s, 16UL << 20)) == NULL) {
 		fprintf(stderr, "imgconv: not an image\n");
 		return 1;
 	}
@@ -146,7 +146,10 @@ int main(int argc, char **argv)
 	fprintf(out, "P6\n%d %d\n255\n", g_w, g_h);
 	fwrite(g_rgb, 3, (size_t)g_w * g_h, out);
 	fclose(out);
-	printf("%s: %dx%d%s, %s\n", argv[argc - 1], g_w, g_h, g_masked ? " masked" : "",
-		r == IMG_END ? "complete" : "INCOMPLETE");
+	printf("%s: %dx%d%s, %s", argv[argc - 1], g_w, g_h, g_masked ? " masked" : "",
+		r == IMG_END ? "complete\n" : "INCOMPLETE");
+	if (r != IMG_END)
+		printf(" (%s)\n", r == IMG_BAD ? "bad" : r == IMG_UNSUPPORTED ? "unsupported"
+			: r == IMG_TOOBIG ? "too big" : r == IMG_STOP ? "stopped" : "?");
 	return 0;
 }

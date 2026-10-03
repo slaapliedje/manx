@@ -144,6 +144,40 @@ visit asked for none of them (only the missing one again); with no
 cache headers it asked for all five conditionally, the server answered
 304 each time, and they were shown from the cache.
 
+## Progressive JPEG
+
+Two of the three photographs on the PC were progressive, and Manx refused
+them (their alt text showed). A progressive file comes in scans: the DC
+terms first, then bands of the AC terms, then further bits of each
+(successive approximation), so every block's coefficients must be kept
+until the end, then transformed and coloured as a baseline file's are.
+
+- Only the corner a block is shown at is kept: 1/2 size keeps 16 of its
+  64 coefficients, 1/4 four, 1/8 one. A later scan still needs to know
+  which of the others are nonzero (it sends a correction bit for each),
+  so with a partial corner each block has a 64-bit mask too. A scan
+  with nothing in the kept corner is skipped outright: at 1/8 only the
+  DC scans are read.
+- If even that won't fit the memory allowed, a smaller corner is kept
+  and its pixels enlarged to the size asked for: a big photograph shows,
+  softer, instead of its alt text.
+- A file cut short, or a scan in error, shows what had come before.
+- The scans' order, restart intervals, EOB runs and refinements as in
+  T.81 Annex G.
+
+`test_image`: 8 progressive cases from Pillow (libjpeg's default scan
+script: interleaved DC with successive approximation, Y/Cb/Cr bands,
+refinements): 4:4:4, greyscale and with restart markers exactly as
+libjpeg decodes them (worst 0); 4:2:0 and 1/2, 1/4, 1/8 within the same
+tolerances as baseline; 640x480 too big for the default budget, so from
+a smaller corner, within 3 of libjpeg. `fuzz_image`: 800,000 iterations
+clean. Two real wallpapers (4736x2656 and 3840x2160, 2 and 4 MB) decode.
+
+On the TT, an 800x450 photo (4:2:0, quality 80), progressive against the
+same as baseline: shown 320 wide 8.3 s against 4.5 s, at full size 14.0
+s against 10.6 s. Ten scans to decode instead of one; a profile shows
+nothing else to cut yet.
+
 ## Left for 7
 
-- Progressive JPEG (from Phase 6).
+- Progressive decoding's speed (above).
