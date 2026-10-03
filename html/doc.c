@@ -5,6 +5,7 @@
 #include <string.h>
 #include "os.h"
 #include "tags.h"
+#include "css.h"
 #include "doc.h"
 
 int doc_init(struct doc *d, size_t byte_cap)
@@ -34,6 +35,7 @@ int doc_init(struct doc *d, size_t byte_cap)
 
 void doc_free(struct doc *d)
 {
+	css_free(d->sheet);
 	xfree(d->nodes);
 	xfree(d->text);
 	xfree(d->attr);

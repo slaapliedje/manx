@@ -17,6 +17,7 @@
 #include "os.h"
 #include "tags.h"
 #include "utf8.h"
+#include "css.h"
 #include "layout.h"
 
 #define MAX_DEPTH	200
@@ -1037,7 +1038,7 @@ static void add_anchor(struct lay *L, nodeid id)
 /* the attributes enter() looks at, in one pass (doc_attr per attribute
  * costs a scan and a libc strlen each) */
 struct eattr {
-	const char *hidden, *style, *id, *name, *href;
+	const char *hidden, *style, *id, *name, *href, *cls;
 };
 
 static void scan_attrs(const struct doc *d, nodeid id, struct eattr *a)
@@ -1045,7 +1046,7 @@ static void scan_attrs(const struct doc *d, nodeid id, struct eattr *a)
 	const unsigned char *p = d->attr + d->nodes[id].data;
 	const unsigned char *e = d->attr + d->attr_len;
 
-	a->hidden = a->style = a->id = a->name = a->href = NULL;
+	a->hidden = a->style = a->id = a->name = a->href = a->cls = NULL;
 	while (p < e && *p) {
 		int k = *p++;
 		const char *v = (const char *)p;
@@ -1056,6 +1057,7 @@ static void scan_attrs(const struct doc *d, nodeid id, struct eattr *a)
 		case ATTR_ID: a->id = v; break;
 		case ATTR_NAME: a->name = v; break;
 		case ATTR_HREF: a->href = v; break;
+		case ATTR_CLASS: a->cls = v; break;
 		}
 		while (*p)
 			p++;
@@ -1077,8 +1079,15 @@ static int enter(struct lay *L, nodeid id, int depth)
 	if (n->data)
 		scan_attrs(d, id, &ea);
 	else
-		ea.hidden = ea.style = ea.id = ea.name = ea.href = NULL;
+		ea.hidden = ea.style = ea.id = ea.name = ea.href = ea.cls = NULL;
 	style_for(tag, ea.hidden, ea.style, ea.id, &s);
+	/* the page's style sheet (an @media width is the window's: pixels,
+	 * or a terminal's columns at 8 pixels) */
+	if (s.display != D_NONE && L->d->sheet
+		&& css_display(L->d->sheet, L->d, id, ea.id, ea.cls,
+		L->m ? L->width : L->width * 8) == CSS_HIDE
+		&& !css_inline_shows(ea.style))
+		s.display = D_NONE;
 	if (s.display == D_NONE)
 		return 0;
 

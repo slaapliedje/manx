@@ -28,6 +28,8 @@ struct tok_sink {
 	void *ctx;
 	void (*tag)(void *ctx, const struct tok_tag *t);
 	void (*text)(void *ctx, const char *s, size_t n);
+	/* the text of a <style> element (never page text); may be NULL */
+	void (*style)(void *ctx, const char *s, size_t n);
 };
 
 struct tokenizer {

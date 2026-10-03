@@ -752,6 +752,8 @@ static const char help_html[] =
 	"link_color = blue      links' colour (cyan; blue suits white)\n"
 	"proportional = off     xmanx: the page in a fixed font\n"
 	"cookies = off          no cookies\n"
+	"images = off           xmanx: no pictures, only their alt text\n"
+	"stylesheets = off      ignore pages' &lt;style&gt; (what they hide shows)\n"
 	"cache_kb = 2048        the disk cache's size (0: none)\n"
 	"cafile = FILE          the PEM bundle of trusted roots\n"
 	"early_requests = off   send nothing before the certificate is "
@@ -2178,6 +2180,7 @@ int main(int argc, char **argv)
 	scr_font = config_str("font", NULL);
 	scr_proportional = config_bool("proportional", 1);
 	g_images = config_bool("images", 1);
+	html_stylesheets = config_bool("stylesheets", 1);
 	{
 		/* link_color: a colour name, or 0-7 (unset: the screen's own,
 		 * cyan on a terminal, blue in a window) */

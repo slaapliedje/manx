@@ -28,6 +28,7 @@ struct tree {
 	int in_pre;
 	char base_href[512];		/* the first <base href> */
 	char meta_charset[40];		/* <meta charset> / http-equiv */
+	int in_style;			/* reading a <style> into d->sheet */
 };
 
 void tree_init(struct tree *b, struct doc *d);
@@ -35,6 +36,7 @@ void tree_init(struct tree *b, struct doc *d);
 /* the tokenizer's sink functions */
 void tree_tag(void *ctx, const struct tok_tag *t);
 void tree_text(void *ctx, const char *s, size_t n);
+void tree_style(void *ctx, const char *s, size_t n);
 
 /* End of input: nothing more to close explicitly. */
 void tree_end(struct tree *b);

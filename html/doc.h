@@ -22,6 +22,8 @@ struct node {
 
 #define DOC_MAX_NODES	65535U
 
+struct css_sheet;
+
 struct doc {
 	struct node *nodes;		/* nodes[0] unused, nodes[1] the root */
 	unsigned long nnodes, cap_nodes;
@@ -34,6 +36,7 @@ struct doc {
 	nodeid last_text;		/* the text node that ends the text pool */
 	nodeid res_parent;		/* doc_text_reserve's parent */
 	int res_extend;			/* ... extending last_text */
+	struct css_sheet *sheet;	/* its <style> rules (style/css.h), or NULL */
 };
 
 /* An empty document with its root node; byte_cap bounds the memory it

@@ -3,6 +3,7 @@
  */
 #include <string.h>
 #include "tags.h"
+#include "css.h"
 #include "tree.h"
 
 static int breaks_line(int tag);
@@ -421,6 +422,35 @@ static void end_tag(struct tree *b, const struct tok_tag *t)
 	}
 }
 
+/* <style> and </style>: its text goes to the page's style sheet */
+static void style_tag(struct tree *b, const struct tok_tag *t)
+{
+	const char *media = NULL;
+	int i;
+
+	if (t->end) {
+		if (b->in_style)
+			css_end(b->d->sheet);
+		b->in_style = 0;
+		return;
+	}
+	if (b->d->sheet == NULL && (b->d->sheet = css_new()) == NULL)
+		return;
+	for (i = 0; i < t->nattr; i++)
+		if (t->attr[i] == ATTR_MEDIA)
+			media = t->value[i];
+	css_begin(b->d->sheet, media);
+	b->in_style = 1;
+}
+
+void tree_style(void *ctx, const char *s, size_t n)
+{
+	struct tree *b = ctx;
+
+	if (b->in_style)
+		css_feed(b->d->sheet, s, n);
+}
+
 void tree_tag(void *ctx, const struct tok_tag *t)
 {
 	struct tree *b = ctx;
@@ -441,6 +471,8 @@ void tree_tag(void *ctx, const struct tok_tag *t)
 		return;
 	}
 	b->pre_newline = 0;
+	if (t->tag == TAG_STYLE)
+		style_tag(b, t);
 	if (t->end) {
 		/* an end tag with nothing open to close in this subtree */
 		end_tag(b, t);
@@ -560,5 +592,9 @@ void tree_text(void *ctx, const char *s, size_t n)
 
 void tree_end(struct tree *b)
 {
+	if (b->in_style) {		/* (a <style> never closed) */
+		css_end(b->d->sheet);
+		b->in_style = 0;
+	}
 	ensure_body(b);
 }

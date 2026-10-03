@@ -40,6 +40,9 @@ static const char *const frags[] = {
 	"<iframe>", "</iframe>", "<!DOCTYPE html>", "<![CDATA[", "]]>",
 	"<img src=x width=50 height=20>", "<img src=y alt=why>", "<img width=100%>",
 	"<a href=z><img src=q height=3000></a>", "<img src=w width=9999>",
+	"<style>", "</style>", ".a{display:none}", "#b .c>p{visibility:hidden}",
+	"@media (max-width:", "40em){", "@media print{", "}}", "{", "}", "/*", "*/",
+	"\\", "\\31 0", "[title~=x]", "!important", "@font-face{", "a,b,c{", ";",
 };
 
 /* the fake font's images: some of known size (by node), some not */

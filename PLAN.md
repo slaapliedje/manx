@@ -154,6 +154,10 @@ Xdmi (X11R5, mono, in the emulator).
 dithering to 8-bit; offload image decode / inflate / bignum to the T800s when
 present.
 
+**Phase 7 — pages that look right:** what style sheets hide
+(`display:none`, `visibility:hidden`) from `<style>`, then from linked
+sheets; tables laid out as grids. See `docs/phase7-results.md`.
+
 ## 6. Risks
 
 | Risk | Mitigation |

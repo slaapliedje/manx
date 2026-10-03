@@ -140,6 +140,8 @@ static void run(struct html_load *l, const unsigned char *s, size_t n)
 	}
 }
 
+int html_stylesheets = 1;
+
 void html_load_begin(struct html_load *l, struct doc *d,
 	const char *http_charset, int plain_text)
 {
@@ -153,6 +155,7 @@ void html_load_begin(struct html_load *l, struct doc *d,
 	sink.ctx = &l->tree;
 	sink.tag = tree_tag;
 	sink.text = tree_text;
+	sink.style = html_stylesheets ? tree_style : NULL;
 	tok_init(&l->tok, &sink);
 	l->plain = plain_text;
 	if (cs != CS_UNKNOWN) {

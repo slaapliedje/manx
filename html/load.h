@@ -34,6 +34,10 @@ struct html_load {
  * parameter of Content-Type, or NULL/"". plain_text: render the body as
  * preformatted text instead of parsing it as HTML.
  */
+/* Read pages' <style> sheets (1, the default), for the layout to hide
+ * what they hide; 0 saves the time (on a 68030, ~3 us a byte of CSS). */
+extern int html_stylesheets;
+
 void html_load_begin(struct html_load *l, struct doc *d,
 	const char *http_charset, int plain_text);
 void html_load_feed(struct html_load *l, const unsigned char *s, size_t n);

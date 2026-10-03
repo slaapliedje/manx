@@ -75,8 +75,13 @@ static void flush_text(struct tokenizer *t)
 static void text_put(struct tokenizer *t, const char *s, size_t n)
 {
 	if (t->raw == RAW_SKIP && (t->state == S_RAW || t->state == S_RAW_LT
-		|| t->state == S_RAW_END))
-		return;			/* script and style: never kept */
+		|| t->state == S_RAW_END)) {
+		/* script and style: never page text; a style sheet may be
+		 * wanted */
+		if (t->raw_tag == TAG_STYLE && t->sink.style)
+			t->sink.style(t->sink.ctx, s, n);
+		return;
+	}
 	while (n) {
 		size_t k = sizeof t->text - t->text_len;
 
@@ -736,7 +741,7 @@ static void fast_run(struct tokenizer *t, const char *s, size_t n)
 		text_put(t, s, n);
 		break;
 	case S_RAW:
-		if (t->raw != RAW_SKIP)
+		if (t->raw != RAW_SKIP || (t->raw_tag == TAG_STYLE && t->sink.style))
 			text_put(t, s, n);
 		break;
 	case S_ATTR_VALUE_DQ:
