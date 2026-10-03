@@ -154,3 +154,47 @@ Practical findings:
   (`unwind_frame_discard` warnings); plain ASV `sh` works, without `test -nt`.
 - Compiling one BearSSL file on the T800 takes about 1.3 minutes; the whole
   bundle takes about 45 minutes.
+
+## Hand-written `lmul` (2026-10-03)
+
+The measurement the spike left open. `spikes/transputer/lmul/tpmont.c`:
+RSA-2048's public operation (x^65537 mod n: 16 squarings, one multiply
+and the two conversions, 19 Montgomery multiplications, 155,648 32x32->64
+multiply-adds) with 32-bit limbs, CIOS, the inner row `r += a * b` written
+several ways. Every run's answer is checked against Python's
+(`mkvec.py`). `tp-lmul.sh` compiles it with icc on the slot-1 T800 and runs
+it on a transputer.
+
+| RSA-2048 public op | time | per multiply-add |
+|---|---|---|
+| 68030, BearSSL `br_rsa_i32` (Manx today, whole check) | ~2.4 s | |
+| 68030, C from 16-bit halves | 1.26-1.41 s | 8.1-9.1 us |
+| 68030, C with `unsigned long long` (GCC: `mulu.l`) | 0.58-0.71 s | 3.7-4.6 us |
+| 68030, 8-instruction `mulu.l` loop | 0.42-0.48 s | 2.7-3.1 us |
+| T800 (TRAM slot 1), C from 16-bit halves (icc) | 3.41 s | 21.9 us |
+| T800 (TRAM slot 1), `lmul` loop unrolled 4x | 0.77 s | 4.9 us |
+| T425 (the FPGA's, 40 MHz), C from 16-bit halves (icc) | 0.85 s | 5.4 us |
+| T425 (the FPGA's, 40 MHz), `lmul` loop unrolled 4x | 0.28 s | 1.8 us |
+
+A loop of `ldc; ldc; ldc; lmul` reads as 18.7 MHz on the T800 (so a
+20 MHz part, if `lmul` takes the data sheet's 33 cycles) and as 49.8 MHz
+on the T425: the FPGA's `lmul` is faster than a real T425's.
+
+What it says:
+
+- **The 68030 first.** BearSSL's `i32` code is general: its modpow does
+  two multiplications per exponent bit (36 for e = 65537, where 18 do), and
+  its 64-bit additions compile long. A verification-only path (public
+  exponent, variable time is fine) with the `mulu.l` loop is ~5x faster,
+  before the transputers: about 0.5 s for RSA-2048 with the key's setup,
+  about 2 s for RSA-4096 (today ~10 s). AMIX gets it too.
+- **The FPGA's T425 is the transputer worth using:** 1.6x the 68030's best,
+  on `/dev/link1` directly, and it runs while the 68030 does something
+  else. A signature check sends under 1 KB over the link.
+- **The T800 TRAMs are slower than the 68030** at this (0.77 s against
+  0.43 s), about 99 cycles a multiply-add against the loop's ~64 on paper
+  (memory waits, probably). They add capacity for chains of several checks,
+  not speed for one.
+- Nothing here helps a resumed session (no public-key work) or a slow
+  network: the TT's first visit to geekdot.com the same day took 6.5 min,
+  ~75 s of it CPU, the page coming at 2 KB/s over the WiFi.
