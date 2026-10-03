@@ -26,6 +26,7 @@ struct psheet {
 	nodeid node;			/* the <link> */
 	const char *href, *media;	/* the doc's */
 	int state;
+	int tries;			/* fetches that got no answer at all */
 };
 
 static struct psheet g_s[PCSS_MAX_SHEETS];
@@ -92,6 +93,7 @@ void pcss_begin(struct doc *d, const struct url *base, const char *page_url)
 		g_s[g_n].href = href;
 		g_s[g_n].media = media;
 		g_s[g_n].state = S_NEW;
+		g_s[g_n].tries = 0;
 		g_n++;
 	}
 }
@@ -120,7 +122,7 @@ void pcss_cancel(void)
 struct fetching {
 	unsigned char *buf;
 	size_t len, cap;
-	int status, too_big, stopped;
+	int status, too_big, stopped, answered;
 	char cc[200], expires[64], date[64], etag[128], lastmod[64], ctype[128];
 	int (*poll)(void *ctx, int shown);
 	void *ctx;
@@ -134,6 +136,7 @@ static void on_head(void *ctx, int status, const char *ctype, const char *charse
 	(void)charset;
 	(void)url;
 	f->status = status;
+	f->answered = 1;
 	snprintf(f->ctype, sizeof f->ctype, "%s", ctype ? ctype : "");
 }
 
@@ -295,6 +298,12 @@ int pcss_step(int (*poll)(void *ctx, int shown), void *ctx)
 		xfree(f.buf);
 		xfree(res);
 		return PCSS_STOPPED;	/* (from the start next time) */
+	}
+	if (rc < 0 && !f.answered && ++p->tries < 3) {
+		/* no answer at all: again later, not given up */
+		xfree(f.buf);
+		xfree(res);
+		return PCSS_WORKED;
 	}
 	p->state = S_DONE;
 	if (rc < 0 || f.too_big || f.status != 200) {

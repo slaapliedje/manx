@@ -44,6 +44,7 @@ struct pent {
 	unsigned char bad;		/* decoding at bw x bh failed: not again */
 	unsigned char whole;		/* scr has every row */
 	unsigned char held;		/* data counted in g_held */
+	unsigned char tries;		/* fetches that got no answer at all */
 	int iw, ih;			/* its own size (0: not known yet) */
 	unsigned char *data;		/* the file (P_HAVE) */
 	size_t len, cap;
@@ -209,7 +210,7 @@ void pimg_count(int *total, int *done)
 
 struct fetching {
 	struct pent *e;
-	int status, too_big, stopped;
+	int status, too_big, stopped, answered;
 	char cc[200], expires[64], date[64], etag[128], lastmod[64], ctype[128];
 	int (*poll)(void *ctx, int shown);
 	void *ctx;
@@ -223,6 +224,7 @@ static void on_head(void *ctx, int status, const char *ctype, const char *charse
 	(void)charset;
 	(void)url;
 	f->status = status;
+	f->answered = 1;
 	snprintf(f->ctype, sizeof f->ctype, "%s", ctype ? ctype : "");
 }
 
@@ -436,6 +438,12 @@ static int fetch_one(struct pent *e, int (*poll)(void *ctx, int shown), void *ct
 		if (f.stopped) {
 			drop_data(e);		/* (from the start next time) */
 			return PIMG_STOPPED;
+		}
+		if (rc < 0 && !f.answered && ++e->tries < 3) {
+			/* no answer at all (the network gone a moment, as a
+			 * TT's WiFi can): again later, not given up */
+			drop_data(e);
+			return PIMG_WORKED;
 		}
 		if (rc == 0 && f.status == 304 && cached) {
 			/* not changed: the cached copy, good for longer */
