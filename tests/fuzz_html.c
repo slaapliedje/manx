@@ -43,6 +43,8 @@ static const char *const frags[] = {
 	"<style>", "</style>", ".a{display:none}", "#b .c>p{visibility:hidden}",
 	"@media (max-width:", "40em){", "@media print{", "}}", "{", "}", "/*", "*/",
 	"\\", "\\31 0", "[title~=x]", "!important", "@font-face{", "a,b,c{", ";",
+	"<td colspan=3>", "<td rowspan=9>", "<th>", "<caption>", "<thead>",
+	"<td colspan=40 rowspan=0>",
 };
 
 /* the fake font's images: some of known size (by node), some not */
@@ -120,7 +122,8 @@ static char *dump_of(const unsigned char *s, size_t n, int chunked, size_t cap)
 				if (!m || (e - pg.spans[i].off) % LAYOUT_IMG_BYTES)
 					abort();
 				for (o = pg.spans[i].off; o < e; o += LAYOUT_IMG_BYTES)
-					if (layout_image(&pg, pg.text + o) < 0)
+					if (layout_image(&pg, pg.text + o) < 0
+						&& layout_spacer_w(pg.text + o) < 0)
 						abort();
 			}
 			/* each on a line (or the one still open when a line

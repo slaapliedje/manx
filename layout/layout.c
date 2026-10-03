@@ -13,6 +13,7 @@
  * count, which text_w() keeps or replaces by what the metrics say.
  */
 #include <stdio.h>
+#include <stddef.h>
 #include <string.h>
 #include "os.h"
 #include "tags.h"
@@ -77,7 +78,9 @@ struct lay {
 	struct list lists[MAX_LISTS];
 	int nlists;
 	int oom;
-	struct saved st[MAX_DEPTH];
+	int small;			/* a grid cell's page: start its arrays small */
+	struct saved st[MAX_DEPTH];	/* (last: written before read, never
+					 * cleared) */
 };
 
 /* --- storage --------------------------------------------------------- */
@@ -103,6 +106,8 @@ static int grow(struct lay *L, void **arr, unsigned long *cap,
 		return 0;
 	if (L->oom)
 		return -1;
+	if (L->small && first > 16)
+		first = sz == 1 ? 256 : 16;	/* (a cell: little in it) */
 	n = *cap ? *cap : first;
 	while (n < need)
 		n += n / 2 + 16;
@@ -1065,6 +1070,9 @@ static void scan_attrs(const struct doc *d, nodeid id, struct eattr *a)
 	}
 }
 
+static void walk(struct lay *L, nodeid root, int depth);
+static int grid_table(struct lay *L, nodeid id);
+
 /* enter element id at depth: 1 when its children are to be laid out */
 static int enter(struct lay *L, nodeid id, int depth)
 {
@@ -1093,6 +1101,10 @@ static int enter(struct lay *L, nodeid id, int depth)
 
 	/* leaves with a rendering of their own */
 	switch (tag) {
+	case TAG_TABLE:
+		if (grid_table(L, id))
+			return 0;		/* laid out as a grid */
+		break;
 	case TAG_BR:
 		if (!L->line_open)
 			open_line(L);
@@ -1333,6 +1345,712 @@ static void leave(struct lay *L, nodeid id, int depth)
 	set_span(L);
 }
 
+/* the children of root (and theirs...), laid out from depth on */
+static void walk(struct lay *L, nodeid root, int depth)
+{
+	const struct doc *d = L->d;
+	nodeid id = d->nodes[root].first;
+
+	while (id && !L->stop) {
+		const struct node *n = &d->nodes[id];
+		int descend = 0;
+
+		if (n->type == NODE_TEXT)
+			put_text(L, doc_text(d, id));
+		else if (n->type == NODE_ELEM)
+			descend = enter(L, id, depth);
+		if (L->stop)
+			break;
+		if (descend && n->first) {
+			depth++;
+			id = n->first;
+			continue;
+		}
+		if (descend)
+			leave(L, id, depth);
+		while (id && !d->nodes[id].next) {
+			id = d->nodes[id].parent;
+			if (id == root || id <= 1) {
+				id = 0;
+				break;
+			}
+			depth--;
+			leave(L, id, depth);
+		}
+		if (id)
+			id = d->nodes[id].next;
+	}
+}
+
+/* --- tables as grids --------------------------------------------------- */
+
+/*
+ * A table of data is laid out as a grid, its columns side by side; one
+ * that frames a page (a sidebar beside the content, a table inside a
+ * cell, big cells) stays linear, a row a line, as it reads better on a
+ * narrow screen. Each cell is laid out on its own, as a block, into a
+ * page of its own: once as wide as the table may be, which gives its
+ * widest line and (from its words) its narrowest, then, if its column is
+ * narrower, again at that width. The rows are then put together a line
+ * at a time, each cell's line at its column; between columns, spaces on
+ * a terminal, a spacer of the exact width with proportional fonts.
+ */
+#define GRID_MAX_COLS	32
+#define GRID_MAX_CELLS	2048
+#define GRID_CELL_TEXT	800		/* a cell with more text frames a page */
+#define GRID_CELL_LINES	20		/* ... or more lines */
+
+struct gcell {
+	nodeid node;
+	int r, c, rs, cs;		/* its row and column, and spans */
+	int minw, maxw;
+	int laid_w;			/* the width pg was laid out at */
+	struct page pg;
+	int *lmap;			/* its links' numbers in the page, -1 */
+};
+
+struct grid {
+	struct gcell *cell;
+	int ncells, nrows, ncols;
+	short *slot;			/* nrows x ncols: the cell there, -1 */
+	int w[GRID_MAX_COLS], x[GRID_MAX_COLS];
+	int *row_h, *row_at;		/* each row's lines, and its first */
+};
+
+/* is element id not shown at all (hidden, display:none, a sheet)? */
+static int el_hidden(struct lay *L, nodeid id)
+{
+	struct eattr ea;
+	struct style s;
+
+	scan_attrs(L->d, id, &ea);
+	style_for(L->d->nodes[id].tag, ea.hidden, ea.style, ea.id, &s);
+	if (s.display != D_NONE && L->d->sheet
+		&& css_display(L->d->sheet, L->d, id, ea.id, ea.cls,
+		L->m ? L->width : L->width * 8) == CSS_HIDE
+		&& !css_inline_shows(ea.style))
+		s.display = D_NONE;
+	return s.display == D_NONE;
+}
+
+/* the text bytes in the subtree of id; a table in it: -1 */
+static long subtree_text(const struct doc *d, nodeid id)
+{
+	nodeid n = d->nodes[id].first;
+	long total = 0;
+
+	while (n) {
+		const struct node *nd = &d->nodes[n];
+
+		if (nd->type == NODE_TEXT)
+			total += (long)strlen(doc_text(d, n));
+		else if (nd->type == NODE_ELEM && nd->tag == TAG_TABLE)
+			return -1;
+		if (nd->type == NODE_ELEM && nd->first) {
+			n = nd->first;
+			continue;
+		}
+		while (n && !d->nodes[n].next) {
+			n = d->nodes[n].parent;
+			if (n == id)
+				return total;
+		}
+		if (n)
+			n = d->nodes[n].next;
+	}
+	return total;
+}
+
+static int attr_num(const struct doc *d, nodeid id, int attr, int lo, int hi)
+{
+	const char *v = doc_attr(d, id, attr);
+	long n = 0;
+
+	if (v == NULL)
+		return lo;
+	while (*v == ' ')
+		v++;
+	while (*v >= '0' && *v <= '9' && n < 100000)
+		n = n * 10 + (*v++ - '0');
+	return n < lo ? lo : n > hi ? hi : (int)n;
+}
+
+static void grid_free(struct grid *g);
+
+/* room in *taken (rows of GRID_MAX_COLS: the cell there, -1) for need rows */
+static int grow_taken(short **taken, int *rows_cap, int need)
+{
+	int nc, k;
+	short *q;
+
+	if (need <= *rows_cap)
+		return 0;
+	nc = need * 2 + 16;
+	if ((q = xrealloc(*taken, (size_t)nc * GRID_MAX_COLS * sizeof *q)) == NULL)
+		return -1;
+	for (k = *rows_cap * GRID_MAX_COLS; k < nc * GRID_MAX_COLS; k++)
+		q[k] = -1;
+	*taken = q;
+	*rows_cap = nc;
+	return 0;
+}
+
+/* the table's cells, where they sit: 0, or -1 when it isn't a grid */
+static int grid_build(struct lay *L, nodeid table, struct grid *g)
+{
+	const struct doc *d = L->d;
+	nodeid kids[256];
+	int nkids = 0, i, r = 0, cap = 0, rows_cap = 0;
+	nodeid n;
+	short *taken = NULL;		/* rows x GRID_MAX_COLS while placing */
+
+	memset(g, 0, sizeof *g);
+	/* the rows: the table's own, and those of its sections */
+	for (n = d->nodes[table].first; n && nkids < 256; n = d->nodes[n].next) {
+		const struct node *nd = &d->nodes[n];
+
+		if (nd->type != NODE_ELEM)
+			continue;
+		if (nd->tag == TAG_THEAD || nd->tag == TAG_TBODY || nd->tag == TAG_TFOOT) {
+			nodeid m;
+
+			if (el_hidden(L, n))
+				continue;
+			for (m = nd->first; m && nkids < 256; m = d->nodes[m].next)
+				if (d->nodes[m].type == NODE_ELEM && d->nodes[m].tag == TAG_TR)
+					kids[nkids++] = m;
+		} else if (nd->tag == TAG_TR)
+			kids[nkids++] = n;
+	}
+	if (nkids == 256 && n)
+		return -1;			/* (a long table: as it was) */
+	for (i = 0; i < nkids; i++) {
+		nodeid tr = kids[i], c;
+		int col = 0;
+
+		if (el_hidden(L, tr))
+			continue;
+		if (grow_taken(&taken, &rows_cap, r + 1) < 0)
+			goto linear;
+		for (c = d->nodes[tr].first; c; c = d->nodes[c].next) {
+			const struct node *cd = &d->nodes[c];
+			struct gcell *gc;
+			int rs, cs, k, j;
+			long text;
+
+			if (cd->type != NODE_ELEM || (cd->tag != TAG_TD && cd->tag != TAG_TH))
+				continue;
+			if (el_hidden(L, c))
+				continue;
+			if ((text = subtree_text(d, c)) < 0 || text > GRID_CELL_TEXT)
+				goto linear;
+			cs = attr_num(d, c, ATTR_COLSPAN, 1, GRID_MAX_COLS);
+			rs = attr_num(d, c, ATTR_ROWSPAN, 1, 64);
+			if (grow_taken(&taken, &rows_cap, r + rs) < 0)
+				goto linear;
+			/* the next column free in this row (rows above may
+			 * reach down into it) */
+			while (col < GRID_MAX_COLS && taken[r * GRID_MAX_COLS + col] >= 0)
+				col++;
+			if (col + cs > GRID_MAX_COLS)
+				goto linear;
+			if (g->ncells == GRID_MAX_CELLS)
+				goto linear;
+			if (g->ncells == cap) {
+				int nc = cap ? cap * 2 : 32;
+				struct gcell *q = xrealloc(g->cell, (size_t)nc * sizeof *q);
+
+				if (q == NULL)
+					goto linear;
+				g->cell = q;
+				cap = nc;
+			}
+			gc = &g->cell[g->ncells];
+			memset(gc, 0, sizeof *gc);
+			gc->node = c;
+			gc->r = r;
+			gc->c = col;
+			gc->rs = rs;
+			gc->cs = cs;
+			for (k = r; k < r + rs; k++)
+				for (j = col; j < col + cs; j++)
+					taken[k * GRID_MAX_COLS + j] = (short)g->ncells;
+			g->ncells++;
+			col += cs;
+			if (col > g->ncols)
+				g->ncols = col;
+		}
+		r++;
+	}
+	g->nrows = r;
+	for (i = 0; i < g->ncells; i++)	/* (a rowspan past the last row) */
+		if (g->cell[i].r + g->cell[i].rs > g->nrows)
+			g->cell[i].rs = g->nrows - g->cell[i].r;
+	if (g->ncols < 2 || g->nrows == 0)
+		goto linear;
+	g->slot = xmalloc((size_t)g->nrows * (size_t)g->ncols * sizeof *g->slot);
+	g->row_h = xmalloc((size_t)g->nrows * sizeof *g->row_h);
+	g->row_at = xmalloc(((size_t)g->nrows + 1) * sizeof *g->row_at);
+	if (!g->slot || !g->row_h || !g->row_at)
+		goto linear;
+	for (r = 0; r < g->nrows; r++)
+		for (i = 0; i < g->ncols; i++)
+			g->slot[r * g->ncols + i] = taken[r * GRID_MAX_COLS + i];
+	xfree(taken);
+	return 0;
+linear:
+	xfree(taken);
+	grid_free(g);
+	return -1;
+}
+
+static void grid_free(struct grid *g)
+{
+	int i;
+
+	for (i = 0; i < g->ncells; i++) {
+		layout_free(&g->cell[i].pg);
+		xfree(g->cell[i].lmap);
+	}
+	xfree(g->cell);
+	xfree(g->slot);
+	xfree(g->row_h);
+	xfree(g->row_at);
+	memset(g, 0, sizeof *g);
+}
+
+/* how wide n bytes of page tp are in a span's look */
+static int seg_w(const struct lay *L, const struct page *tp, int attr, int face,
+	const char *s, int n)
+{
+	int w = 0;
+
+	if (face & LF_IMAGE)
+		return layout_images_w(tp, s, n);
+	if (L->m)
+		return L->m->width(L->m->ctx, attr, face, s, n);
+	if (tp->cs != TCS_UTF8)
+		return n;
+	{
+		const char *e = s + n;
+
+		while (s < e) {
+			if ((unsigned char)*s < 0x80) {
+				s++;
+				w++;
+			} else
+				w += ucs_width(utf8_get(&s));
+		}
+	}
+	return w;
+}
+
+/*
+ * Line ln of page tp: its width (indent included) into *w, and its widest
+ * piece that can't be broken (a word, a field, a picture) into *word.
+ */
+static void line_widths(const struct lay *L, const struct page *tp, unsigned long ln,
+	int *w, int *word)
+{
+	const struct lline *l = &tp->lines[ln];
+	unsigned long off = l->off, end = l->off + l->len, s = l->span;
+	int run = 0;
+
+	*w = l->indent;
+	*word = 0;
+	while (off < end) {
+		unsigned long next = end, a;
+		const struct lspan *sp;
+
+		s = layout_span_at(tp, s, off);
+		sp = &tp->spans[s];
+		if (s + 1 < tp->nspans && tp->spans[s + 1].off < end)
+			next = tp->spans[s + 1].off;
+		*w += seg_w(L, tp, sp->attr, sp->face, tp->text + off, (int)(next - off));
+		if ((sp->attr & SA_FIELD) || (sp->face & LF_IMAGE))
+			run += seg_w(L, tp, sp->attr, sp->face, tp->text + off,
+				(int)(next - off));
+		else
+			for (a = off; a < next; ) {
+				unsigned long b = a;
+
+				while (b < next && tp->text[b] != ' ')
+					b++;
+				run += seg_w(L, tp, sp->attr, sp->face, tp->text + a, (int)(b - a));
+				if (b < next) {	/* a space: the word ends */
+					if (l->indent + run > *word)
+						*word = l->indent + run;
+					run = 0;
+					b++;
+				}
+				a = b;
+			}
+		off = next;
+	}
+	if (l->indent + run > *word)
+		*word = l->indent + run;
+}
+
+/* lay cell gc out into its page, width wide, as a block's content, with
+ * S (a struct lay of the grid's, reused for each cell) */
+static int lay_cell(struct lay *L, struct lay *S, struct gcell *gc, int width)
+{
+	struct page *pg = &gc->pg;
+	size_t have = used(L->p), room = L->p->byte_cap > have ? L->p->byte_cap - have : 0;
+	struct style s;
+
+	layout_free(pg);
+	pg->d = L->d;
+	pg->width = width;
+	pg->cs = L->p->cs;
+	pg->byte_cap = room;
+	pg->main_line = -1;
+	pg->content_line = -1;
+	gc->laid_w = width;
+	if (room < 4096)
+		return -1;
+	/* (all but the saved-state stack, written before it's read: on a
+	 * 68030 clearing it for every cell costs) */
+	memset(S, 0, offsetof(struct lay, st));
+	S->small = 1;
+	S->p = pg;
+	S->d = L->d;
+	S->fs = L->fs;
+	S->m = L->m;
+	S->em = L->em;
+	S->width = width;
+	S->face = L->face;
+	S->heading_line = -1;
+	style_of(L->d, gc->node, &s);	/* (a <th>: bold) */
+	S->attr = L->attr | s.attr;
+	set_span(S);
+	if (doc_attr(L->d, gc->node, ATTR_ID))
+		add_anchor(S, gc->node);	/* (the cell's own id) */
+	walk(S, gc->node, 0);
+	end_line(S);
+	/* (no blank lines at its end) */
+	while (pg->nlines && pg->lines[pg->nlines - 1].len == 0)
+		pg->nlines--;
+	return pg->truncated ? -1 : 0;
+}
+
+/* the cells' widths, the columns' (or -1: they don't fit) */
+static int grid_widths(struct lay *L, struct lay *S, struct grid *g, int avail, int gap)
+{
+	int cmin[GRID_MAX_COLS], cmax[GRID_MAX_COLS], i, c, smin = 0, smax = 0;
+
+	for (c = 0; c < g->ncols; c++)
+		cmin[c] = cmax[c] = 0;
+	/* single columns first, then what spans need beyond them */
+	for (i = 0; i < g->ncells; i++) {
+		struct gcell *gc = &g->cell[i];
+		unsigned long ln;
+
+		if (lay_cell(L, S, gc, avail) < 0)
+			return -1;
+		if (gc->pg.nlines > GRID_CELL_LINES)
+			return -1;		/* (a page's frame) */
+		gc->minw = gc->maxw = 0;
+		for (ln = 0; ln < gc->pg.nlines; ln++) {
+			int w, word;
+
+			line_widths(L, &gc->pg, ln, &w, &word);
+			if (w > gc->maxw)
+				gc->maxw = w;
+			if (word > gc->minw)
+				gc->minw = word;
+		}
+		if (gc->cs == 1) {
+			if (gc->minw > cmin[gc->c])
+				cmin[gc->c] = gc->minw;
+			if (gc->maxw > cmax[gc->c])
+				cmax[gc->c] = gc->maxw;
+		}
+	}
+	for (i = 0; i < g->ncells; i++) {
+		struct gcell *gc = &g->cell[i];
+		int have_min = (gc->cs - 1) * gap, have_max = have_min, extra;
+
+		if (gc->cs == 1)
+			continue;
+		for (c = gc->c; c < gc->c + gc->cs; c++) {
+			have_min += cmin[c];
+			have_max += cmax[c];
+		}
+		if ((extra = gc->minw - have_min) > 0)
+			for (c = gc->c; c < gc->c + gc->cs; c++)
+				cmin[c] += extra / gc->cs + (c - gc->c < extra % gc->cs);
+		if ((extra = gc->maxw - have_max) > 0)
+			for (c = gc->c; c < gc->c + gc->cs; c++)
+				cmax[c] += extra / gc->cs + (c - gc->c < extra % gc->cs);
+	}
+	for (c = 0; c < g->ncols; c++) {
+		if (cmax[c] < cmin[c])
+			cmax[c] = cmin[c];
+		smin += cmin[c];
+		smax += cmax[c];
+	}
+	avail -= (g->ncols - 1) * gap;
+	if (smin > avail)
+		return -1;
+	/* all at their widest if they fit; else each its narrowest and a
+	 * share of what is left, as much as it would take more */
+	for (c = 0; c < g->ncols; c++)
+		g->w[c] = smax <= avail ? cmax[c] : cmin[c] + (smax > smin ?
+			(int)((long)(cmax[c] - cmin[c]) * (avail - smin) / (smax - smin)) : 0);
+	for (c = 0; c < g->ncols; c++)
+		g->x[c] = c ? g->x[c - 1] + g->w[c - 1] + gap : 0;
+	return 0;
+}
+
+/* the gap up to x: spaces, or with proportional fonts a spacer that wide */
+static void pad_to(struct lay *L, int x)
+{
+	int n = x - L->col;
+
+	if (n <= 0)
+		return;
+	L->attr = 0;
+	L->link = 0;
+	if (L->m) {
+		char b[LAYOUT_IMG_BYTES];
+
+		L->face = LF_IMAGE;
+		set_span(L);
+		b[0] = '\002';
+		b[1] = (char)(2 + n / 900 % 30);
+		b[2] = (char)(2 + n / 30 % 30);
+		b[3] = (char)(2 + n % 30);
+		put_bytes(L, b, sizeof b);
+	} else {
+		static const char sp[] = "                ";
+
+		L->face = 0;
+		set_span(L);
+		while (n > 0) {
+			int k = n > 16 ? 16 : n;
+
+			put_bytes(L, sp, (size_t)k);
+			n -= k;
+		}
+	}
+	L->col = x;
+}
+
+/* line ln of cell gc's page onto the open line */
+static void put_cell_line(struct lay *L, struct gcell *gc, unsigned long ln)
+{
+	const struct page *tp = &gc->pg;
+	const struct lline *l = &tp->lines[ln];
+	unsigned long off = l->off, end = l->off + l->len, s = l->span;
+	struct page *p = L->p;
+
+	while (off < end && !L->stop) {
+		unsigned long next = end;
+		const struct lspan *sp;
+		int w;
+
+		s = layout_span_at(tp, s, off);
+		sp = &tp->spans[s];
+		if (s + 1 < tp->nspans && tp->spans[s + 1].off < end)
+			next = tp->spans[s + 1].off;
+		w = seg_w(L, tp, sp->attr, sp->face, tp->text + off, (int)(next - off));
+		L->attr = sp->attr;
+		L->face = sp->face;
+		L->link = 0;
+		if (sp->link && gc->lmap) {
+			int k = sp->link - 1;
+
+			if (gc->lmap[k] < 0 && GROW(L, links, links_cap, p->nlinks + 1, 64) == 0) {
+				struct llink *nk = &p->links[p->nlinks];
+
+				*nk = tp->links[k];
+				nk->line = p->nlines;
+				nk->col = (unsigned short)L->col;
+				gc->lmap[k] = (int)p->nlinks++;
+			}
+			if (gc->lmap[k] >= 0)
+				L->link = (unsigned short)(gc->lmap[k] + 1);
+		}
+		set_span(L);
+		if (sp->face & LF_IMAGE) {
+			/* pictures get their number in the page; spacers as
+			 * they are */
+			unsigned long a;
+
+			for (a = off; a + LAYOUT_IMG_BYTES <= next; a += LAYOUT_IMG_BYTES) {
+				char b[LAYOUT_IMG_BYTES];
+				long k = layout_image(tp, tp->text + a);
+
+				memcpy(b, tp->text + a, sizeof b);
+				if (k >= 0) {
+					unsigned long ni;
+
+					if (p->nimages >= LAYOUT_MAX_IMAGES
+						|| GROW(L, images, images_cap, p->nimages + 1, 16) < 0)
+						continue;
+					ni = p->nimages++;
+					p->images[ni] = tp->images[k];
+					p->images[ni].line = p->nlines;
+					b[1] = (char)(2 + ni / 900);
+					b[2] = (char)(2 + ni / 30 % 30);
+					b[3] = (char)(2 + ni % 30);
+				}
+				put_bytes(L, b, sizeof b);
+			}
+		} else
+			put_bytes(L, tp->text + off, (size_t)(next - off));
+		L->col += w;
+		off = next;
+	}
+}
+
+/* lay table id out as a grid: 1, or 0 when it is to be laid out as rows */
+static int grid_table(struct lay *L, nodeid id)
+{
+	struct grid g;
+	struct lay *S;
+	int gap = L->m ? L->em : 2, avail, i, c, total, attr = L->attr, face = L->face;
+	int cell = L->cell;
+	unsigned short link = L->link;
+	unsigned long base = 0, ln;
+	nodeid n;
+
+	if (L->pre || L->marker_w)
+		return 0;
+	if (grid_build(L, id, &g) < 0)
+		return 0;
+	if ((S = xmalloc(sizeof *S)) == NULL) {
+		grid_free(&g);
+		return 0;
+	}
+	avail = L->width - (L->indent > L->width / 2 ? L->width / 2 : L->indent);
+	if (grid_widths(L, S, &g, avail, gap) < 0) {
+		xfree(S);
+		grid_free(&g);
+		return 0;
+	}
+	/* each cell at its column's width (if narrower than it was laid) */
+	for (i = 0; i < g.ncells && !L->stop; i++) {
+		struct gcell *gc = &g.cell[i];
+		int w = g.x[gc->c + gc->cs - 1] + g.w[gc->c + gc->cs - 1] - g.x[gc->c];
+
+		if (gc->maxw > w && lay_cell(L, S, gc, w) < 0) {
+			xfree(S);
+			grid_free(&g);
+			return 0;
+		}
+		if (gc->pg.nlinks && (gc->lmap = xmalloc(gc->pg.nlinks * sizeof *gc->lmap)) != NULL)
+			for (c = 0; c < (int)gc->pg.nlinks; c++)
+				gc->lmap[c] = -1;
+	}
+	xfree(S);
+	/* the rows' heights: their cells' lines (a cell spanning rows
+	 * lengthens the last of them if it must) */
+	for (i = 0; i < g.nrows; i++)
+		g.row_h[i] = 0;
+	for (i = 0; i < g.ncells; i++)
+		if (g.cell[i].rs == 1 && (int)g.cell[i].pg.nlines > g.row_h[g.cell[i].r])
+			g.row_h[g.cell[i].r] = (int)g.cell[i].pg.nlines;
+	for (i = 0; i < g.ncells; i++) {
+		struct gcell *gc = &g.cell[i];
+		int have = 0, k;
+
+		if (gc->rs == 1)
+			continue;
+		for (k = gc->r; k < gc->r + gc->rs; k++)
+			have += g.row_h[k];
+		if ((int)gc->pg.nlines > have)
+			g.row_h[gc->r + gc->rs - 1] += (int)gc->pg.nlines - have;
+	}
+	for (i = 0, total = 0; i < g.nrows; i++) {
+		g.row_at[i] = total;
+		total += g.row_h[i];
+	}
+	g.row_at[g.nrows] = total;
+
+	/* the caption, then the rows a line at a time (in a cell of a table
+	 * laid out as rows, the grid is a block of its own all the same) */
+	L->cell = 0;
+	L->cell_break = 0;
+	block_break(L, 1);
+	for (n = L->d->nodes[id].first; n; n = L->d->nodes[n].next)
+		if (L->d->nodes[n].type == NODE_ELEM && L->d->nodes[n].tag == TAG_CAPTION
+			&& !el_hidden(L, n)) {
+			L->attr = attr | SA_BOLD;
+			set_span(L);
+			walk(L, n, 0);
+			end_line(L);
+			L->attr = attr;
+			set_span(L);
+		}
+	for (ln = 0, i = 0; ln < (unsigned long)total && !L->stop; ln++) {
+		int x0, a = 0, h = 0;
+
+		while (i + 1 < g.nrows && (int)ln >= g.row_at[i + 1])
+			i++;
+		open_line(L);
+		if (ln == 0)
+			base = L->p->nlines;
+		x0 = L->col;
+		for (c = 0; c < g.ncols; c++) {
+			int k = g.slot[i * g.ncols + c];
+			struct gcell *gc;
+			unsigned long cl;
+
+			if (k < 0 || (gc = &g.cell[k])->c != c)
+				continue;	/* (nothing, or a span's continuation) */
+			cl = ln - (unsigned long)g.row_at[gc->r];
+			if (cl >= gc->pg.nlines)
+				continue;
+			pad_to(L, x0 + g.x[c] + gc->pg.lines[cl].indent);
+			put_cell_line(L, gc, cl);
+			if (L->m && gc->pg.heights) {
+				const struct lheight *lh = &gc->pg.heights[cl];
+
+				if (lh->ascent > a)
+					a = lh->ascent;
+				if (lh->height - lh->ascent > h)
+					h = lh->height - lh->ascent;
+			}
+		}
+		if (a > L->line_a)
+			L->line_a = a;
+		if (h > L->line_d)
+			L->line_d = h;
+		L->attr = attr;
+		L->face = face;
+		L->link = link;
+		set_span(L);
+		end_line(L);
+	}
+	/* what the cells knew of the page: anchors, where content starts */
+	for (i = 0; i < g.ncells && !L->stop && total > 0; i++) {
+		const struct page *tp = &g.cell[i].pg;
+		unsigned long at = base + (unsigned long)g.row_at[g.cell[i].r], k;
+
+		for (k = 0; k < tp->nanchors; k++)
+			if (GROW(L, anchors, anchors_cap, L->p->nanchors + 1, 64) == 0) {
+				L->p->anchors[L->p->nanchors].node = tp->anchors[k].node;
+				L->p->anchors[L->p->nanchors].line = at + tp->anchors[k].line;
+				L->p->nanchors++;
+			}
+		if (L->p->main_line < 0 && tp->main_line >= 0)
+			L->p->main_line = (long)(at + (unsigned long)tp->main_line);
+		if (L->p->content_line < 0 && tp->content_line >= 0)
+			L->p->content_line = (long)(at + (unsigned long)tp->content_line);
+	}
+	L->attr = attr;
+	L->face = face;
+	L->link = link;
+	set_span(L);
+	block_break(L, 1);
+	L->cell = cell;
+	L->cell_break = 0;
+	grid_free(&g);
+	return 1;
+}
+
 int layout_run(struct page *p, const struct doc *d, int width,
 	enum term_cs cs, unsigned long max_lines, size_t byte_cap,
 	const struct forms *fs)
@@ -1345,8 +2063,6 @@ int layout_run_m(struct page *p, const struct doc *d, int width,
 	const struct forms *fs, const struct lmetrics *m)
 {
 	struct lay *L;
-	nodeid id;
-	int depth = 0;
 
 	memset(p, 0, sizeof *p);
 	p->d = d;
@@ -1368,37 +2084,8 @@ int layout_run_m(struct page *p, const struct doc *d, int width,
 	L->max_lines = max_lines;
 	L->heading_line = -1;
 	set_span(L);
-
-	id = d->nnodes > 1 ? d->nodes[1].first : 0;
-	while (id && !L->stop) {
-		const struct node *n = &d->nodes[id];
-		int descend = 0;
-
-		if (n->type == NODE_TEXT)
-			put_text(L, doc_text(d, id));
-		else if (n->type == NODE_ELEM)
-			descend = enter(L, id, depth);
-		if (L->stop)
-			break;
-		if (descend && n->first) {
-			depth++;
-			id = n->first;
-			continue;
-		}
-		if (descend)
-			leave(L, id, depth);
-		while (id && !d->nodes[id].next) {
-			id = d->nodes[id].parent;
-			if (id <= 1) {
-				id = 0;
-				break;
-			}
-			depth--;
-			leave(L, id, depth);
-		}
-		if (id)
-			id = d->nodes[id].next;
-	}
+	if (d->nnodes > 1)
+		walk(L, 1, 0);
 	end_line(L);
 	xfree(L);
 	return 0;
@@ -1426,6 +2113,13 @@ long layout_image(const struct page *p, const char *s)
 	return k < (long)p->nimages ? k : -1;
 }
 
+int layout_spacer_w(const char *s)
+{
+	if (s[0] != '\002' || s[1] < 2 || s[2] < 2 || s[3] < 2)
+		return -1;
+	return (s[1] - 2) * 900 + (s[2] - 2) * 30 + (s[3] - 2);
+}
+
 int layout_images_w(const struct page *p, const char *s, int n)
 {
 	int w = 0;
@@ -1435,6 +2129,8 @@ int layout_images_w(const struct page *p, const char *s, int n)
 
 		if (k >= 0)
 			w += p->images[k].w;
+		else if ((k = layout_spacer_w(s)) > 0)
+			w += (int)k;
 	}
 	return w;
 }

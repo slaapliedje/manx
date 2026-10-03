@@ -136,7 +136,13 @@ unsigned long layout_span_at(const struct page *p, unsigned long s,
  * p->images, or -1. */
 long layout_image(const struct page *p, const char *s);
 
-/* How wide n bytes of a run of face LF_IMAGE are: its images' widths. */
+/* With metrics, a gap of an exact width (between a grid's columns) is
+ * LAYOUT_IMG_BYTES bytes in the same kind of run, a spacer: its width,
+ * or -1 if the bytes at s aren't one. */
+int layout_spacer_w(const char *s);
+
+/* How wide n bytes of a run of face LF_IMAGE are: its images' and
+ * spacers' widths. */
 int layout_images_w(const struct page *p, const char *s, int n);
 
 /* The line of the anchor named name (id= or <a name=>), or -1. */

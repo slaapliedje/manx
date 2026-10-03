@@ -71,6 +71,93 @@ static void check_links(void)
 	doc_free(&d);
 }
 
+/* tables as grids: links and anchors in cells, where they show */
+static void check_grid_links(void)
+{
+	struct page pg;
+	struct doc d;
+
+	render("<table><tr><td><a href=a>one</a><td><a href=b>two</a></tr>"
+		"<tr><td>x<td id=k><a href=c>three</a></table>", 30, TCS_ASCII, &pg, &d);
+	runs++;
+	if (pg.nlinks != 3 || pg.links[0].line != 0 || pg.links[1].line != 0
+		|| pg.links[2].line != 1 || pg.links[0].col != 0 || pg.links[1].col != 5
+		|| pg.links[2].col != 5 || layout_anchor(&pg, "k") != 1) {
+		fails++;
+		printf("FAIL grid links: %lu links, lines %lu %lu %lu, cols %u %u %u, anchor %ld\n",
+			pg.nlinks, pg.nlinks > 0 ? pg.links[0].line : 99,
+			pg.nlinks > 1 ? pg.links[1].line : 99, pg.nlinks > 2 ? pg.links[2].line : 99,
+			pg.nlinks > 0 ? pg.links[0].col : 99, pg.nlinks > 1 ? pg.links[1].col : 99,
+			pg.nlinks > 2 ? pg.links[2].col : 99, layout_anchor(&pg, "k"));
+	}
+	layout_free(&pg);
+	doc_free(&d);
+}
+
+/* a made-up proportional font: 10 pixels a byte, lines 12 high */
+static int fake_w(void *ctx, int attr, int face, const char *s, int n)
+{
+	(void)ctx;
+	(void)attr;
+	(void)face;
+	(void)s;
+	return n * 10;
+}
+
+static int fake_h(void *ctx, int attr, int face, int *ascent)
+{
+	(void)ctx;
+	(void)attr;
+	(void)face;
+	*ascent = 9;
+	return 12;
+}
+
+/* with proportional fonts the columns line up to the pixel: spacers */
+static void check_grid_pixels(void)
+{
+	static struct html_load l;
+	static const struct lmetrics m = { fake_w, fake_h, NULL, 10, NULL, NULL };
+	const char *html = "<table><tr><td>a<td>b</tr><tr><td>abc<td>d</table>";
+	struct page pg;
+	struct doc d;
+	unsigned long ln;
+	int bad = 0;
+
+	doc_init(&d, 0);
+	html_load_begin(&l, &d, "utf-8", 0);
+	html_load_feed(&l, (const unsigned char *)html, strlen(html));
+	html_load_end(&l);
+	layout_run_m(&pg, &d, 300, TCS_UTF8, 0, 0, NULL, &m);
+	/* each line: a cell's text, a gap to 40 px, the next cell's: 50 px */
+	for (ln = 0; ln < pg.nlines; ln++) {
+		const struct lline *li = &pg.lines[ln];
+		unsigned long off = li->off, end = off + li->len, sp = li->span;
+		int w = li->indent;
+
+		while (off < end) {
+			unsigned long next = end;
+
+			sp = layout_span_at(&pg, sp, off);
+			if (sp + 1 < pg.nspans && pg.spans[sp + 1].off < end)
+				next = pg.spans[sp + 1].off;
+			w += pg.spans[sp].face & LF_IMAGE ?
+				layout_images_w(&pg, pg.text + off, (int)(next - off))
+				: (int)(next - off) * 10;
+			off = next;
+		}
+		if (w != 50)
+			bad++;
+	}
+	runs++;
+	if (pg.nlines != 2 || bad) {
+		fails++;
+		printf("FAIL grid pixels: %lu lines, %d not 50 px wide\n", pg.nlines, bad);
+	}
+	layout_free(&pg);
+	doc_free(&d);
+}
+
 int main(void)
 {
 	check("wrap", "<p>The quick brown fox jumps over the lazy dog.", 16,
@@ -128,6 +215,31 @@ int main(void)
 	check("hr in a cell", "<table><tr><td>before<hr>after<td>next</table>",
 		20, TCS_ASCII, "before\n--------------------\nafter  next\n");
 	check_links();
+	/* tables of data as grids; those framing a page as rows */
+	check("grid", "<table><tr><th>Name<th>Size</tr><tr><td>apple<td>12</tr>"
+		"<tr><td>fig<td>3</tr></table>", 30, TCS_ASCII,
+		"Name   Size\napple  12\nfig    3\n");
+	check("grid wraps in its column", "<table><tr><td>key<td>a value that "
+		"wraps here</table>", 20, TCS_ASCII, "key  a value that\n     wraps here\n");
+	check("grid spans", "<table><tr><td colspan=2>wide<td>z</tr><tr><td>a<td>b"
+		"<td>c</table>", 30, TCS_ASCII, "wide  z\na  b  c\n");
+	check("grid rowspan", "<table><tr><td rowspan=2>two rows<td>a</tr><tr><td>b"
+		"</table>", 30, TCS_ASCII, "two rows  a\n          b\n");
+	check("grid caption", "<table><caption>Cap</caption><tr><td>a<td>b</table>"
+		"<p>after", 30, TCS_ASCII, "Cap\na  b\n\nafter\n");
+	check("one column: rows", "<table><tr><td>one</tr><tr><td>two</table>", 30,
+		TCS_ASCII, "one\ntwo\n");
+	check("a table holding a table: rows, the inner one a grid",
+		"<table><tr><td>a<td><table><tr><td>x<td>y</table></table>", 30,
+		TCS_ASCII, "a\n\nx  y\n");
+	check("a cell framing a page: rows", "<table><tr><td>side<td><p>p1<p>p2<p>p3"
+		"<p>p4<p>p5<p>p6<p>p7<p>p8<p>p9<p>p10<p>p11</table>", 30, TCS_ASCII,
+		"side  p1\n\np2\n\np3\n\np4\n\np5\n\np6\n\np7\n\np8\n\np9\n\np10\n\np11\n");
+	check("too wide for a grid: rows", "<table><tr><td>abcdefghijklmnop"
+		"<td>qrstuvwxyz0123456</table>", 20, TCS_ASCII,
+		"abcdefghijklmnop\nqrstuvwxyz0123456\n");
+	check_grid_links();
+	check_grid_pixels();
 	/* nor the space after it */
 	{
 		struct page pg;

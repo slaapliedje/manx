@@ -238,8 +238,13 @@ static void draw_images(int x, int base, const char *s, int n, int attr)
 	for (; n >= LAYOUT_IMG_BYTES; s += LAYOUT_IMG_BYTES, n -= LAYOUT_IMG_BYTES) {
 		long k = layout_image(p, s);
 
-		if (k < 0)
+		if (k < 0) {
+			int sw = layout_spacer_w(s);	/* (a grid's gap) */
+
+			if (sw > 0)
+				x += sw;
 			continue;
+		}
 		scr_image_draw(pimg_screen(p, k), x, base - p->images[k].h,
 			p->images[k].w, p->images[k].h, attr);
 		x += p->images[k].w;

@@ -73,6 +73,52 @@ others like it assemble. `manx.c` is now compiled with
 `-fno-jump-tables`: its switches are keys, so compare chains cost
 nothing that matters.
 
+## Tables as grids
+
+Tables were laid out a row a line, cells side by side and wrapping as
+one text. Now a table of data is a grid, its columns side by side; one
+that frames a page stays as rows, which read better on a narrow screen.
+
+| | |
+|---|---|
+| which | at least two columns; no table inside it; no cell with more than 800 bytes of text or 20 lines; the columns' narrowest widths fit. Else rows, as before. A grid can sit in a cell of a table laid out as rows (Hacker News' story list in its page's frame) |
+| cells | each laid out on its own, as a block, by the same engine (the layout's walk now takes any subtree), into a small page of its own; a cell's own `id` is an anchor. Measured at the table's width: its widest line, and its widest word, field or picture. `colspan` and `rowspan` |
+| columns | each at its widest if all fit; else its narrowest plus a share of what is left, as much as it would take more (the usual automatic table layout). A cell narrower than it was measured is laid out again at its column's width |
+| rows | put together a line at a time, each cell's line at its column: links, form fields, pictures and anchors take their numbers in the page; captions above. Between columns 2 spaces on a terminal; with proportional fonts a spacer of the exact width (4 bytes in a picture's run, like an image's, but drawn as nothing), so the columns line up to the pixel |
+
+In the corpus 15 pages change: Wikipedia's infoboxes (labels and values
+in columns), Hacker News (rank, vote, title, and the points line under
+the title), Google's search box and buttons, IANA's site map, Berkshire
+Hathaway's two columns of links, NetBSD's, GitHub's tables; the
+Space Jam page of 1996 (an image map in a table) becomes a sparse grid
+of its links, as its pictures were laid out.
+
+Tests: `test_layout` gains 11 cases (a grid, wrapping in a column, spans
+both ways, a caption, links and anchors in cells where they show, one
+column, a table holding a table, a cell framing a page, too wide, and
+with a made-up proportional font every line exactly as wide as the
+columns say). `fuzz_html` splices in `colspan`/`rowspan`/`<th>`/
+`<caption>`; it found two bugs on the way (a row without cells read
+past the end of the placement array; cells not freed when a table
+turned out not to be a grid), and with them fixed ran 60,000 iterations
+clean. Scrolling Hacker News in xmanx, painted incrementally, matches a
+full repaint at every step.
+
+On the TT (`uparse -s`, layout time and the heap's peak):
+
+| page | before | as grids |
+|---|---|---|
+| Hacker News | 0.51 s, 79 KB | 0.88 s, 221 KB |
+| Wikipedia, Motorola 68030 | 1.13 s, 178 KB | 1.20 s, 197 KB |
+| Wikipedia, Atari TT030 | 1.50 s, 305 KB | 1.60 s, 319 KB |
+
+The first version took 1.84 s and 1.4 MB for Hacker News: each cell's
+page started with a whole page's arrays, and each cell's layout cleared
+an 8 KB state (AMIX's memset is slow). Cell pages now start small, and
+one state serves a table's cells, its saved-element stack left as it
+is (written before it's read).
+
 ## Left for 7
 
-- Tables as grids.
+- `list-style: none` (lists styled bullet-less still show `*`).
+- Images in the disk cache, progressive JPEG (from Phase 6).
