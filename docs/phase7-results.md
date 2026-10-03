@@ -128,6 +128,22 @@ numbers still counts. The cascade is the same as display's. Nine corpus
 pages lose bullets this way (Wikipedia's infobox values, portal and
 category boxes; BBC's skip links). `test_css`: 6 more cases.
 
+## Images in the disk cache
+
+Pictures were fetched again on every visit, Back included. Now an
+image's file (up to 256 KB: the cache, 2 MB by default, is pages' too)
+goes into the disk cache with the freshness its response gave it. On
+the next visit a fresh copy is read from disk with no request; a stale
+one is checked with the server (`If-None-Match`, else
+`If-Modified-Since`), and a 304 means the cached copy, renewed.
+Missing images (404) aren't kept.
+
+Tested with xmanx against a local server, the image page visited twice
+in two runs: with `Cache-Control: max-age=3600` on the images the second
+visit asked for none of them (only the missing one again); with no
+cache headers it asked for all five conditionally, the server answered
+304 each time, and they were shown from the cache.
+
 ## Left for 7
 
-- Images in the disk cache, progressive JPEG (from Phase 6).
+- Progressive JPEG (from Phase 6).

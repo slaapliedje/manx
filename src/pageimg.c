@@ -7,7 +7,10 @@
  * image/pixels to the screen at the size the layout gives it, as many
  * times as that size changes. Kept files are dropped past PIMG_HOLD bytes
  * once their image is on the screen (fetched again only if the size
- * changes).
+ * changes). Images up to PIMG_CACHE_MAX go in the disk cache, so that a
+ * page seen again (Back) takes them from there: a fresh copy as it is, a
+ * stale one checked with the server first (If-None-Match /
+ * If-Modified-Since: a 304 renews it).
  *
  * Order: the images shown first (decoded if fetched, else fetched); then
  * those whose size isn't known yet, in document order (until it is, the
@@ -16,8 +19,10 @@
  */
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include "os.h"
 #include "fetch.h"
+#include "cache.h"
 #include "tags.h"
 #include "image.h"
 #include "pixels.h"
@@ -27,6 +32,8 @@
 #define PIMG_MAX_FILE	(1536UL * 1024)	/* no image file bigger */
 #define PIMG_HOLD	(2048UL * 1024)	/* files kept, all together */
 #define PIMG_ROWS_POLL	8		/* rows decoded between polls */
+#define PIMG_CACHE_MAX	(256UL * 1024)	/* bigger ones: not kept on disk
+					 * (the cache is pages' too) */
 
 enum { P_NEW, P_HAVE, P_FAILED, P_SKIP };
 
@@ -203,6 +210,7 @@ void pimg_count(int *total, int *done)
 struct fetching {
 	struct pent *e;
 	int status, too_big, stopped;
+	char cc[200], expires[64], date[64], etag[128], lastmod[64], ctype[128];
 	int (*poll)(void *ctx, int shown);
 	void *ctx;
 };
@@ -212,10 +220,32 @@ static void on_head(void *ctx, int status, const char *ctype, const char *charse
 {
 	struct fetching *f = ctx;
 
-	(void)ctype;
 	(void)charset;
 	(void)url;
 	f->status = status;
+	snprintf(f->ctype, sizeof f->ctype, "%s", ctype ? ctype : "");
+}
+
+/* the headers the disk cache wants */
+static void on_header(void *ctx, const char *name, const char *value)
+{
+	struct fetching *f = ctx;
+	char low[32];
+	size_t i;
+
+	for (i = 0; name[i] && i < sizeof low - 1; i++)
+		low[i] = (char)(name[i] >= 'A' && name[i] <= 'Z' ? name[i] + 32 : name[i]);
+	low[i] = '\0';
+	if (strcmp(low, "cache-control") == 0)
+		snprintf(f->cc, sizeof f->cc, "%s", value);
+	else if (strcmp(low, "expires") == 0)
+		snprintf(f->expires, sizeof f->expires, "%s", value);
+	else if (strcmp(low, "date") == 0)
+		snprintf(f->date, sizeof f->date, "%s", value);
+	else if (strcmp(low, "etag") == 0)
+		snprintf(f->etag, sizeof f->etag, "%s", value);
+	else if (strcmp(low, "last-modified") == 0)
+		snprintf(f->lastmod, sizeof f->lastmod, "%s", value);
 }
 
 static int append(struct pent *e, const unsigned char *b, size_t n)
@@ -304,15 +334,55 @@ static int data_url(struct pent *e, const char *s)
 	return 0;
 }
 
+/* a cached copy's bytes, into the entry */
+static int cached_body(void *ctx, const unsigned char *b, size_t n)
+{
+	return append(ctx, b, n);
+}
+
+/* e's file into the disk cache under key, fresh as f's headers say (old:
+ * the cached copy's, for validators a 304 didn't repeat) */
+static void keep(const char *key, const char *final_url, const struct pent *e,
+	const struct fetching *f, const struct cache_meta *old)
+{
+	static struct cache_meta m;
+	int no_store;
+	long now = (long)time(NULL);
+
+	if (e->len == 0 || e->len > PIMG_CACHE_MAX)
+		return;
+	memset(&m, 0, sizeof m);
+	m.fresh_until = cache_freshness(f->cc[0] ? f->cc : NULL,
+		f->expires[0] ? f->expires : NULL, f->date[0] ? f->date : NULL, now,
+		&no_store);
+	if (no_store) {
+		cache_remove(key);
+		return;
+	}
+	if (cache_begin(key) < 0)
+		return;
+	cache_write(e->data, e->len);
+	snprintf(m.url, sizeof m.url, "%s", key);
+	snprintf(m.location, sizeof m.location, "%s", final_url);
+	snprintf(m.type, sizeof m.type, "%s", f->ctype[0] || !old ? f->ctype : old->type);
+	m.stored = now;
+	snprintf(m.etag, sizeof m.etag, "%s", f->etag[0] || !old ? f->etag : old->etag);
+	snprintf(m.last_modified, sizeof m.last_modified, "%s",
+		f->lastmod[0] || !old ? f->lastmod : old->last_modified);
+	m.size = (long)e->len;
+	cache_commit(&m);
+}
+
 static int fetch_one(struct pent *e, int (*poll)(void *ctx, int shown), void *ctx)
 {
+	static struct cache_meta m;
 	struct fetching f;
 	struct fetch_cb cb;
 	struct fetch_opts opts;
 	struct fetch_result *res;
 	struct url u;
-	char url[URL_MAX];
-	int rc;
+	char url[URL_MAX], final[URL_MAX], cond[400];
+	int rc, cached = 0;
 
 	drop_data(e);
 	if (strncmp(e->src, "data:", 5) == 0) {
@@ -325,6 +395,26 @@ static int fetch_one(struct pent *e, int (*poll)(void *ctx, int shown), void *ct
 			e->state = P_FAILED;
 			return PIMG_WORKED;
 		}
+		memset(&opts, 0, sizeof opts);
+		/* the disk cache: a fresh copy is all it takes; a stale one
+		 * may only need the server's word that it is still good */
+		if (strncmp(url, "file:", 5) != 0 && cache_lookup(url, &m)) {
+			cached = 1;
+			if (m.fresh_until > (long)time(NULL)
+				&& cache_read(url, &m, cached_body, e) == 0 && e->len > 0) {
+				rc = 0;
+				goto have;
+			}
+			drop_data(e);
+			cond[0] = '\0';
+			if (m.etag[0])
+				snprintf(cond, sizeof cond, "If-None-Match: %s\r\n", m.etag);
+			else if (m.last_modified[0])
+				snprintf(cond, sizeof cond, "If-Modified-Since: %s\r\n",
+					m.last_modified);
+			if (cond[0])
+				opts.extra = cond;
+		}
 		memset(&f, 0, sizeof f);
 		f.e = e;
 		f.status = 200;
@@ -333,22 +423,33 @@ static int fetch_one(struct pent *e, int (*poll)(void *ctx, int shown), void *ct
 		memset(&cb, 0, sizeof cb);
 		cb.ctx = &f;
 		cb.head = on_head;
+		cb.header = on_header;
 		cb.body = on_body;
 		cb.reset = on_reset;
-		memset(&opts, 0, sizeof opts);
 		opts.referer = g_referer[0] ? g_referer : NULL;
 		/* (a fetch_result is big: not on the stack) */
 		if ((res = xmalloc(sizeof *res)) == NULL)
 			return PIMG_WORKED;
 		rc = fetch_ex(url, "GET", &opts, &cb, res);
+		snprintf(final, sizeof final, "%s", res->url[0] ? res->url : url);
 		xfree(res);
 		if (f.stopped) {
 			drop_data(e);		/* (from the start next time) */
 			return PIMG_STOPPED;
 		}
-		if (f.too_big || f.status != 200)
+		if (rc == 0 && f.status == 304 && cached) {
+			/* not changed: the cached copy, good for longer */
+			drop_data(e);
+			if (cache_read(url, &m, cached_body, e) == 0 && e->len > 0)
+				keep(url, m.location[0] ? m.location : final, e, &f, &m);
+			else
+				rc = -1;
+		} else if (f.too_big || f.status != 200)
 			rc = -1;
+		else if (rc == 0 && strncmp(url, "file:", 5) != 0)
+			keep(url, final, e, &f, NULL);
 	}
+have:
 	if (rc < 0 || !img_probe(e->data, e->len, &e->iw, &e->ih)) {
 		drop_data(e);
 		e->iw = e->ih = 0;
