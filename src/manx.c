@@ -424,17 +424,16 @@ static void draw(int full)
 	scr_put(0, scr_cols - n, pos, n, CA_REV);
 	scr_title(title);
 	if (g_have_page && scr_metrics() && g_page.heights) {
-		/* in fonts: lines as tall as they are, while they fit */
+		/* in fonts: lines as tall as they are, down to the pane's
+		 * bottom, the last one cut off there (a line with a tall
+		 * picture in it would otherwise show nothing until the whole
+		 * picture fits) */
 		int y = 0, h = scr_pane_h();
 		long ln;
 
-		for (ln = g_top; ln < (long)g_page.nlines; ln++) {
-			int lh = g_page.heights[ln].height;
-
-			if (y + lh > h)
-				break;
+		for (ln = g_top; ln < (long)g_page.nlines && y < h; ln++) {
 			draw_line_px(y, ln);
-			y += lh;
+			y += g_page.heights[ln].height;
 		}
 	} else if (g_have_page)
 		for (i = 0; i < rows; i++) {
@@ -2186,7 +2185,8 @@ static void img_work(void)
 		}
 		return;
 	}
-	r = pimg_step(&g_page, g_top, view_rows(), img_poll, NULL);
+	/* (the line cut off at the bottom is shown too) */
+	r = pimg_step(&g_page, g_top, view_rows() + 1, img_poll, NULL);
 	now = os_msec();
 	if (r == PIMG_SIZED)
 		g_img_relayout = 1;
