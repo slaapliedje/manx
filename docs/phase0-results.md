@@ -205,3 +205,11 @@ square-and-multiply, R^2 mod n by doubling. On the TT, setup included
 (`tlsbench 1 rsa`): RSA-2048 2.30 s -> 0.52 s, RSA-4096 9.61 s -> 2.40 s,
 the answers the same as BearSSL's (`tests/test_rsa.c`: 316 cases there,
 3028 and four generated keys' signatures on the host).
+
+And ECDSA (`tls/ecvrfy.c`, on the same multiplication, split out as
+`tls/mont.c`): Jacobian points, u1 G + u2 Q by interleaved width-4 NAF,
+inverses by binary GCD, x = r checked as r Z^2 = X. On the TT
+(`tlsbench 1 ecdsa`): P-256 5.49 s (br_ec_p256_m31) -> 1.92 s, P-384
+42.2 s (br_ec_prime_i31) -> 5.54 s. P-521 still goes to BearSSL.
+`tests/test_ecdsa.c` checks it against br_ecdsa_i31 with keys and
+signatures BearSSL makes (the TT agrees too).

@@ -16,6 +16,7 @@
 #include "bearssl.h"
 #include "os.h"
 #include "rsavrfy.h"
+#include "ecvrfy.h"
 #include "rsa_moduli.h"
 
 static unsigned long g_min_ms = 1500;
@@ -352,8 +353,10 @@ static struct ecdsa g_ecdsas[] = {
 	{ "ECDSA P-256 verify i15/p256_m15", br_ecdsa_i15_vrfy_asn1, &br_ec_p256_m15, BR_EC_secp256r1 },
 	{ "ECDSA P-256 verify i31/p256_m31", br_ecdsa_i31_vrfy_asn1, &br_ec_p256_m31, BR_EC_secp256r1 },
 	{ "ECDSA P-256 verify i15/prime_i15", br_ecdsa_i15_vrfy_asn1, &br_ec_prime_i15, BR_EC_secp256r1 },
+	{ "ECDSA P-256 verify ecvrfy", ecvrfy_asn1, &br_ec_all_m31, BR_EC_secp256r1 },
 	{ "ECDSA P-384 verify i15/prime_i15", br_ecdsa_i15_vrfy_asn1, &br_ec_prime_i15, BR_EC_secp384r1 },
 	{ "ECDSA P-384 verify i31/prime_i31", br_ecdsa_i31_vrfy_asn1, &br_ec_prime_i31, BR_EC_secp384r1 },
+	{ "ECDSA P-384 verify ecvrfy", ecvrfy_asn1, &br_ec_all_m31, BR_EC_secp384r1 },
 };
 #define NECDSA	(sizeof g_ecdsas / sizeof g_ecdsas[0])
 
