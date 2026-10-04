@@ -18,6 +18,7 @@
 #include "entropy.h"
 #include "rsavrfy.h"
 #include "ecvrfy.h"
+#include "crypt68k_bearssl.h"
 #include "tls.h"
 
 #define READ_TIMEOUT_MS		30000
@@ -474,8 +475,52 @@ static const uint16_t suites_full[] = {
 	BR_TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
 };
 
-/* the m31 curves, but offering only X25519 (FAST and FULL_X) */
-static br_ec_impl s_ec_x25519;
+/* The key exchange's curves: X25519 by crypt68k (third_party/crypt68k,
+ * its 68030 multiply; ~3x BearSSL's m31 there), the others by BearSSL's
+ * m31. FAST and FULL_X offer X25519 alone (c68k_br_ec_c25519 has no
+ * other curve); FULL offers all of them, through these. */
+static const br_ec_impl *ec_for(int curve)
+{
+	return curve == BR_EC_curve25519 ? &c68k_br_ec_c25519 : &br_ec_all_m31;
+}
+
+static const unsigned char *ec_generator(int curve, size_t *len)
+{
+	return ec_for(curve)->generator(curve, len);
+}
+
+static const unsigned char *ec_order(int curve, size_t *len)
+{
+	return ec_for(curve)->order(curve, len);
+}
+
+static size_t ec_xoff(int curve, size_t *len)
+{
+	return ec_for(curve)->xoff(curve, len);
+}
+
+static uint32_t ec_mul(unsigned char *G, size_t Glen, const unsigned char *x, size_t xlen,
+	int curve)
+{
+	return ec_for(curve)->mul(G, Glen, x, xlen, curve);
+}
+
+static size_t ec_mulgen(unsigned char *R, const unsigned char *x, size_t xlen, int curve)
+{
+	return ec_for(curve)->mulgen(R, x, xlen, curve);
+}
+
+static uint32_t ec_muladd(unsigned char *A, const unsigned char *B, size_t len,
+	const unsigned char *x, size_t xlen, const unsigned char *y, size_t ylen, int curve)
+{
+	return ec_for(curve)->muladd(A, B, len, x, xlen, y, ylen, curve);
+}
+
+static const br_ec_impl s_ec_all = {
+	(uint32_t)1 << BR_EC_secp256r1 | (uint32_t)1 << BR_EC_secp384r1
+		| (uint32_t)1 << BR_EC_secp521r1 | (uint32_t)1 << BR_EC_curve25519,
+	ec_generator, ec_order, ec_xoff, ec_mul, ec_mulgen, ec_muladd
+};
 
 static unsigned long ms_since(unsigned long t0)
 {
@@ -509,20 +554,16 @@ int tls_connect(struct tls_conn *c, int fd, const char *host, unsigned port,
 
 	br_ssl_client_init_full(&c->sc, &c->xc, s_all.ta, s_all.n);
 	if (profile == TLS_FAST) {
-		s_ec_x25519 = br_ec_all_m31;
-		s_ec_x25519.supported_curves = (uint32_t)1 << BR_EC_curve25519;
 		br_ssl_engine_set_suites(&c->sc.eng, suites_fast,
 			sizeof suites_fast / sizeof suites_fast[0]);
-		br_ssl_engine_set_ec(&c->sc.eng, &s_ec_x25519);
+		br_ssl_engine_set_ec(&c->sc.eng, &c68k_br_ec_c25519);
 	} else {
 		br_ssl_engine_set_suites(&c->sc.eng, suites_full,
 			sizeof suites_full / sizeof suites_full[0]);
-		if (profile == TLS_FULL_X) {
-			s_ec_x25519 = br_ec_all_m31;
-			s_ec_x25519.supported_curves = (uint32_t)1 << BR_EC_curve25519;
-			br_ssl_engine_set_ec(&c->sc.eng, &s_ec_x25519);
-		} else
-			br_ssl_engine_set_ec(&c->sc.eng, &br_ec_all_m31);
+		if (profile == TLS_FULL_X)
+			br_ssl_engine_set_ec(&c->sc.eng, &c68k_br_ec_c25519);
+		else
+			br_ssl_engine_set_ec(&c->sc.eng, &s_ec_all);
 	}
 	/* the fastest code measured on the TT: signatures checked by rsavrfy
 	 * and ecvrfy (on the 68030's mulu.l; P-521 through to i31), the key

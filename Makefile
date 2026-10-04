@@ -46,7 +46,9 @@ else
 $(error TARGET must be host or sysv4)
 endif
 
-INC := -Ios -Inet -Itls -Itext -Ihtml -Istyle -Ilayout -Iimage -Ifrontend -Isrc -I$(BEARSSL)/inc
+CRYPT68K := third_party/crypt68k
+INC := -Ios -Inet -Itls -Itext -Ihtml -Istyle -Ilayout -Iimage -Ifrontend -Isrc -I$(BEARSSL)/inc \
+	-I$(CRYPT68K)/include
 
 OS_SRC := $(wildcard os/*.c) $(wildcard $(OS)/*.c)
 OS_OBJ := $(OS_SRC:%.c=$(B)/%.o)
@@ -56,7 +58,10 @@ BR_OBJ := $(BR_SRC:%.c=$(B)/%.o)
 BR_LIB := $(B)/libbearssl.a
 
 NET_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard net/*.c))
-TLS_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard tls/*.c))
+# crypt68k's X25519 (the key exchange), as a BearSSL br_ec_impl
+C68K_OBJ := $(B)/$(CRYPT68K)/src/x25519.o $(B)/$(CRYPT68K)/src/fe_m68k.o \
+	$(B)/$(CRYPT68K)/src/bearssl_x25519.o
+TLS_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard tls/*.c)) $(C68K_OBJ)
 HTML_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard text/*.c html/*.c style/*.c layout/*.c))
 IMG_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard image/*.c))
 
@@ -74,7 +79,7 @@ BENCH  := $(B)/bench_parse $(B)/bench_micro $(B)/bench_loops $(B)/bench_mem \
 
 all: $(SPIKES) $(TOOLS) $(BENCH)
 
-$(B)/tlsbench: $(B)/spikes/tlsbench.o $(B)/tls/rsavrfy.o $(B)/tls/ecvrfy.o $(B)/tls/sigmath.o $(B)/tls/mont.o $(B)/tls/sigpre.o $(B)/tls/tpoff.o $(B)/tls/tpjob.o $(OS_OBJ) $(BR_LIB)
+$(B)/tlsbench: $(B)/spikes/tlsbench.o $(B)/tls/rsavrfy.o $(B)/tls/ecvrfy.o $(B)/tls/sigmath.o $(B)/tls/mont.o $(B)/tls/sigpre.o $(B)/tls/tpoff.o $(B)/tls/tpjob.o $(C68K_OBJ) $(OS_OBJ) $(BR_LIB)
 	$(LD) -o $@ $^ $(LDLIBS)
 
 # the ATW800/2's T425 against the 68030 (on the TT; elsewhere: "no device")
@@ -127,6 +132,10 @@ $(BR_LIB): $(BR_OBJ)
 $(B)/$(BEARSSL)/%.o: $(BEARSSL)/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(BRFLAGS) -I$(BEARSSL)/inc -I$(BEARSSL)/src -c $< -o $@
+
+$(B)/$(CRYPT68K)/%.o: $(CRYPT68K)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I$(CRYPT68K)/include -I$(CRYPT68K)/src -I$(BEARSSL)/inc -MMD -c $< -o $@
 
 # The SVR4 assembler of 1997 dies on one of manx.c's switch jump tables
 # ("Can't extend frag"); its switches are keys, so compare chains are

@@ -17,6 +17,7 @@
 #include "os.h"
 #include "rsavrfy.h"
 #include "ecvrfy.h"
+#include "crypt68k_bearssl.h"
 #include "rsa_moduli.h"
 
 static unsigned long g_min_ms = 1500;
@@ -287,6 +288,7 @@ static const struct ecop g_ecops[] = {
 	{ "X25519 mul c25519_i31", &br_ec_c25519_i31, BR_EC_curve25519, 0 },
 	{ "X25519 mul c25519_m15", &br_ec_c25519_m15, BR_EC_curve25519, 0 },
 	{ "X25519 mul c25519_m31", &br_ec_c25519_m31, BR_EC_curve25519, 0 },
+	{ "X25519 mul crypt68k", &c68k_br_ec_c25519, BR_EC_curve25519, 0 },
 	{ "P-256 mulgen p256_m15", &br_ec_p256_m15, BR_EC_secp256r1, 1 },
 	{ "P-256 mul p256_m15", &br_ec_p256_m15, BR_EC_secp256r1, 0 },
 	{ "P-256 mulgen p256_m31", &br_ec_p256_m31, BR_EC_secp256r1, 1 },

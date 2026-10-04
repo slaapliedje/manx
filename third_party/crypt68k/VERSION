@@ -1,0 +1,2 @@
+crypt68k 9629e06 (2026-10-03), MIT licence: the copy Manx builds X25519 from.
+Update by copying include/, src/, tools/gen_fe_m68k.py, LICENSE and README.md.
