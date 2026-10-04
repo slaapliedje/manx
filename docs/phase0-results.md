@@ -198,3 +198,10 @@ What it says:
 - Nothing here helps a resumed session (no public-key work) or a slow
   network: the TT's first visit to geekdot.com the same day took 6.5 min,
   ~75 s of it CPU, the page coming at 2 KB/s over the WiFi.
+
+In Manx since: `tls/rsavrfy.c` checks every RSA signature (the server's
+key exchange, certificates) with the `mulu.l` loop and a public exponent's
+square-and-multiply, R^2 mod n by doubling. On the TT, setup included
+(`tlsbench 1 rsa`): RSA-2048 2.30 s -> 0.52 s, RSA-4096 9.61 s -> 2.40 s,
+the answers the same as BearSSL's (`tests/test_rsa.c`: 316 cases there,
+3028 and four generated keys' signatures on the host).

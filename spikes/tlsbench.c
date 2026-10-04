@@ -15,6 +15,7 @@
 #include <string.h>
 #include "bearssl.h"
 #include "os.h"
+#include "rsavrfy.h"
 #include "rsa_moduli.h"
 
 static unsigned long g_min_ms = 1500;
@@ -446,9 +447,11 @@ static const struct rsaop g_rsaops[] = {
 	{ "RSA-2048 public i15", br_rsa_i15_public, 2048 },
 	{ "RSA-2048 public i31", br_rsa_i31_public, 2048 },
 	{ "RSA-2048 public i32", br_rsa_i32_public, 2048 },
+	{ "RSA-2048 public rsavrfy", rsavrfy_public, 2048 },
 	{ "RSA-4096 public i15", br_rsa_i15_public, 4096 },
 	{ "RSA-4096 public i31", br_rsa_i31_public, 4096 },
 	{ "RSA-4096 public i32", br_rsa_i32_public, 4096 },
+	{ "RSA-4096 public rsavrfy", rsavrfy_public, 4096 },
 };
 #define NRSA	(sizeof g_rsaops / sizeof g_rsaops[0])
 
@@ -466,7 +469,7 @@ static void group_rsa(void)
 		char what[64];
 		uint32_t ok = rsa_run(r, x);
 
-		if (i % 3 == 0) {
+		if (i == 0 || r->bits != g_rsaops[i - 1].bits) {
 			memcpy(ref, x, r->bits / 8);
 			fp_add(x, r->bits / 8);
 			snprintf(what, sizeof what, "%s", r->name);

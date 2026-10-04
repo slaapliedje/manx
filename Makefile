@@ -74,7 +74,7 @@ BENCH  := $(B)/bench_parse $(B)/bench_micro $(B)/bench_loops $(B)/bench_mem \
 
 all: $(SPIKES) $(TOOLS) $(BENCH)
 
-$(B)/tlsbench: $(B)/spikes/tlsbench.o $(OS_OBJ) $(BR_LIB)
+$(B)/tlsbench: $(B)/spikes/tlsbench.o $(B)/tls/rsavrfy.o $(OS_OBJ) $(BR_LIB)
 	$(LD) -o $@ $^ $(LDLIBS)
 
 $(B)/manx: $(B)/src/manx.o $(B)/src/pagecss.o $(B)/src/pageimg_none.o $(FRONT_OBJ) $(HTML_OBJ) $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)

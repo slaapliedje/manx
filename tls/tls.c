@@ -16,6 +16,7 @@
 #include "os.h"
 #include "sock.h"
 #include "entropy.h"
+#include "rsavrfy.h"
 #include "tls.h"
 
 #define READ_TIMEOUT_MS		30000
@@ -522,10 +523,11 @@ int tls_connect(struct tls_conn *c, int fd, const char *host, unsigned port,
 		} else
 			br_ssl_engine_set_ec(&c->sc.eng, &br_ec_all_m31);
 	}
-	/* the fastest code measured on the TT: i32 RSA, m31 curves, i31 ECDSA */
-	br_ssl_engine_set_rsavrfy(&c->sc.eng, br_rsa_i32_pkcs1_vrfy);
+	/* the fastest code measured on the TT: RSA checked by rsavrfy (5x
+	 * br_rsa_i32), m31 curves, i31 ECDSA */
+	br_ssl_engine_set_rsavrfy(&c->sc.eng, rsavrfy_pkcs1);
 	br_ssl_engine_set_ecdsa(&c->sc.eng, br_ecdsa_i31_vrfy_asn1);
-	br_x509_minimal_set_rsa(&c->xc, br_rsa_i32_pkcs1_vrfy);
+	br_x509_minimal_set_rsa(&c->xc, rsavrfy_pkcs1);
 	br_x509_minimal_set_ecdsa(&c->xc, &br_ec_all_m31, br_ecdsa_i31_vrfy_asn1);
 	br_ssl_engine_set_buffer(&c->sc.eng, c->iobuf, sizeof c->iobuf, 1);
 	xdefer_install(&c->xd, &c->sc);
@@ -727,7 +729,7 @@ int tls_learn_pem(const char *pem_path, void (*note)(const char *msg))
 					unsigned err;
 
 					br_x509_minimal_init_full(&l.xc, s_all.ta, s_all.n);
-					br_x509_minimal_set_rsa(&l.xc, br_rsa_i32_pkcs1_vrfy);
+					br_x509_minimal_set_rsa(&l.xc, rsavrfy_pkcs1);
 					br_x509_minimal_set_ecdsa(&l.xc, &br_ec_all_m31,
 						br_ecdsa_i31_vrfy_asn1);
 					(*v)->start_chain(v, NULL);
