@@ -1,4 +1,4 @@
-/* ecvrfy_curves.h - P-256 and P-384 (FIPS 186-4), big-endian; checked by
+/* sigmath_curves.h - P-256 and P-384 (FIPS 186-4), big-endian; checked by
  * Python when made: G on the curve, n G the point at infinity */
 static const unsigned char P256_P[32] = {
 	0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,

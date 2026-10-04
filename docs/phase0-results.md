@@ -213,3 +213,67 @@ inverses by binary GCD, x = r checked as r Z^2 = X. On the TT
 42.2 s (br_ec_prime_i31) -> 5.54 s. P-521 still goes to BearSSL.
 `tests/test_ecdsa.c` checks it against br_ecdsa_i31 with keys and
 signatures BearSSL makes (the TT agrees too).
+
+## The T425 sharing the checks (2026-10-03)
+
+With the ATW800/2 in the TT, Manx boots `tp/tpsig.c` on the FPGA's T425
+over `/dev/link1` the first time it checks a certificate chain, and from
+then on shares the arithmetic of each chain's signatures with it.
+
+- **Booting** is iserver's: reset, then the bootable file (`icollect -t`).
+  A single-transputer program must use the full C runtime
+  (`startup.lnk`), which then asks the host for `IBOARDSIZE`, its id and
+  its command line in iserver's protocol: `tls/tpoff.c` answers those
+  itself. Then the program waits on all four links (`ProcAlt`) and serves
+  the one spoken to (link 0, on this card). Boot to first answer: ~0.8 s.
+- **The protocol** (`tls/tpproto.h`): framed requests and answers with a
+  sequence number and a CRC-16. The T425 returns arithmetic, never a
+  verdict: x^e mod n for RSA, the x of u1 G + u2 Q for ECDSA. The 68030
+  makes every check itself with it, so a garbled answer could only make a
+  good signature fail. Any trouble on the link (a timeout, a bad CRC, an
+  answer out of step) resets the T425 and leaves it alone for the run;
+  the 68030 does the work, as it does without the card.
+- **The same code** on both: `tls/sigmath.c` and `tls/mont.c` (C89) are
+  built by GCC for the 68030 and by icc for the T425, whose inner loop is
+  the `lmul` one.
+- **Ahead of BearSSL** (`tls/sigpre.c`): before the recorded chain is
+  replayed, the checks it will make are worked out from the certificates
+  (each one's signature against the next one's key, or a trust anchor's
+  of the same name; the key exchange's against the leaf's), and done
+  biggest first, one on the T425 while the 68030 does the next. BearSSL's
+  checks find the answers under the SHA-256 of their inputs; anything not
+  there is worked out as before. `ufetch -v` says how many were done
+  ahead, on the T425, and used.
+
+Each job on its own (`tp_check`, the answers compared):
+
+| | 68030 | T425 |
+|---|---|---|
+| RSA-2048 | 0.62 s | 0.41 s |
+| RSA-4096 | 2.09 s | 1.59 s |
+| P-256 | 1.89-2.11 s | 1.41-1.52 s |
+| P-384 | 5.3-5.7 s | 4.06 s |
+| two P-384 | 10.5 s | 5.3 s together |
+
+Cold first visits on the TT (`MANX_TRANSPUTER=off`, then on; a fresh
+home each time, the T425's boot included):
+
+| validation | T425 off | T425 on |
+|---|---|---|
+| geekdot.com (4 RSA) | 13.2 s | 6.8 s |
+| letsencrypt.org (3 P-384, 1 P-256) | 20.4 s | 12.8 s |
+| news.ycombinator.com | 23.8 s | 12.1 s |
+
+Every check BearSSL made on these was among those worked out ahead.
+Left over: the T425 waits for its next job until the 68030 has finished
+its own (it takes one request at a time), about a second on letsencrypt;
+a reader process on the T425 that queued requests would keep it busy.
+
+Building and installing the T425's program (on the TT, with sp1's INMOS
+toolset in `/usr/local/lib/transputer`): put `tp/tpsig.c`, `tp/tp-build.sh`
+and `tls/{mont.c,mont.h,sigmath.c,sigmath.h,sigmath_curves.h,tpproto.h,tpjob.c}`
+in one directory, `sh tp-build.sh`, and copy `tpsig.btl` to `~/.manx`
+(or name it with `transputer_program`). `transputer = off` in the
+settings stops Manx using it; `tp_check tpsig.btl /dev/link1` checks it
+against the 68030. The `.btl` holds INMOS's runtime library, so it isn't
+in this repository.

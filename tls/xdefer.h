@@ -38,6 +38,9 @@ struct xdefer {
 	/* curves for checking an ECDSA signature: all of them, whatever the
 	 * handshake's key exchange was limited to */
 	const br_ec_impl *iec;
+	/* the last check's arithmetic done ahead (sigpre.h): jobs, those on
+	 * the T425, those the checks used */
+	int pre_jobs, pre_t425, pre_used;
 };
 
 /* Install on a client context set up by br_ssl_client_init_full(); call

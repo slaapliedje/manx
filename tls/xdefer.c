@@ -4,6 +4,7 @@
  * (third_party/patches/bearssl-ske-defer.patch).
  */
 #include <string.h>
+#include "sigpre.h"
 #include "xdefer.h"
 
 /* the handshake in progress; one connection handshakes at a time */
@@ -166,7 +167,7 @@ void xdefer_install(struct xdefer *xd, br_ssl_client_context *sc)
 	br_ssl_engine_set_x509(&sc->eng, &xd->vtable);
 }
 
-int xdefer_verify(struct xdefer *xd, br_ssl_client_context *sc,
+static int verify(struct xdefer *xd, br_ssl_client_context *sc,
 	br_x509_minimal_context *xc, int leaf_known_good, int *anchor_at)
 {
 	const br_x509_class **v = &xc->vtable;
@@ -237,4 +238,25 @@ signature:
 			return BR_ERR_BAD_SIGNATURE;
 	}
 	return 0;
+}
+
+int xdefer_verify(struct xdefer *xd, br_ssl_client_context *sc,
+	br_x509_minimal_context *xc, int leaf_known_good, int *anchor_at)
+{
+	const unsigned char *certs[XDEFER_CERTS_MAX];
+	int i, r;
+
+	/* with the ATW800/2's T425 up, the arithmetic of the checks below is
+	 * done ahead, on it and the 68030 together; the checks find it */
+	if (!xd->err && xd->ske_seen) {
+		for (i = 0; i < xd->ncert; i++)
+			certs[i] = xd->chain + xd->cert_off[i];
+		sigpre_chain(certs, xd->cert_len, leaf_known_good ? 0 : xd->ncert,
+			xc->trust_anchors, xc->trust_anchors_num, &xd->leaf,
+			xd->ske_rsa, xd->ske_hv, xd->ske_hvlen, xd->ske_sig, xd->ske_siglen);
+	}
+	r = verify(xd, sc, xc, leaf_known_good, anchor_at);
+	sigpre_stats(&xd->pre_jobs, &xd->pre_t425, &xd->pre_used);
+	sigpre_clear();
+	return r;
 }

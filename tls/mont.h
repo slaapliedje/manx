@@ -1,13 +1,19 @@
 /*
  * mont.h - Montgomery multiplication for checking signatures (rsavrfy,
  * ecvrfy): little-endian arrays of k 32-bit limbs, R = 2^(32k), the inner
- * loop in 68030 assembly around mulu.l (C with uint64_t elsewhere).
+ * loop in 68030 assembly around mulu.l, in transputer assembly around lmul
+ * (icc, for the ATW800/2's T425), and in C with uint64_t elsewhere. C89.
  * Variable time: for public data only.
  */
 #ifndef MANX_MONT_H
 #define MANX_MONT_H
 
-#include "bearssl.h"
+#include <stddef.h>
+#ifdef _ICC
+typedef unsigned int uint32_t;	/* icc (1990) has no stdint.h; int is 32 bits */
+#else
+#include <stdint.h>
+#endif
 
 #define MONT_MAXK	(4096 / 32)
 

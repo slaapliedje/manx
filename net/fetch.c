@@ -260,12 +260,18 @@ static int http_once(const struct url *u, const char *method,
 		const struct tls_info *ti = &c->tls->info;
 		char msg[200];
 
+		char pre[64] = "";
+
+		if (ti->pre_jobs)
+			snprintf(pre, sizeof pre, " (%d signature%s ahead, %d on the T425, %d used)",
+				ti->pre_jobs, ti->pre_jobs == 1 ? "" : "s", ti->pre_t425,
+				ti->pre_used);
 		snprintf(msg, sizeof msg, "TLS %s%s%s%s: handshake %lu ms, "
-			"validation %lu ms, suite 0x%04x",
+			"validation %lu ms%s, suite 0x%04x",
 			tls_profile_name(ti->profile), ti->resumed ? ", resumed" : "",
 			ti->leaf_memo ? ", known leaf" : "",
 			c->reconnected ? ", reconnected" : "", ti->t_handshake,
-			ti->t_verify, ti->suite);
+			ti->t_verify, pre, ti->suite);
 		status(cb, "%s", msg);
 		res->tls_resumed = ti->resumed;
 		res->tls_leaf_memo = ti->leaf_memo;

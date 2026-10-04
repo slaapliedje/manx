@@ -597,6 +597,9 @@ int tls_verify(struct tls_conn *c)
 	}
 	err = xdefer_verify(&c->xd, &c->sc, &c->xc, known, &anchor_at);
 	c->info.t_verify = ms_since(t0);
+	c->info.pre_jobs = c->xd.pre_jobs;
+	c->info.pre_t425 = c->xd.pre_t425;
+	c->info.pre_used = c->xd.pre_used;
 	c->info.leaf_memo = known;
 	if (err) {
 		session_drop(host, port);

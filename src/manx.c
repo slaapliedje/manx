@@ -775,6 +775,9 @@ static const char help_html[] =
 	"cafile = FILE          the PEM bundle of trusted roots\n"
 	"early_requests = off   send nothing before the certificate is "
 	"checked\n"
+	"transputer = off       don't share certificate checks with the "
+	"ATW800/2's T425\n"
+	"transputer_program = FILE  its program (tpsig.btl in ~/.manx)\n"
 	"</pre><p>Start pages: <a href=\"about:start\">about:start</a>";
 
 static const char start_html[] =

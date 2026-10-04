@@ -70,11 +70,15 @@ ifeq ($(X11),1)
 TOOLS  += $(B)/xmanx
 endif
 BENCH  := $(B)/bench_parse $(B)/bench_micro $(B)/bench_loops $(B)/bench_mem \
-	$(B)/bench_inflate $(B)/bench_image $(B)/imgconv $(B)/xkeys
+	$(B)/bench_inflate $(B)/bench_image $(B)/imgconv $(B)/xkeys $(B)/tp_check
 
 all: $(SPIKES) $(TOOLS) $(BENCH)
 
-$(B)/tlsbench: $(B)/spikes/tlsbench.o $(B)/tls/rsavrfy.o $(B)/tls/ecvrfy.o $(B)/tls/mont.o $(OS_OBJ) $(BR_LIB)
+$(B)/tlsbench: $(B)/spikes/tlsbench.o $(B)/tls/rsavrfy.o $(B)/tls/ecvrfy.o $(B)/tls/sigmath.o $(B)/tls/mont.o $(B)/tls/sigpre.o $(B)/tls/tpoff.o $(B)/tls/tpjob.o $(OS_OBJ) $(BR_LIB)
+	$(LD) -o $@ $^ $(LDLIBS)
+
+# the ATW800/2's T425 against the 68030 (on the TT; elsewhere: "no device")
+$(B)/tp_check: $(B)/tests/tp_check.o $(B)/tls/tpoff.o $(B)/tls/tpjob.o $(B)/tls/sigmath.o $(B)/tls/mont.o $(OS_OBJ)
 	$(LD) -o $@ $^ $(LDLIBS)
 
 $(B)/manx: $(B)/src/manx.o $(B)/src/pagecss.o $(B)/src/pageimg_none.o $(FRONT_OBJ) $(HTML_OBJ) $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)

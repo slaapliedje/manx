@@ -33,6 +33,7 @@ struct tls_info {
 	int learned;			/* intermediates learned this time */
 	unsigned version, suite;
 	unsigned long t_handshake, t_verify;	/* ms */
+	int pre_jobs, pre_t425, pre_used;	/* signature work done ahead (sigpre.h) */
 };
 
 struct tls_conn {
