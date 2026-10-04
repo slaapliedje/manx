@@ -148,15 +148,22 @@ drawn on Xlib, as OLIT is AMIX's only and XView too big), the mouse, the
 URL typed in its field, and pages in the server's Helvetica and Courier
 through `struct lmetrics` (the terminal's layout is byte-identical to
 before on the corpus). Runs on ASV's Xatw (X11R6.3, 8-bit) and AMIX's
-Xdmi (X11R5, mono, in the emulator).
+Xdmi (X11R5, mono, in the emulator). Done: `xmanx` shares the text
+browser's command handling, so forms, find, bookmarks and the rest work in
+both. ✔
 
 **Phase 6 — images and transputer offload:** GIF, PNG, baseline JPEG,
 dithering to 8-bit; offload image decode / inflate / bignum to the T800s when
-present.
+present. Done (see `docs/phase6-results.md`): GIF, PNG, baseline and
+progressive JPEG, to 24-bit, 8-bit and black and white, through the disk
+cache. ✔ The offload went to certificate checks instead: the T800s are
+slower than the 68030 at bignum work, the ATW800/2's T425 is not (it
+shares the checks, see `docs/phase0-results.md`). Images stay on the
+68030.
 
 **Phase 7 — pages that look right:** what style sheets hide
 (`display:none`, `visibility:hidden`) from `<style>`, then from linked
-sheets; tables laid out as grids. See `docs/phase7-results.md`.
+sheets; tables laid out as grids. Done; see `docs/phase7-results.md`. ✔
 
 ## 6. Risks
 

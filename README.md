@@ -24,6 +24,9 @@ Aztec C built a good share of the Amiga's and the Atari ST's software.
 
 - HTTP/1.1 and HTTPS: TLS 1.2 through [BearSSL](https://bearssl.org),
   ChaCha20-Poly1305 and X25519 first. Keep-alive and session resumption.
+  Certificate checks and X25519 in 68030 assembly
+  ([crypt68k](https://github.com/slaapliedje/crypt68k)), shared with an
+  ATW800/2 card's T425 transputer when there is one.
   Its own DNS resolver, because a static SVR4 program can't use the system's.
 - gzip/deflate content, decoded as it arrives. Pages come 4-6x smaller,
   which matters at the TT's 35 KB/s.
@@ -134,19 +137,21 @@ Settings go in `~/.manx/config`, one `key = value` a line, or as
 
 ## Status
 
-Phases 0-4 of [PLAN.md](PLAN.md) are done: toolchain, network core, HTML
-engine, text browser, then forms, cookies, cache and gzip. Each has a
-write-up in [docs](docs), with measurements from the TT. Phase 5, the X11
-frontend, is under way: `xmanx` has its window, controls and mouse, and
-sets pages in proportional fonts (the layout measures through the
-screen's font metrics; on a terminal it counts columns, unchanged).
-Next: images, with the TT's transputers as an optional helper.
+The phases of [PLAN.md](PLAN.md) are done: toolchain, network core, HTML
+engine, text browser, forms, cookies, cache and gzip, then `xmanx` (the
+same browser in proportional fonts, with OPEN LOOK controls and the
+mouse), its pictures, and what style sheets hide. Each has a write-up in
+[docs](docs), with measurements from the TT. Since then the certificate
+checks went into 68030 assembly (RSA 4x, ECDSA 3-8x faster) and onto the
+ATW800/2's T425 (up to 2x more on a first visit).
 
 Tested on an Atari TT030 with Atari System V, and on AMIX 2.1 in an
 emulated Amiga 3000 (`tools/amix/`), where it loads Hacker News over HTTPS.
-It hasn't been tried on a real Amiga yet.
+It also runs on [Ash Nazag](https://github.com/kdedon/ashnazag)'s AMIX for
+the Quadra 800, in QEMU. It hasn't been tried on a real Amiga yet.
 
 ## Licence
 
 GPL-2.0 (see [LICENSE](LICENSE)). BearSSL, in `third_party/bearssl`, is MIT
-licensed; `third_party/patches` has the one change made to it.
+licensed; `third_party/patches` has the one change made to it. crypt68k,
+in `third_party/crypt68k`, is MIT licensed.

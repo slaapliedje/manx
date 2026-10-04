@@ -15,9 +15,11 @@ for each:
 | RSA-4096 public operation | 9.61 s (`i32`) | 2.30 s |
 | ECDSA P-256 check | 5.49 s (`p256_m31`) | 1.89 s |
 | ECDSA P-384 check | 42.2 s (`prime_i31`) | 5.59 s |
+| X25519 | 2.60 s (`c25519_m31`) | 1.22 s |
 
 (crypt68k's `bench`; BearSSL's own `tlsbench` figures from Manx, the
-same machine.)
+same machine. The X25519 pair comes from one `tlsbench` run, several
+operations each, on a busier TT than the rest: compare the ratio.)
 
 In [Manx](https://github.com/slaapliedje/manx), the browser it comes
 from, a TT's first visit to a site with a Let's Encrypt P-384 chain went
@@ -35,12 +37,16 @@ a secret with RSA (RSA key exchange).
 it depends on the scalar or the point; the ladder swaps with masks,
 carries are arithmetic, the inversion is a fixed chain. But it can only
 be as constant-time as the CPU's multiply instruction, and Motorola's
-MC68030 manual marks `MULU`'s execution time "data dependent" (the
-68020 likely shares it; not checked). BearSSL's own X25519 uses the same
-instruction there.
-What the 68030's timing depends on is being measured; until then, on a
-68020 or 68030, treat X25519 as safe for ephemeral keys (a TLS client's,
-new for every handshake) and not for long-lived ones.
+MC68030 manual marks `MULU`'s execution time "data dependent".
+
+Measured on a 32 MHz 68030 with `tools/mul_timing.c`: `mulu.l` and
+`mulu.w` take about 2 cycles longer when the **source** operand's lowest
+bit is 1. The other operand makes no difference, and nothing else about
+the value showed (zero, one, a top bit, alternating bits, all ones). So
+each multiply leaks the low bit of one operand. BearSSL's own X25519
+uses the same instruction there. On a 68020 or 68030, use X25519 for
+ephemeral keys (a TLS client's, new for every handshake), not for
+long-lived ones. (68020: likely the same; 68040: not measured.)
 
 ## Why it's faster
 
@@ -118,6 +124,9 @@ make CC=m68k-amigaos-gcc AR=m68k-amigaos-ar CFLAGS="-O2 -m68030 -noixemul"
 the 64-bit `mulu.l`, so `-m68060` and `-m68020-60` builds use the C loop
 (`uint64_t`), as does every other machine. The 68000's multiply is
 16x16 -> 32, so it is slow there either way.
+
+`tools/mul_timing.c` (68k only) times `mulu.l` and `mulu.w` with
+operand patterns, to see what a CPU's multiply time depends on.
 
 ## Tests
 

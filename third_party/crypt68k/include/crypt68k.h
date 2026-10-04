@@ -16,9 +16,10 @@
  * secret: never use them to sign, to decrypt, or to encrypt a secret
  * with RSA. X25519 is built the other way: no branch or memory access
  * in it depends on the scalar or the point. But it can only be as
- * constant-time as the CPU's multiply, and Motorola's MC68030 manual
- * says MULU's time is data dependent (so is BearSSL's X25519 there):
- * on the 68020/030 that is still being measured. See README.
+ * constant-time as the CPU's multiply: on a 68030, mulu takes about 2
+ * cycles longer when its source operand's low bit is 1 (measured; so
+ * does BearSSL's X25519 there). Use it for ephemeral keys, as a TLS
+ * client does, not long-lived ones. See README.
  *
  * Numbers are big-endian byte strings. MIT licence (LICENSE).
  */
