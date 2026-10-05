@@ -43,6 +43,11 @@ static const char *const frags[] = {
 	"<style>", "</style>", ".a{display:none}", "#b .c>p{visibility:hidden}",
 	"@media (max-width:", "40em){", "@media print{", "}}", "{", "}", "/*", "*/",
 	"\\", "\\31 0", "[title~=x]", "!important", "@font-face{", "a,b,c{", ";",
+	"color:", "color:#", "#fff", "#12345678", "rgb(", "rgba(1,2,3,.5)", "hsl(",
+	"hsla(400deg 200% -5% / 2)", "var(--", "var(--x, var(--y, red))", ":root{--x:",
+	"a:link{", ":root", "light-dark(", "font:", "bold", "italic", "700",
+	"text-align:center", "text-decoration:none", "font-weight:", "style='color:",
+	"<center>", "align=right", ")", "(", "%", ",",
 	"<td colspan=3>", "<td rowspan=9>", "<th>", "<caption>", "<thead>",
 	"<td colspan=40 rowspan=0>",
 };

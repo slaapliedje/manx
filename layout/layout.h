@@ -36,6 +36,8 @@ struct lspan {
 	unsigned short link;		/* 1-based index into links, 0: none */
 	unsigned char attr;		/* SA_* */
 	unsigned char face;		/* LF_* (only with metrics; else 0) */
+	unsigned char color;		/* the page's style sheet's colour:
+					 * palette[color - 1]; 0: the screen's */
 };
 
 /*
@@ -102,6 +104,8 @@ struct page {
 	unsigned long nanchors, anchors_cap;
 	struct limage *images;		/* NULL without metrics */
 	unsigned long nimages, images_cap;
+	unsigned long *palette;		/* the spans' colours, 0xRRGGBB */
+	int npalette;			/* (LAYOUT_MAX_COLORS at most) */
 	size_t byte_cap;		/* all of the above together */
 	long main_line;			/* where <main> begins, or -1 */
 	long content_line;		/* the first real paragraph (or its
@@ -111,6 +115,7 @@ struct page {
 };
 
 #define LAYOUT_DEFAULT_CAP	(600UL * 1024)
+#define LAYOUT_MAX_COLORS	255	/* a page's distinct text colours */
 
 /*
  * Lay d out width columns wide for a terminal of character set cs.

@@ -191,7 +191,7 @@ static void draw_line(int row, long ln)
 		if (s + 1 < p->nspans && p->spans[s + 1].off < end)
 			next = p->spans[s + 1].off;
 		col += scr_put(row, col, p->text + off, (int)(next - off),
-			cell_attr(sp->attr, sp->link));
+			cell_attr(sp->attr, sp->link) | CA_FG(sp->color));
 		off = next;
 	}
 	/* a find match on this line */
@@ -296,11 +296,11 @@ static void draw_line_px(int y, long ln)
 		 * no underline standing in for them, as on a terminal) */
 		if (sp->face & LF_IMAGE)
 			draw_images(x, y + lh->ascent, p->text + off, (int)(next - off),
-				cell_attr(sp->attr, sp->link));
+				cell_attr(sp->attr, sp->link));	/* (pictures: no colour) */
 		else
 			scr_text(x, y, lh->ascent, p->text + off, (int)(next - off),
 				cell_attr(sp->attr & (sp->face & (LF_ITALIC | LF_HMASK) ?
-				~SA_UNDER : 0xFF), sp->link), sp->face);
+				~SA_UNDER : 0xFF), sp->link) | CA_FG(sp->color), sp->face);
 		x += run_w(sp, p->text + off, (int)(next - off));
 		off = next;
 	}
@@ -407,6 +407,8 @@ static void draw(int full)
 	int i, n, rows = view_rows();
 
 	scr_erase();
+	/* the page's colours, as the screen shows them */
+	scr_palette(g_page.palette, g_have_page ? g_page.npalette : 0);
 	/* the title bar: title, and where we are */
 	t = g_have_page ? doc_title(&g_doc) : "";
 	to_term(*t ? t : g_url, title, sizeof title);

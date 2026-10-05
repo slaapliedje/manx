@@ -47,6 +47,7 @@ const char *scr_needs = "an X display ($DISPLAY)";
 struct cell {
 	unsigned char ch;
 	unsigned char a;
+	unsigned char fg;		/* the page's colour (scr_palette), 0: none */
 };
 
 static Display *dpy;
@@ -76,6 +77,10 @@ static int drawn_row = -1, drawn_col = -1;	/* where the cursor is drawn */
 
 /* the colours: the page, and OPEN LOOK's BG1-3 and highlight */
 static unsigned long px_fg, px_bg, px_mark, px_link[8];
+/* the page's colours as pixels: text_px[i] for CA_FG(i) where text_ok[i]
+ * (scr_palette) */
+static unsigned long text_px[256];
+static unsigned char text_ok[256];
 static unsigned long px_bg1, px_bg2, px_bg3, px_hi;
 static int link_px_ok;
 
@@ -671,6 +676,7 @@ static void draw_scrollbar(void)
 struct run {
 	short x, y, a;			/* y: the line's top; a: its ascent */
 	unsigned char attr, face;
+	unsigned char fg;		/* the page's colour (scr_palette), 0: none */
 	unsigned off, n;		/* in rtext */
 };
 
@@ -838,6 +844,7 @@ void scr_text(int x, int y, int ascent, const char *s, int n, int attr,
 	r->a = (short)ascent;
 	r->attr = (unsigned char)attr;
 	r->face = (unsigned char)face;
+	r->fg = (unsigned char)CA_FG_OF(attr);
 	r->off = rtext_len;
 	r->n = (unsigned)n;
 	rtext_len += (unsigned)n;
@@ -897,7 +904,9 @@ static void paint_run(const struct run *r, const char *text)
 	unsigned long fg = px_fg, bg = px_bg;
 	int fill = 0;
 
-	if ((r->attr & CA_LINK) && link_px_ok)
+	if (r->fg && text_ok[r->fg])
+		fg = text_px[r->fg];
+	else if ((r->attr & CA_LINK) && link_px_ok)
 		fg = px_link[scr_link_color & 7];
 	if (r->attr & CA_REV) {
 		bg = fg;
@@ -1071,6 +1080,69 @@ const struct px_format *scr_pixels(void)
 	if (pxf_state == 0)
 		pxf_state = dpy && make_format() ? 1 : -1;
 	return pxf_state > 0 ? &pxf : NULL;
+}
+
+/* channel v (0-255) into a TrueColor mask */
+static unsigned long in_mask(unsigned long v, unsigned long mask)
+{
+	int shift = 0;
+
+	if (mask == 0)
+		return 0;
+	while (!(mask >> shift & 1))
+		shift++;
+	return (v * (mask >> shift) / 255) << shift & mask;
+}
+
+/* the pixel for rgb, through the images' format (no server round trip,
+ * and on an 8-bit screen no colormap cells beyond the images' cube): 0
+ * when the screen can't show it (black and white) */
+static int rgb_pixel(unsigned long rgb, unsigned long *px)
+{
+	const struct px_format *f = scr_pixels();
+	unsigned long r = rgb >> 16 & 255, g = rgb >> 8 & 255, b = rgb & 255;
+
+	if (f == NULL)
+		return 0;
+	switch (f->kind) {
+	case PX_TRUE:
+		*px = in_mask(r, f->mask[0]) | in_mask(g, f->mask[1]) | in_mask(b, f->mask[2]);
+		return 1;
+	case PX_CUBE:
+		*px = f->pixel[((r * (unsigned long)(f->levels[0] - 1) + 127) / 255
+			* (unsigned long)f->levels[1]
+			+ (g * (unsigned long)(f->levels[1] - 1) + 127) / 255)
+			* (unsigned long)f->levels[2]
+			+ (b * (unsigned long)(f->levels[2] - 1) + 127) / 255];
+		return 1;
+	case PX_GRAY:
+		if (f->levels[0] <= 2)
+			return 0;
+		*px = f->pixel[((r * 299 + g * 587 + b * 114) / 1000
+			* (unsigned long)(f->levels[0] - 1) + 127) / 255];
+		return 1;
+	}
+	return 0;
+}
+
+void scr_palette(const unsigned long *rgb, int n)
+{
+	int i;
+
+	memset(text_ok, 0, sizeof text_ok);
+	for (i = 1; i <= n && i < 256 && scr_color; i++) {
+		unsigned long c = rgb[i - 1], r = c >> 16 & 255, g = c >> 8 & 255,
+			b = c & 255, y = (r * 299 + g * 587 + b * 114) / 1000;
+
+		/* the page is white here: too pale to read is darkened, its
+		 * hue kept */
+		if (y > 150) {
+			r = r * 150 / y;
+			g = g * 150 / y;
+			b = b * 150 / y;
+		}
+		text_ok[i] = (unsigned char)rgb_pixel(r << 16 | g << 8 | b, &text_px[i]);
+	}
 }
 
 void scr_image_free(void *img)
@@ -1291,7 +1363,9 @@ static void paint_cells(const struct cell *g, int b0, int b1)
 
 			if (cl[c].ch == 0)
 				continue;
-			if ((cl[c].a & CA_LINK) && link_px_ok)
+			if (cl[c].fg && text_ok[cl[c].fg])
+				fg = text_px[cl[c].fg];
+			else if ((cl[c].a & CA_LINK) && link_px_ok)
 				fg = px_link[scr_link_color & 7];
 			if (cl[c].a & CA_REV) {
 				unsigned long t = fg;
@@ -1418,6 +1492,7 @@ static unsigned long run_hash(const struct run *r, const char *text)
 	h = h * 33 + (unsigned short)r->a;
 	h = h * 33 + r->attr;
 	h = h * 33 + r->face;
+	h = h * 33 + r->fg;
 	h = h * 33 + r->n;
 	for (i = 0; i < r->n; i++)
 		h = h * 33 + (unsigned char)text[r->off + i];
@@ -1429,7 +1504,7 @@ static int run_like(const struct run *a, const char *ta, const struct run *b,
 	const char *tb)
 {
 	return a->x == b->x && a->a == b->a && a->attr == b->attr
-		&& a->face == b->face && a->n == b->n
+		&& a->face == b->face && a->fg == b->fg && a->n == b->n
 		&& memcmp(ta + a->off, tb + b->off, (size_t)a->n) == 0;
 }
 
@@ -1755,6 +1830,7 @@ int scr_put(int row, int col, const char *s, int n, int attr)
 	for (; n > 0 && col < scr_cols; n--, col++) {
 		line[col].ch = (unsigned char)*s++;
 		line[col].a = (unsigned char)attr;
+		line[col].fg = (unsigned char)CA_FG_OF(attr);
 	}
 	return col - c0;
 }
@@ -1769,6 +1845,7 @@ void scr_fill(int row, int col, int ncols, int c, int attr)
 	for (; ncols > 0 && col < scr_cols; ncols--, col++) {
 		line[col].ch = (unsigned char)c;
 		line[col].a = (unsigned char)attr;
+		line[col].fg = (unsigned char)CA_FG_OF(attr);
 	}
 }
 
@@ -1789,7 +1866,9 @@ static void draw_run(int row, int col, const struct cell *c, int n, int cursor)
 		n = sizeof buf;
 	for (i = 0; i < n; i++)
 		buf[i] = (char)(c[i].ch ? c[i].ch : ' ');
-	if ((a & CA_LINK) && link_px_ok)
+	if (c->fg && text_ok[c->fg])
+		fg = text_px[c->fg];
+	else if ((a & CA_LINK) && link_px_ok)
 		fg = px_link[scr_link_color & 7];
 	if (((a & CA_REV) != 0) != (cursor != 0)) {
 		unsigned long t = fg;
@@ -1823,13 +1902,15 @@ static void flush_row(int r, int full)
 	while (c < scr_cols) {
 		int c1;
 
-		if (!full && nl[c].ch == cl[c].ch && nl[c].a == cl[c].a) {
+		if (!full && nl[c].ch == cl[c].ch && nl[c].a == cl[c].a
+			&& nl[c].fg == cl[c].fg) {
 			c++;
 			continue;
 		}
 		/* a run of changed cells with the same attribute */
-		for (c1 = c + 1; c1 < scr_cols && nl[c1].a == nl[c].a
-			&& (full || nl[c1].ch != cl[c1].ch || nl[c1].a != cl[c1].a);
+		for (c1 = c + 1; c1 < scr_cols && nl[c1].a == nl[c].a && nl[c1].fg == nl[c].fg
+			&& (full || nl[c1].ch != cl[c1].ch || nl[c1].a != cl[c1].a
+			|| nl[c1].fg != cl[c1].fg);
 			c1++)
 			;
 		draw_run(r, c, nl + c, c1 - c, 0);

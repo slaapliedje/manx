@@ -45,7 +45,12 @@ struct cell {
 	unsigned char b[4];
 	unsigned char n;		/* bytes; 0: right half of a wide char */
 	unsigned char a;
+	unsigned char fg;		/* the page's colour as ANSI 1-7; 0: none */
 };
+
+/* the page's colours (scr_palette) as the terminal's: ANSI 1-6, or 0 for
+ * greys, which stay the terminal's own text colour on any background */
+static unsigned char ansi[256];
 
 static struct cell *cur, *nxt;		/* on the terminal / being built */
 static int cur_row = -1, cur_col = -1;	/* where scr_cursor asked */
@@ -136,6 +141,17 @@ static void oattr(int a)
 		ocap(c_smul ? c_smul : "\033[4m");
 	if ((a & CA_REV) || ((a & CA_MARK) && !ncolors))
 		ocap(c_rev ? c_rev : "\033[7m");
+	if (ncolors && CA_FG_OF(a) && !(a & (CA_LINK | CA_MARK | CA_REV))) {
+		/* the page's colour (already ANSI: see scr_put) */
+		if (c_setaf)
+			ocap(TPARM2(c_setaf, CA_FG_OF(a), 0));
+		else {
+			char b[12];
+
+			sprintf(b, "\033[3%dm", CA_FG_OF(a));
+			oput(b, strlen(b));
+		}
+	}
 	if (ncolors && (a & (CA_LINK | CA_MARK)) && !(a & CA_REV)) {
 		/* links cyan (or as set), find matches yellow */
 		int color = (a & CA_MARK) ? 3 : scr_link_color;
@@ -402,6 +418,45 @@ static void blank(struct cell *c)
 	c->b[0] = ' ';
 	c->n = 1;
 	c->a = 0;
+	c->fg = 0;
+}
+
+/* an ANSI colour for rgb: by its hue; 0 when it is a grey */
+static int ansi_of(unsigned long rgb)
+{
+	int r = (int)(rgb >> 16 & 255), g = (int)(rgb >> 8 & 255), b = (int)(rgb & 255);
+	int mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
+	int mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
+	int h, d = mx - mn;
+
+	if (d < 64 || mx < 64)
+		return 0;
+	if (mx == r)
+		h = (60 * (g - b) / d + 360) % 360;
+	else if (mx == g)
+		h = 60 * (b - r) / d + 120;
+	else
+		h = 60 * (r - g) / d + 240;
+	if (h < 30 || h >= 330)
+		return 1;		/* red */
+	if (h < 90)
+		return 3;		/* yellow */
+	if (h < 150)
+		return 2;		/* green */
+	if (h < 210)
+		return 6;		/* cyan */
+	if (h < 270)
+		return 4;		/* blue */
+	return 5;			/* magenta */
+}
+
+void scr_palette(const unsigned long *rgb, int n)
+{
+	int i;
+
+	ansi[0] = 0;
+	for (i = 1; i < 256; i++)
+		ansi[i] = (unsigned char)(i <= n ? ansi_of(rgb[i - 1]) : 0);
 }
 
 static int alloc_cells(void)
@@ -553,6 +608,7 @@ int scr_put(int row, int col, const char *s, int n, int attr)
 			line[col].b[0] = (unsigned char)*s++;
 			line[col].n = 1;
 			line[col].a = (unsigned char)attr;
+			line[col].fg = ansi[CA_FG_OF(attr)];
 			col++;
 			continue;
 		}
@@ -580,10 +636,12 @@ int scr_put(int row, int col, const char *s, int n, int attr)
 			memcpy(line[col].b, c, (size_t)k);
 			line[col].n = (unsigned char)k;
 			line[col].a = (unsigned char)attr;
+			line[col].fg = ansi[CA_FG_OF(attr)];
 			col++;
 			if (w == 2) {
 				line[col].n = 0;
 				line[col].a = (unsigned char)attr;
+				line[col].fg = ansi[CA_FG_OF(attr)];
 				col++;
 			}
 		}
@@ -602,6 +660,7 @@ void scr_fill(int row, int col, int ncols, int ch, int attr)
 		line[col].b[0] = (unsigned char)ch;
 		line[col].n = 1;
 		line[col].a = (unsigned char)attr;
+		line[col].fg = ansi[CA_FG_OF(attr)];
 	}
 }
 
@@ -613,7 +672,7 @@ void scr_cursor(int row, int col)
 
 static int same(const struct cell *a, const struct cell *b)
 {
-	return a->n == b->n && a->a == b->a
+	return a->n == b->n && a->a == b->a && a->fg == b->fg
 		&& (a->n == 0 || memcmp(a->b, b->b, a->n) == 0);
 }
 
@@ -654,7 +713,7 @@ void scr_flush(int full)
 		if (c_el && c1 > lnb) {
 			for (c = c0; c <= lnb; c++)
 				if (nl[c].n) {
-					oattr(nl[c].a);
+					oattr(nl[c].a | CA_FG(nl[c].fg));
 					oput((char *)nl[c].b, nl[c].n);
 				}
 			oattr(0);
@@ -662,7 +721,7 @@ void scr_flush(int full)
 		} else
 			for (c = c0; c <= c1; c++)
 				if (nl[c].n) {
-					oattr(nl[c].a);
+					oattr(nl[c].a | CA_FG(nl[c].fg));
 					oput((char *)nl[c].b, nl[c].n);
 				}
 		memcpy(cl, nl, (size_t)scr_cols * sizeof *cl);

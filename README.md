@@ -35,8 +35,13 @@ Aztec C built a good share of the Amiga's and the Atari ST's software.
   page row by row), form fields, anchors. UTF-8, windows-1252 and Latin-1
   pages.
 - What style sheets hide (`display:none`, `visibility:hidden`,
-  `list-style:none`), from `<style>` and linked sheets, with `@media`
-  widths and the cascade; never page layout.
+  `list-style:none`), and how they want text to look: colours (names,
+  `#hex`, `rgb()`, `hsl()`, `var()` from `:root`), bold, italics,
+  underline, centred and right-aligned text. From `<style>`, linked
+  sheets and `style=""`, with `@media` widths and the cascade; never page
+  layout. `xmanx` shows the colours (darkened if too pale to read on
+  white); a terminal shows the clear ones in its own eight and keeps its
+  own colour for greys, so text reads on any background.
 - Forms (GET and POST, every field type, `$EDITOR` for text areas), a
   cookie jar, a disk cache (Back without the network), bookmarks, gopher,
   `file:`.
@@ -50,8 +55,8 @@ Aztec C built a good share of the Amiga's and the Atari ST's software.
   8-bit colour cube, black and white). On the ATW800 card, scrolling moves
   the window's pixels with the card's 2D engine.
 
-What it doesn't do: JavaScript, CSS layout (columns, positions, colours),
-SVG and WebP pictures.
+What it doesn't do: JavaScript, CSS layout (columns, positions,
+backgrounds, font sizes), SVG and WebP pictures.
 
 ## On the TT030 (68030, 32 MHz)
 

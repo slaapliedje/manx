@@ -178,6 +178,51 @@ same as baseline: shown 320 wide 8.3 s against 4.5 s, at full size 14.0
 s against 10.6 s. Ten scans to decode instead of one; a profile shows
 nothing else to cut yet.
 
+## How text looks
+
+Style sheets now say how text looks as well as what's hidden: `color`,
+`font-weight`, `font-style`, the `font` shorthand (what it doesn't say is
+normal), `text-decoration` and `text-align`, each with its own cascade
+(`!important`, specificity, order), from `<style>`, linked sheets and
+`style=""`.
+
+- Colours: CSS's 148 names, `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`,
+  `rgb()`/`rgba()` and `hsl()`/`hsla()` in both syntaxes. Transparency is
+  blended into the white page; fully transparent text is ignored.
+  `light-dark()` takes the light one. `var()` reads custom properties set
+  on `:root`, `html`, `body` or `*` (Wikipedia's colours all come that
+  way), with fallbacks and chains, resolved when an element is matched,
+  so a property set by a later sheet still counts.
+- Selectors gain `:root` and `:link`/`:any-link` (most sites colour links
+  through `a:link`); other states (`:hover`, `:visited`...) still drop
+  the selector.
+- A sheet keeps its colours in a palette of up to 253, and a layout keeps
+  the page's (up to 255) for the screens: each span has an index.
+- `<center>` and `align=` centre or right-align a block's lines; the
+  sheet overrides them. A table starts at the left again, as in quirks
+  mode, so the many pages built of tables inside `<center>` (Hacker News)
+  keep their cells' text left. Grid cells aren't aligned yet: their width
+  is what their lines measure.
+- `xmanx` draws the colours through the images' pixel format (exact on
+  TrueColor, the colour cube on 8 bits, greys on GrayScale; black on a
+  black-and-white screen), and darkens a colour too pale to read on white,
+  keeping its hue. A terminal shows the clear colours in its own eight
+  (by hue) and leaves greys, black and white as its own text colour, so
+  text stays readable on a dark or a light terminal. Links keep their
+  underline.
+
+A cell's layout used its own width as the window's for `@media`, which
+was wrong and emptied the sheet's memo of every element each time the
+width changed between cells; now the window's width is used everywhere.
+
+On the TT, against the version before (the sheets inlined, `uparse -w 80`):
+
+| | parse before / after | layout before / after |
+|---|---|---|
+| Hacker News (46 rules kept) | 0.95 / 0.91 s | 0.98 / 1.07 s |
+| Wikipedia article (345 rules kept) | 4.48 / 4.83 s | 1.78 / 1.50 s |
+
 ## Left for 7
 
 - Progressive decoding's speed (above).
+- Text alignment in grid cells; backgrounds; font sizes.

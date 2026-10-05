@@ -27,6 +27,7 @@
 struct saved {
 	unsigned char attr, pre, tag, list;
 	unsigned char display, margin, face, nomarker;
+	unsigned char fg, align;
 	unsigned long para_mark, para_line;	/* <p>: where it began */
 	unsigned short link;
 	short indent;
@@ -48,6 +49,9 @@ struct lay {
 	int em;				/* an indent column, in units */
 	int face;			/* LF_* */
 	int width;
+	int vw;				/* the window's width for @media: pixels,
+					 * or a terminal's columns at 8 pixels
+					 * (a grid cell's layout has the page's) */
 	unsigned long max_lines;
 	int stop;
 	/* the line being built */
@@ -65,6 +69,8 @@ struct lay {
 	unsigned long word_off, word_span;
 	int word_col;
 	int attr, pre;
+	int fg;				/* the text's colour: page palette, 0: none */
+	int align;			/* CSS_TA_*, 0: left */
 	unsigned short link;
 	unsigned long link_mark;
 	/* inside a table cell: blocks break the line only between
@@ -202,7 +208,7 @@ static int put_bytes(struct lay *L, const char *s, size_t n)
 	return 0;
 }
 
-/* attr/link (and with metrics, the face) from here on */
+/* attr/link/colour (and with metrics, the face) from here on */
 static void set_span(struct lay *L)
 {
 	struct page *p = L->p;
@@ -211,15 +217,18 @@ static void set_span(struct lay *L)
 
 	if (p->nspans) {
 		s = &p->spans[p->nspans - 1];
-		if (s->attr == L->attr && s->link == L->link && s->face == face)
+		if (s->attr == L->attr && s->link == L->link && s->face == face
+			&& s->color == L->fg)
 			return;
 		if (s->off == p->text_len) {
 			/* nothing shown with the last one: replace it */
 			s->attr = (unsigned char)L->attr;
 			s->link = L->link;
 			s->face = face;
+			s->color = (unsigned char)L->fg;
 			if (p->nspans >= 2 && s[-1].attr == s->attr
-				&& s[-1].link == s->link && s[-1].face == s->face)
+				&& s[-1].link == s->link && s[-1].face == s->face
+				&& s[-1].color == s->color)
 				p->nspans--;
 			return;
 		}
@@ -231,6 +240,25 @@ static void set_span(struct lay *L)
 	s->attr = (unsigned char)L->attr;
 	s->link = L->link;
 	s->face = face;
+	s->color = (unsigned char)L->fg;
+}
+
+/* the page's palette index of colour rgb (added if new); 0 when there is
+ * no room: the screen's own colour */
+static int page_color(struct page *p, unsigned long rgb)
+{
+	int i;
+
+	for (i = p->npalette - 1; i >= 0; i--)
+		if (p->palette[i] == rgb)
+			return i + 1;
+	if (p->npalette == LAYOUT_MAX_COLORS)
+		return 0;
+	if (p->palette == NULL
+		&& (p->palette = xmalloc(LAYOUT_MAX_COLORS * sizeof *p->palette)) == NULL)
+		return 0;
+	p->palette[p->npalette++] = rgb;
+	return p->npalette;
 }
 
 static unsigned long cur_span(const struct lay *L)
@@ -279,16 +307,35 @@ static void push_line(struct lay *L, unsigned long off, unsigned long len,
 	}
 }
 
-/* end the open line at byte end (trailing spaces dropped) */
+/* end the open line at byte end (trailing spaces dropped): where the text
+ * ends (end_line) or where the word that moved down begins (make_room) */
 static void close_line_at(struct lay *L, unsigned long end)
 {
-	const char *t = L->p->text;
+	struct page *p = L->p;
+	const char *t = p->text;
+	int endcol = end == p->text_len ? L->col : L->word_col, indent = L->line_indent;
 
 	if (!L->pre)
-		while (end > L->line_off && t[end - 1] == ' ')
+		while (end > L->line_off && t[end - 1] == ' ') {
 			end--;
-	push_line(L, L->line_off, end - L->line_off, L->line_indent,
-		L->line_span, 1);
+			endcol -= space_w(L);
+		}
+	/* centred or to the right (not a table row's line of cells, nor a
+	 * grid cell's: its width is what its lines measure) */
+	if (L->align >= CSS_TA_CENTER && !L->pre && !L->cell && !L->small
+		&& end > L->line_off && endcol < L->width) {
+		int shift = L->width - endcol;
+		unsigned long k;
+
+		if (L->align == CSS_TA_CENTER)
+			shift /= 2;
+		indent += shift;
+		/* (its links start further along too) */
+		for (k = p->nlinks; k > 0 && p->links[k - 1].line >= p->nlines; k--)
+			if (p->links[k - 1].line == p->nlines)
+				p->links[k - 1].col = (unsigned short)(p->links[k - 1].col + shift);
+	}
+	push_line(L, L->line_off, end - L->line_off, indent, L->line_span, 1);
 	L->line_open = 0;
 	L->blank_run = 0;
 }
@@ -1046,7 +1093,7 @@ static void add_anchor(struct lay *L, nodeid id)
 /* the attributes enter() looks at, in one pass (doc_attr per attribute
  * costs a scan and a libc strlen each) */
 struct eattr {
-	const char *hidden, *style, *id, *name, *href, *cls;
+	const char *hidden, *style, *id, *name, *href, *cls, *align;
 };
 
 static void scan_attrs(const struct doc *d, nodeid id, struct eattr *a)
@@ -1054,7 +1101,7 @@ static void scan_attrs(const struct doc *d, nodeid id, struct eattr *a)
 	const unsigned char *p = d->attr + d->nodes[id].data;
 	const unsigned char *e = d->attr + d->attr_len;
 
-	a->hidden = a->style = a->id = a->name = a->href = a->cls = NULL;
+	a->hidden = a->style = a->id = a->name = a->href = a->cls = a->align = NULL;
 	while (p < e && *p) {
 		int k = *p++;
 		const char *v = (const char *)p;
@@ -1066,6 +1113,7 @@ static void scan_attrs(const struct doc *d, nodeid id, struct eattr *a)
 		case ATTR_NAME: a->name = v; break;
 		case ATTR_HREF: a->href = v; break;
 		case ATTR_CLASS: a->cls = v; break;
+		case ATTR_ALIGN: a->align = v; break;
 		}
 		while (*p)
 			p++;
@@ -1076,6 +1124,57 @@ static void scan_attrs(const struct doc *d, nodeid id, struct eattr *a)
 static void walk(struct lay *L, nodeid root, int depth);
 static int grid_table(struct lay *L, nodeid id);
 
+/* how an element's text looks, from its style sheet and style="" (ct)
+ * over the built-in style s: weight, italics, underline, colour,
+ * alignment (also <center> and align=, which the sheet overrides) */
+static void text_look(struct lay *L, int tag, const struct style *s,
+	const struct css_text *ct, const char *align)
+{
+	if (ct->weight == CSS_FW_BOLD)
+		L->attr |= SA_BOLD;
+	else if (ct->weight == CSS_FW_NORMAL)
+		L->attr &= ~SA_BOLD;
+	if (ct->style == CSS_FS_ITALIC) {
+		L->face |= LF_ITALIC;
+		if (L->m == NULL)
+			L->attr |= SA_UNDER;	/* (a terminal's italics) */
+	} else if (ct->style == CSS_FS_NORMAL) {
+		L->face &= ~LF_ITALIC;
+		if (L->m == NULL && (s->face & LF_ITALIC))
+			L->attr &= ~SA_UNDER;
+	}
+	if (ct->deco == CSS_TD_UNDER)
+		L->attr |= SA_UNDER;
+	else if (ct->deco == CSS_TD_NONE)
+		L->attr &= ~SA_UNDER;
+	if (ct->fg & CSS_RGB_SET)
+		L->fg = page_color(L->p, ct->fg & 0xFFFFFFUL);
+	else if (ct->fg & CSS_RGB_DEFAULT)
+		L->fg = 0;
+	/* alignment is a block's; a table starts at the left again (as in
+	 * browsers' quirks mode: pages built of tables inside <center> keep
+	 * their cells' text left), and its align= places the table, not
+	 * its text */
+	if (s->display == D_INLINE)
+		return;
+	if (tag == TAG_TABLE) {
+		L->align = 0;
+		align = NULL;
+	}
+	if (tag == TAG_CENTER)
+		L->align = CSS_TA_CENTER;
+	if (align) {
+		if (align[0] == 'c' || align[0] == 'C')
+			L->align = CSS_TA_CENTER;
+		else if (align[0] == 'r' || align[0] == 'R')
+			L->align = CSS_TA_RIGHT;
+		else if (align[0] == 'l' || align[0] == 'L' || align[0] == 'j' || align[0] == 'J')
+			L->align = CSS_TA_LEFT;
+	}
+	if (ct->align)
+		L->align = ct->align;
+}
+
 /* enter element id at depth: 1 when its children are to be laid out */
 static int enter(struct lay *L, nodeid id, int depth)
 {
@@ -1084,24 +1183,26 @@ static int enter(struct lay *L, nodeid id, int depth)
 	struct style s;
 	struct saved *sv;
 	struct eattr ea;
+	struct css_text ct;
 	const char *v;
 	int tag = n->tag, cssf = 0;
 
 	if (n->data)
 		scan_attrs(d, id, &ea);
 	else
-		ea.hidden = ea.style = ea.id = ea.name = ea.href = ea.cls = NULL;
+		ea.hidden = ea.style = ea.id = ea.name = ea.href = ea.cls = ea.align = NULL;
 	style_for(tag, ea.hidden, ea.style, ea.id, &s);
-	/* the page's style sheet (an @media width is the window's: pixels,
-	 * or a terminal's columns at 8 pixels) */
+	memset(&ct, 0, sizeof ct);
+	/* the page's style sheet */
 	if (s.display != D_NONE && L->d->sheet) {
-		cssf = css_display(L->d->sheet, L->d, id, ea.id, ea.cls,
-			L->m ? L->width : L->width * 8);
+		cssf = css_style(L->d->sheet, L->d, id, ea.id, ea.cls, L->vw, &ct);
 		if ((cssf & CSS_HIDDEN) && !css_inline_shows(ea.style))
 			s.display = D_NONE;
 	}
 	if (s.display == D_NONE)
 		return 0;
+	if (ea.style)
+		css_inline_text(L->d->sheet, ea.style, &ct);
 
 	/* leaves with a rendering of their own */
 	switch (tag) {
@@ -1203,6 +1304,8 @@ static int enter(struct lay *L, nodeid id, int depth)
 	sv->margin = s.margin;
 	sv->face = (unsigned char)L->face;
 	sv->nomarker = (unsigned char)L->nomarker;
+	sv->fg = (unsigned char)L->fg;
+	sv->align = (unsigned char)L->align;
 	/* list-style: inherited, the element's own style="" last */
 	if (ea.style && css_inline_list(ea.style))
 		cssf = (cssf & ~(CSS_NO_MARKER | CSS_MARKER)) | css_inline_list(ea.style);
@@ -1261,6 +1364,7 @@ static int enter(struct lay *L, nodeid id, int depth)
 		sv->list = 1;
 	}
 	L->attr |= s.attr;
+	text_look(L, tag, &s, &ct, ea.align);
 	if (tag == TAG_A && ea.href
 		&& GROW(L, links, links_cap, L->p->nlinks + 1, 64) == 0) {
 		struct llink *k = &L->p->links[L->p->nlinks++];
@@ -1325,9 +1429,15 @@ static void leave(struct lay *L, nodeid id, int depth)
 			put_text(L, buf);
 		}
 	}
+	/* a block's last line is its own: aligned as it was */
+	if (L->align != sv->align && !L->cell && s.display != D_INLINE
+		&& s.display != D_TABLE_CELL)
+		end_line(L);
 	L->attr = sv->attr;
 	L->pre = sv->pre;
 	L->face = sv->face;
+	L->fg = sv->fg;
+	L->align = sv->align;
 	L->link = sv->link;
 	L->link_mark = sv->link_mark;
 	L->indent = sv->indent;
@@ -1439,8 +1549,7 @@ static int el_hidden(struct lay *L, nodeid id)
 	scan_attrs(L->d, id, &ea);
 	style_for(L->d->nodes[id].tag, ea.hidden, ea.style, ea.id, &s);
 	if (s.display != D_NONE && L->d->sheet
-		&& (css_display(L->d->sheet, L->d, id, ea.id, ea.cls,
-		L->m ? L->width : L->width * 8) & CSS_HIDDEN)
+		&& (css_display(L->d->sheet, L->d, id, ea.id, ea.cls, L->vw) & CSS_HIDDEN)
 		&& !css_inline_shows(ea.style))
 		s.display = D_NONE;
 	return s.display == D_NONE;
@@ -1732,11 +1841,30 @@ static int lay_cell(struct lay *L, struct lay *S, struct gcell *gc, int width)
 	S->m = L->m;
 	S->em = L->em;
 	S->width = width;
+	S->vw = L->vw;
 	S->face = L->face;
 	S->nomarker = L->nomarker;
 	S->heading_line = -1;
 	style_of(L->d, gc->node, &s);	/* (a <th>: bold) */
 	S->attr = L->attr | s.attr;
+	S->align = L->align;
+	if (L->fg && L->p->palette)
+		S->fg = page_color(pg, L->p->palette[L->fg - 1]);
+	{
+		/* the cell's own look: its sheet, style="", align= */
+		struct css_text ct;
+		const char *st = doc_attr(L->d, gc->node, ATTR_STYLE);
+
+		memset(&ct, 0, sizeof ct);
+		if (L->d->sheet)
+			css_style(L->d->sheet, L->d, gc->node, doc_attr(L->d, gc->node, ATTR_ID),
+				doc_attr(L->d, gc->node, ATTR_CLASS), L->vw, &ct);
+		if (st)
+			css_inline_text(L->d->sheet, st, &ct);
+		s.display = D_BLOCK;		/* (its lines are its own) */
+		text_look(S, L->d->nodes[gc->node].tag, &s, &ct,
+			doc_attr(L->d, gc->node, ATTR_ALIGN));
+	}
 	set_span(S);
 	if (doc_attr(L->d, gc->node, ATTR_ID))
 		add_anchor(S, gc->node);	/* (the cell's own id) */
@@ -1826,6 +1954,7 @@ static void pad_to(struct lay *L, int x)
 		return;
 	L->attr = 0;
 	L->link = 0;
+	L->fg = 0;
 	if (L->m) {
 		char b[LAYOUT_IMG_BYTES];
 
@@ -1871,6 +2000,7 @@ static void put_cell_line(struct lay *L, struct gcell *gc, unsigned long ln)
 		w = seg_w(L, tp, sp->attr, sp->face, tp->text + off, (int)(next - off));
 		L->attr = sp->attr;
 		L->face = sp->face;
+		L->fg = sp->color && tp->palette ? page_color(p, tp->palette[sp->color - 1]) : 0;
 		L->link = 0;
 		if (sp->link && gc->lmap) {
 			int k = sp->link - 1;
@@ -2095,6 +2225,7 @@ int layout_run_m(struct page *p, const struct doc *d, int width,
 	L->m = m;
 	L->em = m && m->em > 0 ? m->em : 1;
 	L->width = p->width;
+	L->vw = m ? p->width : p->width * 8;
 	L->max_lines = max_lines;
 	L->heading_line = -1;
 	set_span(L);
@@ -2114,6 +2245,7 @@ void layout_free(struct page *p)
 	xfree(p->links);
 	xfree(p->anchors);
 	xfree(p->images);
+	xfree(p->palette);
 	memset(p, 0, sizeof *p);
 }
 

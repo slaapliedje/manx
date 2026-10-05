@@ -27,6 +27,8 @@ enum {
 #define CA_REV		0x04
 #define CA_LINK		0x08	/* a link's colour (underline without colour) */
 #define CA_MARK		0x10	/* a find match's colour (reverse without) */
+#define CA_FG(i)	((i) << 8)	/* the page's colour i (scr_palette) */
+#define CA_FG_OF(a)	(((a) >> 8) & 255)
 
 extern int scr_rows, scr_cols;
 extern enum term_cs scr_cs;
@@ -50,6 +52,14 @@ void scr_close(void);
 
 /* Check the window size: 1 when it changed (everything will be redrawn). */
 int scr_check_size(void);
+
+/*
+ * The page's text colours, 0xRRGGBB, for CA_FG(1..n): each screen shows
+ * them as it can (a terminal: clear colours in its own eight, greys as
+ * its text; X: the colour, darkened if too pale to read on white). The
+ * array is the caller's and must stay until the next call.
+ */
+void scr_palette(const unsigned long *rgb, int n);
 
 /* Build the next frame: */
 void scr_erase(void);

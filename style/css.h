@@ -1,15 +1,17 @@
 /*
  * css.h - the little of CSS Manx uses: which elements a page's style
- * sheets hide. Rules are read as the <style> text streams in, and only
- * those that set display or visibility are kept (not text "visually
+ * sheets hide, and how text looks (colour, weight, italics, underline,
+ * alignment). Rules are read as the <style> text streams in, and only
+ * those that say something about these are kept (not text "visually
  * hidden" for screen readers: without icons, Manx's readers need it).
  * Selectors: tag, *, #id, .class, [attr], [attr=v], [attr~=v] for the
- * attributes Manx keeps, combined, with descendant and child combinators. A rule with anything else
- * (pseudo-classes, sibling combinators, unknown tags) is dropped: in
- * doubt, content shows. @media width conditions are checked against the
- * window's width at each layout. The cascade is followed for display, for
- * visibility and for list-style (markers or none): !important, then
- * specificity, then order.
+ * attributes Manx keeps, :root and :link, combined, with descendant and
+ * child combinators. A rule with anything else (other pseudo-classes,
+ * sibling combinators, unknown tags) is dropped: in doubt, content shows
+ * as it would without the sheet. @media width conditions are checked
+ * against the window's width at each layout. The cascade is followed for
+ * each property: !important, then specificity, then order. Colours may
+ * come from custom properties (var()) set on :root, html or body.
  */
 #ifndef MANX_CSS_H
 #define MANX_CSS_H
@@ -47,6 +49,31 @@ void css_end(struct css_sheet *s);
  */
 int css_display(struct css_sheet *s, const struct doc *d, nodeid node,
 	const char *id, const char *cls, int vw);
+
+/* how text looks: what the sheet (or a style="") says, 0 where nothing */
+enum { CSS_FW_BOLD = 1, CSS_FW_NORMAL };	/* font-weight */
+enum { CSS_FS_ITALIC = 1, CSS_FS_NORMAL };	/* font-style */
+enum { CSS_TD_UNDER = 1, CSS_TD_NONE };		/* text-decoration */
+enum { CSS_TA_LEFT = 1, CSS_TA_CENTER, CSS_TA_RIGHT };	/* text-align */
+
+#define CSS_RGB_SET	0x1000000UL	/* fg: this colour, 0xRRGGBB below */
+#define CSS_RGB_DEFAULT	0x2000000UL	/* fg: back to the screen's own */
+
+struct css_text {
+	unsigned long fg;		/* 0: not said; CSS_RGB_* */
+	unsigned char weight, style, deco, align;
+};
+
+/*
+ * css_display, and how the element's text looks into *t (only what the
+ * sheet says of this element itself: inheriting is the caller's).
+ */
+int css_style(struct css_sheet *s, const struct doc *d, nodeid node,
+	const char *id, const char *cls, int vw, struct css_text *t);
+
+/* What an inline style="" says of the same, over *t (s: for var(); may be
+ * NULL). */
+void css_inline_text(struct css_sheet *s, const char *style, struct css_text *t);
 
 /* Does an inline style="" set display to something other than none
  * (which beats the sheet's display:none)? */
