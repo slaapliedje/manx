@@ -14,6 +14,14 @@
 #include "os.h"
 #include "dns.h"
 
+#ifdef MANX_HELIOS
+#define HOSTS_FILE	"/helios/etc/hosts"
+#define RESOLV_FILE	"/helios/etc/resolv.conf"
+#else
+#define HOSTS_FILE	"/etc/hosts"
+#define RESOLV_FILE	"/etc/resolv.conf"
+#endif
+
 #define MAXNS		3
 #define TRY_MS		2500	/* per query per server */
 #define ROUNDS		2
@@ -61,7 +69,7 @@ static int name_eq(const char *a, const char *b)
 /* /etc/hosts: "address name aliases..." with # comments */
 static int from_hosts(const char *name, unsigned char ip[4])
 {
-	FILE *f = fopen("/etc/hosts", "r");
+	FILE *f = fopen(HOSTS_FILE, "r");
 	char line[256];
 	int found = 0;
 
@@ -87,7 +95,7 @@ static int from_hosts(const char *name, unsigned char ip[4])
 
 static int nameservers(unsigned char ns[MAXNS][4])
 {
-	FILE *f = fopen("/etc/resolv.conf", "r");
+	FILE *f = fopen(RESOLV_FILE, "r");
 	char line[256];
 	int n = 0;
 
@@ -325,7 +333,7 @@ const char *dns_strerror(int err)
 	case DNS_OK: return "ok";
 	case DNS_NOTFOUND: return "host not found";
 	case DNS_TIMEOUT: return "name server not responding";
-	case DNS_NOSERVER: return "no nameserver in /etc/resolv.conf";
+	case DNS_NOSERVER: return "no nameserver in " RESOLV_FILE;
 	}
 	return "resolver error";
 }
