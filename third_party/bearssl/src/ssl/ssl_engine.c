@@ -1325,11 +1325,14 @@ br_ssl_engine_compute_master(br_ssl_engine_context *cc,
 	int prf_id, const void *pms, size_t pms_len)
 {
 	br_tls_prf_impl iprf;
-	br_tls_prf_seed_chunk seed[2] = {
-		{ cc->client_random, sizeof cc->client_random },
-		{ cc->server_random, sizeof cc->server_random }
-	};
+	br_tls_prf_seed_chunk seed[2];
 
+	/* (unix-browser patch: assigned, not initialised, for C89 compilers
+	   that take no initialiser for an automatic aggregate: Helios C) */
+	seed[0].data = cc->client_random;
+	seed[0].len = sizeof cc->client_random;
+	seed[1].data = cc->server_random;
+	seed[1].len = sizeof cc->server_random;
 	iprf = br_ssl_engine_get_PRF(cc, prf_id);
 	iprf(cc->session.master_secret, sizeof cc->session.master_secret,
 		pms, pms_len, "master secret", 2, seed);
@@ -1343,10 +1346,13 @@ compute_key_block(br_ssl_engine_context *cc, int prf_id,
 	size_t half_len, unsigned char *kb)
 {
 	br_tls_prf_impl iprf;
-	br_tls_prf_seed_chunk seed[2] = {
-		{ cc->server_random, sizeof cc->server_random },
-		{ cc->client_random, sizeof cc->client_random }
-	};
+	br_tls_prf_seed_chunk seed[2];
+
+	/* (unix-browser patch: as in br_ssl_engine_compute_master()) */
+	seed[0].data = cc->server_random;
+	seed[0].len = sizeof cc->server_random;
+	seed[1].data = cc->client_random;
+	seed[1].len = sizeof cc->client_random;
 
 	iprf = br_ssl_engine_get_PRF(cc, prf_id);
 	iprf(kb, half_len << 1,

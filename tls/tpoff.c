@@ -65,8 +65,8 @@ static int move(unsigned char *b, size_t n, int out, int ms)
 
 	ioctl(g_fd, TLK_TIMEOUT, ms);
 	while (done < n) {
-		int r = out ? (int)write(g_fd, b + done, n - done)
-			: (int)read(g_fd, b + done, n - done);
+		int r = out ? (int)write(g_fd, (char *)b + done, n - done)
+			: (int)read(g_fd, (char *)b + done, n - done);
 
 		if (r <= 0)
 			return -1;

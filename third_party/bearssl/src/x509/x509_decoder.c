@@ -429,13 +429,14 @@ br_x509_decoder_run(void *t0ctx)
 	goto t0_next;
 	for (;;) {
 		uint32_t t0x;
+		/* (unix-browser patch: declared here, not at the top of the switch body,
+		   where Helios C misplaces them) */
+		int32_t t0off;
 
 	t0_next:
 		t0x = T0_NEXT(&ip);
 		if (t0x < T0_INTERPRETED) {
 			switch (t0x) {
-				int32_t t0off;
-
 			case 0: /* ret */
 				t0x = T0_RPOP();
 				rp -= (t0x >> 16);

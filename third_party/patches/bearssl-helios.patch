@@ -1,5 +1,8 @@
-# unix-browser: BearSSL for a compiler with no 64-bit integer type (BR_NO_U64:
-# Helios C on the ATW800/2's T425). See BR_NO_U64 in src/config.h.
+# unix-browser: BearSSL for Helios C on the ATW800/2's T425 (Norcroft, 1992):
+# - BR_NO_U64, a compiler with no 64-bit integer type (see src/config.h);
+# - no initialiser for an automatic aggregate (ssl_engine.c);
+# - no declarations at the top of a switch body, which Helios C
+#   misplaces (ec_prime_i15.c, x509_minimal.c, the T0 interpreters).
 # Apply to BearSSL v0.6 after bearssl-ske-defer.patch with:
 #   patch -p1 -d third_party/bearssl < this file
 diff --git a/inc/bearssl_hash.h b/inc/bearssl_hash.h
@@ -52,6 +55,27 @@ index 68cc913..2e62648 100644
  		ctx->buf[0] = 0xFF;
  		ctx->buf[1] = 0xFE;
  		br_enc32be(ctx->buf + 2, (uint32_t)aad_len);
+diff --git a/src/codec/pemdec.c b/src/codec/pemdec.c
+index 8e54e6d..4e96ac9 100644
+--- a/src/codec/pemdec.c
++++ b/src/codec/pemdec.c
+@@ -274,13 +274,14 @@ br_pem_decoder_run(void *t0ctx)
+ 	goto t0_next;
+ 	for (;;) {
+ 		uint32_t t0x;
++		/* (unix-browser patch: declared here, not at the top of the switch body,
++		   where Helios C misplaces them) */
++		int32_t t0off;
+ 
+ 	t0_next:
+ 		t0x = T0_NEXT(&ip);
+ 		if (t0x < T0_INTERPRETED) {
+ 			switch (t0x) {
+-				int32_t t0off;
+-
+ 			case 0: /* ret */
+ 				t0x = T0_RPOP();
+ 				rp -= (t0x >> 16);
 diff --git a/src/config.h b/src/config.h
 index 8ea4d8a..f09af2e 100644
 --- a/src/config.h
@@ -75,6 +99,33 @@ index 8ea4d8a..f09af2e 100644
 + */
 +
  #endif
+diff --git a/src/ec/ec_prime_i15.c b/src/ec/ec_prime_i15.c
+index 0f210f2..f480832 100644
+--- a/src/ec/ec_prime_i15.c
++++ b/src/ec/ec_prime_i15.c
+@@ -470,6 +470,11 @@ run_code(jacobian *P1, const jacobian *P2,
+ 	 */
+ 	for (u = 0;; u ++) {
+ 		unsigned op, d, a, b;
++		/* (unix-browser patch: declared here, not at the top of the switch body,
++		   where Helios C misplaces them) */
++		uint32_t ctl;
++		size_t plen;
++		unsigned char tp[(BR_MAX_EC_SIZE + 7) >> 3];
+ 
+ 		op = code[u];
+ 		if (op == 0) {
+@@ -480,10 +485,6 @@ run_code(jacobian *P1, const jacobian *P2,
+ 		b = op & 0x0F;
+ 		op >>= 12;
+ 		switch (op) {
+-			uint32_t ctl;
+-			size_t plen;
+-			unsigned char tp[(BR_MAX_EC_SIZE + 7) >> 3];
+-
+ 		case 0:
+ 			memcpy(t[d], t[a], I15_LEN * sizeof(uint16_t));
+ 			break;
 diff --git a/src/hash/multihash.c b/src/hash/multihash.c
 index b6df2e0..cd2647c 100644
 --- a/src/hash/multihash.c
@@ -510,6 +561,129 @@ index e1c1d80..0e4cf41 100644
  			e &= 0xFF;
  		} else {
  			e = 0x00;
+diff --git a/src/ssl/ssl_engine.c b/src/ssl/ssl_engine.c
+index f4ffe18..a01dfb6 100644
+--- a/src/ssl/ssl_engine.c
++++ b/src/ssl/ssl_engine.c
+@@ -1325,11 +1325,14 @@ br_ssl_engine_compute_master(br_ssl_engine_context *cc,
+ 	int prf_id, const void *pms, size_t pms_len)
+ {
+ 	br_tls_prf_impl iprf;
+-	br_tls_prf_seed_chunk seed[2] = {
+-		{ cc->client_random, sizeof cc->client_random },
+-		{ cc->server_random, sizeof cc->server_random }
+-	};
+-
++	br_tls_prf_seed_chunk seed[2];
++
++	/* (unix-browser patch: assigned, not initialised, for C89 compilers
++	   that take no initialiser for an automatic aggregate: Helios C) */
++	seed[0].data = cc->client_random;
++	seed[0].len = sizeof cc->client_random;
++	seed[1].data = cc->server_random;
++	seed[1].len = sizeof cc->server_random;
+ 	iprf = br_ssl_engine_get_PRF(cc, prf_id);
+ 	iprf(cc->session.master_secret, sizeof cc->session.master_secret,
+ 		pms, pms_len, "master secret", 2, seed);
+@@ -1343,10 +1346,13 @@ compute_key_block(br_ssl_engine_context *cc, int prf_id,
+ 	size_t half_len, unsigned char *kb)
+ {
+ 	br_tls_prf_impl iprf;
+-	br_tls_prf_seed_chunk seed[2] = {
+-		{ cc->server_random, sizeof cc->server_random },
+-		{ cc->client_random, sizeof cc->client_random }
+-	};
++	br_tls_prf_seed_chunk seed[2];
++
++	/* (unix-browser patch: as in br_ssl_engine_compute_master()) */
++	seed[0].data = cc->server_random;
++	seed[0].len = sizeof cc->server_random;
++	seed[1].data = cc->client_random;
++	seed[1].len = sizeof cc->client_random;
+ 
+ 	iprf = br_ssl_engine_get_PRF(cc, prf_id);
+ 	iprf(kb, half_len << 1,
+diff --git a/src/ssl/ssl_hs_client.c b/src/ssl/ssl_hs_client.c
+index ab2536f..6c8cf41 100644
+--- a/src/ssl/ssl_hs_client.c
++++ b/src/ssl/ssl_hs_client.c
+@@ -973,13 +973,14 @@ br_ssl_hs_client_run(void *t0ctx)
+ 	goto t0_next;
+ 	for (;;) {
+ 		uint32_t t0x;
++		/* (unix-browser patch: declared here, not at the top of the switch body,
++		   where Helios C misplaces them) */
++		int32_t t0off;
+ 
+ 	t0_next:
+ 		t0x = T0_NEXT(&ip);
+ 		if (t0x < T0_INTERPRETED) {
+ 			switch (t0x) {
+-				int32_t t0off;
+-
+ 			case 0: /* ret */
+ 				t0x = T0_RPOP();
+ 				rp -= (t0x >> 16);
+diff --git a/src/x509/x509_decoder.c b/src/x509/x509_decoder.c
+index 8dd970f..b1ab0aa 100644
+--- a/src/x509/x509_decoder.c
++++ b/src/x509/x509_decoder.c
+@@ -429,13 +429,14 @@ br_x509_decoder_run(void *t0ctx)
+ 	goto t0_next;
+ 	for (;;) {
+ 		uint32_t t0x;
++		/* (unix-browser patch: declared here, not at the top of the switch body,
++		   where Helios C misplaces them) */
++		int32_t t0off;
+ 
+ 	t0_next:
+ 		t0x = T0_NEXT(&ip);
+ 		if (t0x < T0_INTERPRETED) {
+ 			switch (t0x) {
+-				int32_t t0off;
+-
+ 			case 0: /* ret */
+ 				t0x = T0_RPOP();
+ 				rp -= (t0x >> 16);
+diff --git a/src/x509/x509_minimal.c b/src/x509/x509_minimal.c
+index 3b876ef..5674032 100644
+--- a/src/x509/x509_minimal.c
++++ b/src/x509/x509_minimal.c
+@@ -934,13 +934,14 @@ br_x509_minimal_run(void *t0ctx)
+ 	goto t0_next;
+ 	for (;;) {
+ 		uint32_t t0x;
++		/* (unix-browser patch: declared here, not at the top of the switch body,
++		   where Helios C misplaces them) */
++		int32_t t0off;
+ 
+ 	t0_next:
+ 		t0x = T0_NEXT(&ip);
+ 		if (t0x < T0_INTERPRETED) {
+ 			switch (t0x) {
+-				int32_t t0off;
+-
+ 			case 0: /* ret */
+ 				t0x = T0_RPOP();
+ 				rp -= (t0x >> 16);
+@@ -1670,14 +1671,15 @@ static int
+ verify_signature(br_x509_minimal_context *ctx, const br_x509_pkey *pk)
+ {
+ 	int kt;
++	/* (unix-browser patch: declared here, not at the top of the switch body,
++	   where Helios C misplaces them) */
++	unsigned char tmp[64];
+ 
+ 	kt = ctx->cert_signer_key_type;
+ 	if ((pk->key_type & 0x0F) != kt) {
+ 		return BR_ERR_X509_WRONG_KEY_TYPE;
+ 	}
+ 	switch (kt) {
+-		unsigned char tmp[64];
+-
+ 	case BR_KEYTYPE_RSA:
+ 		if (ctx->irsa == 0) {
+ 			return BR_ERR_X509_UNSUPPORTED;
 diff --git a/src/x509/x509_minimal_full.c b/src/x509/x509_minimal_full.c
 index 2b54426..df9d0a9 100644
 --- a/src/x509/x509_minimal_full.c

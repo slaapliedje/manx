@@ -934,13 +934,14 @@ br_x509_minimal_run(void *t0ctx)
 	goto t0_next;
 	for (;;) {
 		uint32_t t0x;
+		/* (unix-browser patch: declared here, not at the top of the switch body,
+		   where Helios C misplaces them) */
+		int32_t t0off;
 
 	t0_next:
 		t0x = T0_NEXT(&ip);
 		if (t0x < T0_INTERPRETED) {
 			switch (t0x) {
-				int32_t t0off;
-
 			case 0: /* ret */
 				t0x = T0_RPOP();
 				rp -= (t0x >> 16);
@@ -1670,14 +1671,15 @@ static int
 verify_signature(br_x509_minimal_context *ctx, const br_x509_pkey *pk)
 {
 	int kt;
+	/* (unix-browser patch: declared here, not at the top of the switch body,
+	   where Helios C misplaces them) */
+	unsigned char tmp[64];
 
 	kt = ctx->cert_signer_key_type;
 	if ((pk->key_type & 0x0F) != kt) {
 		return BR_ERR_X509_WRONG_KEY_TYPE;
 	}
 	switch (kt) {
-		unsigned char tmp[64];
-
 	case BR_KEYTYPE_RSA:
 		if (ctx->irsa == 0) {
 			return BR_ERR_X509_UNSUPPORTED;

@@ -104,12 +104,16 @@ This needs:
 `toolchain/sysv4-cc` explains how the three fit together.
 
 `xmanx` also builds with Helios 1.31's C compiler and runs on the
-ATW800/2's T425 itself, under Helios's X server. That build speaks HTTP
-and Gopher only: Helios C has no 64-bit integers, which BearSSL needs.
-`tools/helios/bundle.sh DIR` lays the sources out in 8.3 names with a
-`build.csh`; copy DIR to `/helios/local/src/manx` and `source build.csh`
-there (about 14 minutes). Helios reaches the network through its own
-TCP/IP; on the TT, through a DaynaPORT.
+ATW800/2's T425 itself, under Helios's X server, HTTPS included. Helios C
+has no 64-bit integers, so BearSSL is built with `BR_NO_U64`
+(`third_party/patches/bearssl-helios.patch`); `make TARGET=no64
+test-no64` tests that build on the host. `tools/helios/bundle.py DIR`
+lays the sources out in 8.3 names with a `build.csh`; copy DIR to
+`/helios/local/src/manx` and `source build.csh` there (about an hour in
+Hatari). It builds `xmanx`, `ufetch`, `manxtrust` and `test_sigkat`,
+which checks the hashes and signature arithmetic on the T425. Helios
+reaches the network through its own TCP/IP; on the TT, through a
+DaynaPORT.
 
 ## Running
 

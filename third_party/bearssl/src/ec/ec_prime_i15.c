@@ -470,6 +470,11 @@ run_code(jacobian *P1, const jacobian *P2,
 	 */
 	for (u = 0;; u ++) {
 		unsigned op, d, a, b;
+		/* (unix-browser patch: declared here, not at the top of the switch body,
+		   where Helios C misplaces them) */
+		uint32_t ctl;
+		size_t plen;
+		unsigned char tp[(BR_MAX_EC_SIZE + 7) >> 3];
 
 		op = code[u];
 		if (op == 0) {
@@ -480,10 +485,6 @@ run_code(jacobian *P1, const jacobian *P2,
 		b = op & 0x0F;
 		op >>= 12;
 		switch (op) {
-			uint32_t ctl;
-			size_t plen;
-			unsigned char tp[(BR_MAX_EC_SIZE + 7) >> 3];
-
 		case 0:
 			memcpy(t[d], t[a], I15_LEN * sizeof(uint16_t));
 			break;

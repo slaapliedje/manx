@@ -447,7 +447,7 @@ static int low_read(void *ctx, unsigned char *buf, size_t len)
 			continue;
 		if (n <= 0)
 			return -1;
-		n = read(fd, buf, (unsigned)len);
+		n = read(fd, (char *)buf, (unsigned)len);
 		if (n < 0 && SOCK_RETRY(errno))
 			continue;
 		if (n > 0)
@@ -461,7 +461,7 @@ static int low_write(void *ctx, const unsigned char *buf, size_t len)
 	int fd = *(int *)ctx;
 
 	for (;;) {
-		int n = write(fd, buf, (unsigned)len);
+		int n = write(fd, (const char *)buf, (unsigned)len);
 
 		if (n < 0 && SOCK_RETRY(errno))
 			continue;

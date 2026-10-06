@@ -16,6 +16,9 @@
 #include <string.h>
 #include <ctype.h>
 #include <termios.h>
+#if defined(ICANNON) && !defined(ICANON)
+#define ICANON ICANNON		/* (Helios's termios.h spells it so) */
+#endif
 #include "os.h"
 #include "entropy.h"
 #include "anchors.h"
@@ -127,7 +130,7 @@ static int seed_keys(void)
 		unsigned long t = os_usec();
 		int bar, i;
 
-		if (read(0, &c, 1) != 1)
+		if (read(0, (char *)&c, 1) != 1)
 			break;
 		t = os_usec() - t;
 		/* the key and the gap before it; two bits each, conservatively
