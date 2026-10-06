@@ -226,4 +226,18 @@
 #define BR_BE_UNALIGNED   1
  */
 
+/*
+ * unix-browser patch: when BR_NO_U64 is enabled, the compiler has no
+ * 64-bit integer type (Helios C on the transputer). uint64_t must then be
+ * defined as a 32-bit type before BearSSL is compiled. It is used only
+ * for byte counters and record sequence numbers, which are encoded with
+ * a zero high word (a hash then takes at most 512 MB, a connection at
+ * most 2^32 records). SHA-384 and SHA-512 use 32-bit halves, and only
+ * the implementations that need no 64-bit arithmetic may be compiled:
+ * i15, m15, aes_ct, aes_small, chacha20_ct, poly1305_ctmul32 and
+ * poly1305_i15, ghash_ctmul32, des_tab, des_ct.
+ *
+#define BR_NO_U64   1
+ */
+
 #endif

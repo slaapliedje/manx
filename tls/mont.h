@@ -2,7 +2,8 @@
  * mont.h - Montgomery multiplication for checking signatures (rsavrfy,
  * ecvrfy): little-endian arrays of k 32-bit limbs, R = 2^(32k), the inner
  * loop in 68030 assembly around mulu.l, in transputer assembly around lmul
- * (icc, for the ATW800/2's T425), and in C with uint64_t elsewhere. C89.
+ * (icc, for the ATW800/2's T425), and in C with uint64_t elsewhere, or on
+ * 16-bit halves where there is no 64-bit type (BR_NO_U64: Helios C). C89.
  * Variable time: for public data only.
  */
 #ifndef MANX_MONT_H

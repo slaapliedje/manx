@@ -99,12 +99,16 @@ br_ccm_reset(br_ccm_context *ctx, const void *nonce, size_t nonce_len,
 	/*
 	 * Assemble AAD length header.
 	 */
+#if BR_NO_U64		/* (unix-browser patch: aad_len has 32 bits) */
+	if (aad_len >= 0xFF00) {
+#else
 	if ((aad_len >> 32) != 0) {
 		ctx->buf[0] = 0xFF;
 		ctx->buf[1] = 0xFF;
 		br_enc64be(ctx->buf + 2, aad_len);
 		ctx->ptr = 10;
 	} else if (aad_len >= 0xFF00) {
+#endif
 		ctx->buf[0] = 0xFF;
 		ctx->buf[1] = 0xFE;
 		br_enc32be(ctx->buf + 2, (uint32_t)aad_len);

@@ -18,8 +18,20 @@
 #include "entropy.h"
 #include "rsavrfy.h"
 #include "ecvrfy.h"
-#include "crypt68k_bearssl.h"
 #include "tls.h"
+
+/* The key exchange's curves. X25519 by crypt68k (third_party/crypt68k,
+ * its 68030 multiply; ~3x BearSSL's m31 there), the others by BearSSL's
+ * m31. With no 64-bit integer type (Helios C: BR_NO_U64), BearSSL's m15
+ * code instead: crypt68k is 68030 assembly. */
+#if BR_NO_U64
+#define EC_X25519	br_ec_c25519_m15
+#define EC_ALL		br_ec_all_m15
+#else
+#include "crypt68k_bearssl.h"
+#define EC_X25519	c68k_br_ec_c25519
+#define EC_ALL		br_ec_all_m31
+#endif
 
 #define READ_TIMEOUT_MS		30000
 #define MAX_SESSIONS		16
@@ -475,13 +487,11 @@ static const uint16_t suites_full[] = {
 	BR_TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
 };
 
-/* The key exchange's curves: X25519 by crypt68k (third_party/crypt68k,
- * its 68030 multiply; ~3x BearSSL's m31 there), the others by BearSSL's
- * m31. FAST and FULL_X offer X25519 alone (c68k_br_ec_c25519 has no
- * other curve); FULL offers all of them, through these. */
+/* The key exchange's curves (EC_X25519, EC_ALL at the top). FAST and
+ * FULL_X offer X25519 alone; FULL offers all of them, through these. */
 static const br_ec_impl *ec_for(int curve)
 {
-	return curve == BR_EC_curve25519 ? &c68k_br_ec_c25519 : &br_ec_all_m31;
+	return curve == BR_EC_curve25519 ? &EC_X25519 : &EC_ALL;
 }
 
 static const unsigned char *ec_generator(int curve, size_t *len)
@@ -556,12 +566,12 @@ int tls_connect(struct tls_conn *c, int fd, const char *host, unsigned port,
 	if (profile == TLS_FAST) {
 		br_ssl_engine_set_suites(&c->sc.eng, suites_fast,
 			sizeof suites_fast / sizeof suites_fast[0]);
-		br_ssl_engine_set_ec(&c->sc.eng, &c68k_br_ec_c25519);
+		br_ssl_engine_set_ec(&c->sc.eng, &EC_X25519);
 	} else {
 		br_ssl_engine_set_suites(&c->sc.eng, suites_full,
 			sizeof suites_full / sizeof suites_full[0]);
 		if (profile == TLS_FULL_X)
-			br_ssl_engine_set_ec(&c->sc.eng, &c68k_br_ec_c25519);
+			br_ssl_engine_set_ec(&c->sc.eng, &EC_X25519);
 		else
 			br_ssl_engine_set_ec(&c->sc.eng, &s_ec_all);
 	}
@@ -571,10 +581,10 @@ int tls_connect(struct tls_conn *c, int fd, const char *host, unsigned port,
 	br_ssl_engine_set_rsavrfy(&c->sc.eng, rsavrfy_pkcs1);
 	br_ssl_engine_set_ecdsa(&c->sc.eng, ecvrfy_asn1);
 	br_x509_minimal_set_rsa(&c->xc, rsavrfy_pkcs1);
-	br_x509_minimal_set_ecdsa(&c->xc, &br_ec_all_m31, ecvrfy_asn1);
+	br_x509_minimal_set_ecdsa(&c->xc, &EC_ALL, ecvrfy_asn1);
 	br_ssl_engine_set_buffer(&c->sc.eng, c->iobuf, sizeof c->iobuf, 1);
 	xdefer_install(&c->xd, &c->sc);
-	c->xd.iec = &br_ec_all_m31;	/* not the key exchange's subset */
+	c->xd.iec = &EC_ALL;	/* not the key exchange's subset */
 	br_ssl_engine_inject_entropy(&c->sc.eng, seed, sizeof seed);
 	memset(seed, 0, sizeof seed);
 
@@ -776,7 +786,7 @@ int tls_learn_pem(const char *pem_path, void (*note)(const char *msg))
 
 					br_x509_minimal_init_full(&l.xc, s_all.ta, s_all.n);
 					br_x509_minimal_set_rsa(&l.xc, rsavrfy_pkcs1);
-					br_x509_minimal_set_ecdsa(&l.xc, &br_ec_all_m31,
+					br_x509_minimal_set_ecdsa(&l.xc, &EC_ALL,
 						ecvrfy_asn1);
 					(*v)->start_chain(v, NULL);
 					(*v)->start_cert(v, (uint32_t)l.len);

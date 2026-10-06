@@ -47,9 +47,15 @@ br_x509_minimal_init_full(br_x509_minimal_context *xc,
 
 	br_x509_minimal_init(xc, &br_sha256_vtable,
 		trust_anchors, trust_anchors_num);
+#if BR_NO_U64		/* (unix-browser patch: no 64-bit code) */
+	br_x509_minimal_set_rsa(xc, &br_rsa_i15_pkcs1_vrfy);
+	br_x509_minimal_set_ecdsa(xc,
+		&br_ec_prime_i15, &br_ecdsa_i15_vrfy_asn1);
+#else
 	br_x509_minimal_set_rsa(xc, &br_rsa_i31_pkcs1_vrfy);
 	br_x509_minimal_set_ecdsa(xc,
 		&br_ec_prime_i31, &br_ecdsa_i31_vrfy_asn1);
+#endif
 	for (id = br_md5_ID; id <= br_sha512_ID; id ++) {
 		const br_hash_class *hc;
 

@@ -787,7 +787,11 @@ typedef struct {
 #ifndef BR_DOXYGEN_IGNORE
 	unsigned char buf[128];
 	uint64_t count;
+#if BR_NO_U64
+	uint32_t val[16];	/* (each word as high, low halves) */
+#else
 	uint64_t val[8];
+#endif
 #endif
 } br_sha384_context;
 
@@ -1109,7 +1113,11 @@ typedef struct {
 	unsigned char buf[128];
 	uint64_t count;
 	uint32_t val_32[25];
+#if BR_NO_U64
+	uint32_t val_64[32];
+#else
 	uint64_t val_64[16];
+#endif
 	const br_hash_class *impl[6];
 #endif
 } br_multihash_context;

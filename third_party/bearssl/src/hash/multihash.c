@@ -52,7 +52,7 @@ get_state_offset(int id)
 		 * eight 64-bit words for their state.
 		 */
 		return offsetof(br_multihash_context, val_64)
-			+ ((size_t)(id - 5) * (8 * sizeof(uint64_t)));
+			+ ((size_t)(id - 5) * 64);
 	} else {
 		/*
 		 * MD5 has id 1, SHA-1 has id 2, SHA-224 has id 3 and

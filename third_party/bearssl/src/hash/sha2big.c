@@ -24,6 +24,306 @@
 
 #include "inner.h"
 
+#if BR_NO_U64
+
+/*
+ * unix-browser patch: SHA-384 and SHA-512 with no 64-bit integer type
+ * (BR_NO_U64, see config.h). Each 64-bit word is two 32-bit halves, the
+ * high one first, in the state and in the tables below; rotations and
+ * shifts are worked out on the halves.
+ */
+
+/* (rh, rl) += (xh, xl); xl is read twice, so no side effects */
+#define SUM64(rh, rl, xh, xl)   do { \
+		uint32_t sum64_t = (rl) + (xl); \
+		(rh) += (xh) + (sum64_t < (xl)); \
+		(rl) = sum64_t; \
+	} while (0)
+
+static const uint32_t IV384[16] = {
+	0xCBBB9D5D, 0xC1059ED8, 0x629A292A, 0x367CD507,
+	0x9159015A, 0x3070DD17, 0x152FECD8, 0xF70E5939,
+	0x67332667, 0xFFC00B31, 0x8EB44A87, 0x68581511,
+	0xDB0C2E0D, 0x64F98FA7, 0x47B5481D, 0xBEFA4FA4
+};
+
+static const uint32_t IV512[16] = {
+	0x6A09E667, 0xF3BCC908, 0xBB67AE85, 0x84CAA73B,
+	0x3C6EF372, 0xFE94F82B, 0xA54FF53A, 0x5F1D36F1,
+	0x510E527F, 0xADE682D1, 0x9B05688C, 0x2B3E6C1F,
+	0x1F83D9AB, 0xFB41BD6B, 0x5BE0CD19, 0x137E2179
+};
+
+static const uint32_t K[160] = {
+	0x428A2F98, 0xD728AE22, 0x71374491, 0x23EF65CD,
+	0xB5C0FBCF, 0xEC4D3B2F, 0xE9B5DBA5, 0x8189DBBC,
+	0x3956C25B, 0xF348B538, 0x59F111F1, 0xB605D019,
+	0x923F82A4, 0xAF194F9B, 0xAB1C5ED5, 0xDA6D8118,
+	0xD807AA98, 0xA3030242, 0x12835B01, 0x45706FBE,
+	0x243185BE, 0x4EE4B28C, 0x550C7DC3, 0xD5FFB4E2,
+	0x72BE5D74, 0xF27B896F, 0x80DEB1FE, 0x3B1696B1,
+	0x9BDC06A7, 0x25C71235, 0xC19BF174, 0xCF692694,
+	0xE49B69C1, 0x9EF14AD2, 0xEFBE4786, 0x384F25E3,
+	0x0FC19DC6, 0x8B8CD5B5, 0x240CA1CC, 0x77AC9C65,
+	0x2DE92C6F, 0x592B0275, 0x4A7484AA, 0x6EA6E483,
+	0x5CB0A9DC, 0xBD41FBD4, 0x76F988DA, 0x831153B5,
+	0x983E5152, 0xEE66DFAB, 0xA831C66D, 0x2DB43210,
+	0xB00327C8, 0x98FB213F, 0xBF597FC7, 0xBEEF0EE4,
+	0xC6E00BF3, 0x3DA88FC2, 0xD5A79147, 0x930AA725,
+	0x06CA6351, 0xE003826F, 0x14292967, 0x0A0E6E70,
+	0x27B70A85, 0x46D22FFC, 0x2E1B2138, 0x5C26C926,
+	0x4D2C6DFC, 0x5AC42AED, 0x53380D13, 0x9D95B3DF,
+	0x650A7354, 0x8BAF63DE, 0x766A0ABB, 0x3C77B2A8,
+	0x81C2C92E, 0x47EDAEE6, 0x92722C85, 0x1482353B,
+	0xA2BFE8A1, 0x4CF10364, 0xA81A664B, 0xBC423001,
+	0xC24B8B70, 0xD0F89791, 0xC76C51A3, 0x0654BE30,
+	0xD192E819, 0xD6EF5218, 0xD6990624, 0x5565A910,
+	0xF40E3585, 0x5771202A, 0x106AA070, 0x32BBD1B8,
+	0x19A4C116, 0xB8D2D0C8, 0x1E376C08, 0x5141AB53,
+	0x2748774C, 0xDF8EEB99, 0x34B0BCB5, 0xE19B48A8,
+	0x391C0CB3, 0xC5C95A63, 0x4ED8AA4A, 0xE3418ACB,
+	0x5B9CCA4F, 0x7763E373, 0x682E6FF3, 0xD6B2B8A3,
+	0x748F82EE, 0x5DEFB2FC, 0x78A5636F, 0x43172F60,
+	0x84C87814, 0xA1F0AB72, 0x8CC70208, 0x1A6439EC,
+	0x90BEFFFA, 0x23631E28, 0xA4506CEB, 0xDE82BDE9,
+	0xBEF9A3F7, 0xB2C67915, 0xC67178F2, 0xE372532B,
+	0xCA273ECE, 0xEA26619C, 0xD186B8C7, 0x21C0C207,
+	0xEADA7DD6, 0xCDE0EB1E, 0xF57D4F7F, 0xEE6ED178,
+	0x06F067AA, 0x72176FBA, 0x0A637DC5, 0xA2C898A6,
+	0x113F9804, 0xBEF90DAE, 0x1B710B35, 0x131C471B,
+	0x28DB77F5, 0x23047D84, 0x32CAAB7B, 0x40C72493,
+	0x3C9EBE0A, 0x15C9BEBC, 0x431D67C4, 0x9C100D4C,
+	0x4CC5D4BE, 0xCB3E42B6, 0x597F299C, 0xFC657E2A,
+	0x5FCB6FAB, 0x3AD6FAEC, 0x6C44198C, 0x4A475817
+};
+
+static void
+sha2big_round(const unsigned char *buf, uint32_t *val)
+{
+	uint32_t w[160];
+	uint32_t ah, al, bh, bl, ch, cl, dh, dl;
+	uint32_t eh, el, fh, fl, gh, gl, hh, hl;
+	int i;
+
+	/* word t is w[2 t] (high), w[2 t + 1] (low) */
+	br_range_dec32be(w, 32, buf);
+	for (i = 32; i < 160; i += 2) {
+		uint32_t xh, xl, th, tl, sh, sl;
+
+		/* sigma1(w[t - 2]): ROTR 19, ROTR 61, SHR 6 */
+		xh = w[i - 4];
+		xl = w[i - 3];
+		th = ((xh >> 19) | (xl << 13)) ^ ((xl >> 29) | (xh << 3))
+			^ (xh >> 6);
+		tl = ((xl >> 19) | (xh << 13)) ^ ((xh >> 29) | (xl << 3))
+			^ ((xl >> 6) | (xh << 26));
+		/* + w[t - 7] */
+		sh = w[i - 14];
+		sl = w[i - 13];
+		SUM64(th, tl, sh, sl);
+		/* + sigma0(w[t - 15]): ROTR 1, ROTR 8, SHR 7 */
+		xh = w[i - 30];
+		xl = w[i - 29];
+		sh = ((xh >> 1) | (xl << 31)) ^ ((xh >> 8) | (xl << 24))
+			^ (xh >> 7);
+		sl = ((xl >> 1) | (xh << 31)) ^ ((xl >> 8) | (xh << 24))
+			^ ((xl >> 7) | (xh << 25));
+		SUM64(th, tl, sh, sl);
+		/* + w[t - 16] */
+		sh = w[i - 32];
+		sl = w[i - 31];
+		SUM64(th, tl, sh, sl);
+		w[i] = th;
+		w[i + 1] = tl;
+	}
+	ah = val[0];
+	al = val[1];
+	bh = val[2];
+	bl = val[3];
+	ch = val[4];
+	cl = val[5];
+	dh = val[6];
+	dl = val[7];
+	eh = val[8];
+	el = val[9];
+	fh = val[10];
+	fl = val[11];
+	gh = val[12];
+	gl = val[13];
+	hh = val[14];
+	hl = val[15];
+	for (i = 0; i < 160; i += 2) {
+		uint32_t t1h, t1l, t2h, t2l, xh, xl;
+
+		/* T1 = h + Sigma1(e) + Ch(e, f, g) + K[t] + w[t];
+		   Sigma1: ROTR 14, ROTR 18, ROTR 41 */
+		t1h = hh;
+		t1l = hl;
+		xh = ((eh >> 14) | (el << 18)) ^ ((eh >> 18) | (el << 14))
+			^ ((el >> 9) | (eh << 23));
+		xl = ((el >> 14) | (eh << 18)) ^ ((el >> 18) | (eh << 14))
+			^ ((eh >> 9) | (el << 23));
+		SUM64(t1h, t1l, xh, xl);
+		xh = ((fh ^ gh) & eh) ^ gh;
+		xl = ((fl ^ gl) & el) ^ gl;
+		SUM64(t1h, t1l, xh, xl);
+		xh = K[i];
+		xl = K[i + 1];
+		SUM64(t1h, t1l, xh, xl);
+		xh = w[i];
+		xl = w[i + 1];
+		SUM64(t1h, t1l, xh, xl);
+
+		/* T2 = Sigma0(a) + Maj(a, b, c);
+		   Sigma0: ROTR 28, ROTR 34, ROTR 39 */
+		t2h = ((ah >> 28) | (al << 4)) ^ ((al >> 2) | (ah << 30))
+			^ ((al >> 7) | (ah << 25));
+		t2l = ((al >> 28) | (ah << 4)) ^ ((ah >> 2) | (al << 30))
+			^ ((ah >> 7) | (al << 25));
+		xh = (bh & ch) | ((bh | ch) & ah);
+		xl = (bl & cl) | ((bl | cl) & al);
+		SUM64(t2h, t2l, xh, xl);
+
+		hh = gh;
+		hl = gl;
+		gh = fh;
+		gl = fl;
+		fh = eh;
+		fl = el;
+		eh = dh;
+		el = dl;
+		SUM64(eh, el, t1h, t1l);
+		dh = ch;
+		dl = cl;
+		ch = bh;
+		cl = bl;
+		bh = ah;
+		bl = al;
+		ah = t1h;
+		al = t1l;
+		SUM64(ah, al, t2h, t2l);
+	}
+	SUM64(val[0], val[1], ah, al);
+	SUM64(val[2], val[3], bh, bl);
+	SUM64(val[4], val[5], ch, cl);
+	SUM64(val[6], val[7], dh, dl);
+	SUM64(val[8], val[9], eh, el);
+	SUM64(val[10], val[11], fh, fl);
+	SUM64(val[12], val[13], gh, gl);
+	SUM64(val[14], val[15], hh, hl);
+}
+
+static void
+sha2big_update(br_sha384_context *cc, const void *data, size_t len)
+{
+	const unsigned char *buf;
+	size_t ptr;
+
+	buf = data;
+	ptr = (size_t)cc->count & 127;
+	cc->count += (uint64_t)len;
+	while (len > 0) {
+		size_t clen;
+
+		clen = 128 - ptr;
+		if (clen > len) {
+			clen = len;
+		}
+		memcpy(cc->buf + ptr, buf, clen);
+		ptr += clen;
+		buf += clen;
+		len -= clen;
+		if (ptr == 128) {
+			sha2big_round(cc->buf, cc->val);
+			ptr = 0;
+		}
+	}
+}
+
+static void
+sha2big_out(const br_sha384_context *cc, void *dst, int num)
+{
+	unsigned char buf[128];
+	uint32_t val[16];
+	size_t ptr;
+
+	ptr = (size_t)cc->count & 127;
+	memcpy(buf, cc->buf, ptr);
+	memcpy(val, cc->val, sizeof val);
+	buf[ptr ++] = 0x80;
+	if (ptr > 112) {
+		memset(buf + ptr, 0, 128 - ptr);
+		sha2big_round(buf, val);
+		memset(buf, 0, 112);
+	} else {
+		memset(buf + ptr, 0, 112 - ptr);
+	}
+	/* the length in bits, 128 bits wide; count has 32 */
+	br_enc32be(buf + 112, 0);
+	br_enc32be(buf + 116, 0);
+	br_enc32be(buf + 120, (uint32_t)cc->count >> 29);
+	br_enc32be(buf + 124, (uint32_t)cc->count << 3);
+	sha2big_round(buf, val);
+	br_range_enc32be(dst, val, 2 * num);
+}
+
+/* see bearssl.h */
+void
+br_sha384_init(br_sha384_context *cc)
+{
+	cc->vtable = &br_sha384_vtable;
+	memcpy(cc->val, IV384, sizeof IV384);
+	cc->count = 0;
+}
+
+/* see bearssl.h */
+void
+br_sha384_update(br_sha384_context *cc, const void *data, size_t len)
+{
+	sha2big_update(cc, data, len);
+}
+
+/* see bearssl.h */
+void
+br_sha384_out(const br_sha384_context *cc, void *dst)
+{
+	sha2big_out(cc, dst, 6);
+}
+
+/* see bearssl.h */
+uint64_t
+br_sha384_state(const br_sha384_context *cc, void *dst)
+{
+	br_range_enc32be(dst, cc->val, 16);
+	return cc->count;
+}
+
+/* see bearssl.h */
+void
+br_sha384_set_state(br_sha384_context *cc, const void *stb, uint64_t count)
+{
+	br_range_dec32be(cc->val, 16, stb);
+	cc->count = count;
+}
+
+/* see bearssl.h */
+void
+br_sha512_init(br_sha512_context *cc)
+{
+	cc->vtable = &br_sha512_vtable;
+	memcpy(cc->val, IV512, sizeof IV512);
+	cc->count = 0;
+}
+
+/* see bearssl.h */
+void
+br_sha512_out(const br_sha512_context *cc, void *dst)
+{
+	sha2big_out(cc, dst, 8);
+}
+
+#else
+
 #define CH(X, Y, Z)    ((((Y) ^ (Z)) & (X)) ^ (Z))
 #define MAJ(X, Y, Z)   (((Y) & (Z)) | (((Y) | (Z)) & (X)))
 
@@ -245,6 +545,8 @@ br_sha512_out(const br_sha512_context *cc, void *dst)
 {
 	sha2big_out(cc, dst, 8);
 }
+
+#endif
 
 /* see bearssl.h */
 const br_hash_class br_sha384_vtable = {

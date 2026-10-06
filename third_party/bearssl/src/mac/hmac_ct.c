@@ -162,11 +162,21 @@ br_hmac_outCT(const br_hmac_context *ctx,
 			unsigned j;
 
 			j = (v - (bs - 8)) << 3;
+#if BR_NO_U64
+			/* (bit_len has 32 bits: its high bytes are 0) */
+			{
+				unsigned sh;
+
+				sh = be ? 56 - j : j;
+				e = sh < 32 ? (uint32_t)(bit_len >> sh) : 0;
+			}
+#else
 			if (be) {
 				e = (uint32_t)(bit_len >> (56 - j));
 			} else {
 				e = (uint32_t)(bit_len >> j);
 			}
+#endif
 			e &= 0xFF;
 		} else {
 			e = 0x00;

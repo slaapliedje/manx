@@ -17,8 +17,12 @@ uint32_t ecvrfy_raw(const br_ec_impl *impl, const void *hash, size_t hash_len,
 	size_t len = sig_ec_len(pk->curve), rlen;
 	int ahead;
 
-	if (len == 0)
+	if (len == 0)		/* (P-521) */
+#if BR_NO_U64
+		return br_ecdsa_i15_vrfy_raw(impl, hash, hash_len, pk, sig, sig_len);
+#else
 		return br_ecdsa_i31_vrfy_raw(impl, hash, hash_len, pk, sig, sig_len);
+#endif
 	if (sig_len == 0 || (sig_len & 1) || pk->qlen != 1 + 2 * len)
 		return 0;
 	rlen = sig_len / 2;

@@ -80,6 +80,31 @@ static uint32_t row(uint32_t *r, const uint32_t *a, uint32_t b, int k)
 	}
 	return carry;
 }
+#elif BR_NO_U64
+/* no 64-bit integer type (Helios C): each 64-bit product from four
+ * 16 x 16-bit ones; a b + r + c still fits in 64 bits */
+static uint32_t row(uint32_t *r, const uint32_t *a, uint32_t b, int k)
+{
+	uint32_t c = 0, bl = b & 0xFFFF, bh = b >> 16;
+	int i;
+
+	for (i = 0; i < k; i++) {
+		uint32_t al = a[i] & 0xFFFF, ah = a[i] >> 16;
+		uint32_t lh = al * bh, hl = ah * bl, lo = al * bl, hi = ah * bh;
+		uint32_t mid = lh + hl, t;
+
+		hi += (uint32_t)(mid < lh) << 16;	/* mid's carry: 2^48 */
+		t = lo + (mid << 16);
+		hi += (mid >> 16) + (t < lo);
+		lo = t + r[i];
+		hi += lo < t;
+		t = lo + c;
+		hi += t < lo;
+		r[i] = t;
+		c = hi;
+	}
+	return c;
+}
 #else
 static uint32_t row(uint32_t *r, const uint32_t *a, uint32_t b, int k)
 {

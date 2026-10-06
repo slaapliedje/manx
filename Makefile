@@ -3,6 +3,8 @@
 #   make                  host build (Linux): tests, fuzzing, development
 #   make TARGET=sysv4     static AMIX binary; runs on AMIX and, through
 #                         atari-sysv-sp1's amx module, on Atari System V
+#   make TARGET=no64      host build as if the compiler had no 64-bit
+#                         integer type (Helios C): `make TARGET=no64 test-no64`
 #
 # TARGET=sysv4 needs AMIX_SYSROOT (atari-sysv-sp1 amix/mksysroot.sh), the
 # mint GCC and the SVR4 binutils of gcc-cross-amix (see toolchain/sysv4-cc).
@@ -42,8 +44,22 @@ BRFLAGS := $(CPU) $(BROPT) -fomit-frame-pointer \
 LDLIBS  := -lsocket
 TERMLIB := -ltermlib
 X11LIB  := -lX11
+else ifeq ($(TARGET),no64)
+# the host, compiling as Helios C does for the transputer: no 64-bit
+# integer type (tests/no_u64.h), so BearSSL's 32-bit code (BR_NO_U64)
+CC      := cc
+LD      := $(CC)
+AR      := ar
+OS      := os/host
+# (os_time.c's _POSIX_C_SOURCE comes too late after the forced header)
+NO64    := -include tests/no_u64.h
+CFLAGS  := $(NO64) -D_POSIX_C_SOURCE=200112L -std=c99 -O2 -g -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers
+BRFLAGS := $(NO64) -O2 -g
+LDLIBS  :=
+TERMLIB := -ltinfo
+X11LIB  := -lX11
 else
-$(error TARGET must be host or sysv4)
+$(error TARGET must be host, sysv4 or no64)
 endif
 
 CRYPT68K := third_party/crypt68k
@@ -61,6 +77,9 @@ NET_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard net/*.c))
 # crypt68k's X25519 (the key exchange), as a BearSSL br_ec_impl
 C68K_OBJ := $(B)/$(CRYPT68K)/src/x25519.o $(B)/$(CRYPT68K)/src/fe_m68k.o \
 	$(B)/$(CRYPT68K)/src/bearssl_x25519.o
+ifeq ($(TARGET),no64)
+C68K_OBJ :=		# (68030 assembly: BearSSL's X25519 instead)
+endif
 TLS_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard tls/*.c)) $(C68K_OBJ)
 HTML_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard text/*.c html/*.c style/*.c layout/*.c))
 IMG_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard image/*.c))
@@ -148,7 +167,8 @@ $(B)/%.o: %.c
 
 # host-only unit tests: each tests/test_NAME.c links with the modules
 # (test_snprintf is special: it tests the SVR4 snprintf against glibc's)
-TESTS := $(filter-out build/test/test_snprintf,\
+# (test_no64 is TARGET=no64's: make TARGET=no64 test-no64)
+TESTS := $(filter-out build/test/test_snprintf build/test/test_no64,\
 	$(patsubst tests/%.c,build/test/%,$(wildcard tests/test_*.c)))
 
 build/test/%: tests/%.c $(HTML_OBJ) $(IMG_OBJ) $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
@@ -173,6 +193,18 @@ test: $(TESTS) build/test/test_snprintf $(B)/tlsbench
 	python3 tests/gen_images.py build/test/img > build/test/img/manifest
 	build/test/test_image build/test/img
 	$(B)/tlsbench 50 kat
+
+# TARGET=no64: BearSSL's tests of its code for compilers without 64-bit
+# integers (tests/test_no64.c, then its certificate tests), and Manx's
+test-no64: build/no64/test_no64 build/no64/test_x509
+	build/no64/test_no64
+	cd $(BEARSSL) && ../../build/no64/test_x509 | tail -3
+
+build/no64/test_no64: tests/test_no64.c $(BR_LIB)
+	$(CC) $(BRFLAGS) -w -I$(BEARSSL)/inc -I$(BEARSSL)/src $< $(BR_LIB) -o $@
+
+build/no64/test_x509: $(BEARSSL)/test/test_x509.c $(BR_LIB)
+	$(CC) $(BRFLAGS) -w -I$(BEARSSL)/inc -I$(BEARSSL)/src $< $(BR_LIB) -o $@
 
 # the HTML engine under AddressSanitizer + UBSan, fed mutated corpus pages
 # (tests/fetch_corpus.sh first). FUZZ_ITERS, FUZZ_SEED to taste.

@@ -166,5 +166,5 @@ the Quadra 800, in QEMU. It hasn't been tried on a real Amiga yet.
 ## Licence
 
 GPL-2.0 (see [LICENSE](LICENSE)). BearSSL, in `third_party/bearssl`, is MIT
-licensed; `third_party/patches` has the one change made to it. crypt68k,
+licensed; `third_party/patches` has the changes made to it. crypt68k,
 in `third_party/crypt68k`, is MIT licensed.

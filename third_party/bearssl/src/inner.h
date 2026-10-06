@@ -118,6 +118,18 @@
 #endif
 
 /*
+ * unix-browser patch: with no 64-bit integer type (BR_NO_U64, see
+ * config.h) there is no 64-bit code, and the default implementations
+ * are the ones that need no 64-bit products (BR_LOMUL).
+ */
+#if BR_NO_U64
+#undef BR_64
+#define BR_64   0
+#undef BR_LOMUL
+#define BR_LOMUL   1
+#endif
+
+/*
  * Set BR_LOMUL on platforms where it makes sense.
  */
 #ifndef BR_LOMUL
@@ -581,7 +593,14 @@ br_dec32be(const void *src)
 static inline void
 br_enc64le(void *dst, uint64_t x)
 {
-#if BR_LE_UNALIGNED
+#if BR_NO_U64
+	/* (uint64_t has 32 bits: a counter or a length) */
+	unsigned char *buf;
+
+	buf = dst;
+	br_enc32le(buf, (uint32_t)x);
+	br_enc32le(buf + 4, 0);
+#elif BR_LE_UNALIGNED
 	((br_union_u64 *)dst)->u = x;
 #else
 	unsigned char *buf;
@@ -595,7 +614,13 @@ br_enc64le(void *dst, uint64_t x)
 static inline void
 br_enc64be(void *dst, uint64_t x)
 {
-#if BR_BE_UNALIGNED
+#if BR_NO_U64
+	unsigned char *buf;
+
+	buf = dst;
+	br_enc32be(buf, 0);
+	br_enc32be(buf + 4, (uint32_t)x);
+#elif BR_BE_UNALIGNED
 	((br_union_u64 *)dst)->u = x;
 #else
 	unsigned char *buf;
@@ -609,7 +634,9 @@ br_enc64be(void *dst, uint64_t x)
 static inline uint64_t
 br_dec64le(const void *src)
 {
-#if BR_LE_UNALIGNED
+#if BR_NO_U64
+	return br_dec32le(src);
+#elif BR_LE_UNALIGNED
 	return ((const br_union_u64 *)src)->u;
 #else
 	const unsigned char *buf;
@@ -623,7 +650,9 @@ br_dec64le(const void *src)
 static inline uint64_t
 br_dec64be(const void *src)
 {
-#if BR_BE_UNALIGNED
+#if BR_NO_U64
+	return br_dec32be((const unsigned char *)src + 4);
+#elif BR_BE_UNALIGNED
 	return ((const br_union_u64 *)src)->u;
 #else
 	const unsigned char *buf;
