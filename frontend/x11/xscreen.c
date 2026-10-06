@@ -775,11 +775,26 @@ static XFontStruct *face_font(int attr, int face)
 	return faces[b][k];
 }
 
+/* page text for the X fonts: a no-break space as a space, which looks the
+ * same (layout has already kept the words together). X11R4's fonts, the
+ * ones Helios has, have no glyph at 0xA0, so it would take no room. */
+static const char *x_text(const char *s, int n)
+{
+	static char buf[512];
+	int i;
+
+	if (n > (int)sizeof buf || memchr(s, 0xA0, (size_t)n) == NULL)
+		return s;
+	for (i = 0; i < n; i++)
+		buf[i] = (unsigned char)s[i] == 0xA0 ? ' ' : s[i];
+	return buf;
+}
+
 static int m_width(void *ctx, int attr, int face, const char *s, int n)
 {
 	(void)ctx;
 	return XTextWidth(face_font(attr & SA_BOLD ? CA_BOLD : 0, face),
-		(char *)s, n);
+		(char *)x_text(s, n), n);
 }
 
 static int m_height(void *ctx, int attr, int face, int *ascent)
@@ -900,7 +915,8 @@ static void paint_run(const struct run *r, const char *text)
 {
 	XFontStruct *f = face_font(r->attr, r->face);
 	int x = pane_x() + PANE_IN + r->x, base = pane_y() + r->y + r->a;
-	int w = XTextWidth(f, text + r->off, (int)r->n);
+	char *t = (char *)x_text(text + r->off, (int)r->n);
+	int w = XTextWidth(f, t, (int)r->n);
 	unsigned long fg = px_fg, bg = px_bg;
 	int fill = 0;
 
@@ -925,7 +941,7 @@ static void paint_run(const struct run *r, const char *text)
 	}
 	XSetForeground(dpy, gc, fg);
 	XSetFont(dpy, gc, f->fid);
-	XDrawString(dpy, win, gc, x, base, text + r->off, (int)r->n);
+	XDrawString(dpy, win, gc, x, base, t, (int)r->n);
 	if ((r->attr & CA_UNDER) || ((r->attr & CA_LINK) && !(r->attr & CA_MARK)))
 		XDrawLine(dpy, win, gc, x, base + 1, x + w - 1, base + 1);
 }
@@ -1269,12 +1285,34 @@ void scr_image_draw(void *img, int x, int y, int w, int h, int attr)
 static XRectangle band_clip;
 static int band_on;
 
+/* repainting part of the window only (what Expose events asked for):
+ * bands keep to this box too */
+static XRectangle ex_box;
+static int ex_clip;
+
 static void clip_band(int b0, int b1)
 {
-	band_clip.x = (short)pane_x();
-	band_clip.y = (short)(pane_y() + b0);
-	band_clip.width = (unsigned short)pane_wpx();
-	band_clip.height = (unsigned short)(b1 - b0);
+	int x0 = pane_x(), y0 = pane_y() + b0;
+	int x1 = x0 + pane_wpx(), y1 = pane_y() + b1;
+
+	if (ex_clip) {
+		if (x0 < ex_box.x)
+			x0 = ex_box.x;
+		if (y0 < ex_box.y)
+			y0 = ex_box.y;
+		if (x1 > ex_box.x + ex_box.width)
+			x1 = ex_box.x + ex_box.width;
+		if (y1 > ex_box.y + ex_box.height)
+			y1 = ex_box.y + ex_box.height;
+		if (x1 < x0)
+			x1 = x0;
+		if (y1 < y0)
+			y1 = y0;
+	}
+	band_clip.x = (short)x0;
+	band_clip.y = (short)y0;
+	band_clip.width = (unsigned short)(x1 - x0);
+	band_clip.height = (unsigned short)(y1 - y0);
 	XSetClipRectangles(dpy, gc, 0, 0, &band_clip, 1, Unsorted);
 	band_on = 1;
 }
@@ -1959,31 +1997,55 @@ void scr_flush(int full)
 	XFlush(dpy);
 }
 
-/* the window was uncovered: draw again what is in it */
-static void redraw(void)
+/* Expose events' rectangles, until the last of a batch: their bounding box */
+static int ex_x0, ex_y0, ex_x1, ex_y1, ex_n;
+
+static void expose_add(const XExposeEvent *e)
 {
-	int r, c;
-
-	XClearWindow(dpy, win);
-	draw_controls();
-	draw_scrollbar();
-	if (px_mode && shown_ok) {
-		struct fview v;
-
-		v.runs = sruns;
-		v.nruns = nsruns;
-		v.text = stext;
-		v.idraws = sidraws;
-		v.nidraws = nsidraws;
-		v.cells = cur;
-		paint_band(&v, 0, pane_hpx());
+	if (ex_n++ == 0) {
+		ex_x0 = e->x;
+		ex_y0 = e->y;
+		ex_x1 = e->x + e->width;
+		ex_y1 = e->y + e->height;
+		return;
 	}
+	if (e->x < ex_x0)
+		ex_x0 = e->x;
+	if (e->y < ex_y0)
+		ex_y0 = e->y;
+	if (e->x + e->width > ex_x1)
+		ex_x1 = e->x + e->width;
+	if (e->y + e->height > ex_y1)
+		ex_y1 = e->y + e->height;
+}
+
+/*
+ * The window again where it was exposed: only that box is cleared and
+ * drawn in, so dragging the window about (twm moves it opaquely)
+ * repaints the strips it uncovers, not the whole page each time.
+ */
+static void redraw_box(void)
+{
+	int r, c, b0, b1;
+
+	ex_n = 0;
+	ex_box.x = (short)ex_x0;
+	ex_box.y = (short)ex_y0;
+	ex_box.width = (unsigned short)(ex_x1 - ex_x0);
+	ex_box.height = (unsigned short)(ex_y1 - ex_y0);
+	XClearArea(dpy, win, ex_x0, ex_y0, (unsigned)(ex_x1 - ex_x0),
+		(unsigned)(ex_y1 - ex_y0), False);
+	XSetClipRectangles(dpy, gc, 0, 0, &ex_box, 1, Unsorted);
+	if (ex_y0 < ctrl_h)
+		draw_controls();
+	if (ex_x1 > sb_x)
+		draw_scrollbar();
 	for (r = 0; r < scr_rows; r++) {
 		const struct cell *cl = cur + (size_t)r * (size_t)scr_cols;
 
-		if (px_mode && r > 0 && r < scr_rows - 1)
+		if ((px_mode && r > 0 && r < scr_rows - 1)
+			|| gy + (r + 1) * ch <= ex_y0 || gy + r * ch >= ex_y1)
 			continue;
-
 		for (c = 0; c < scr_cols; ) {
 			int c1;
 
@@ -1997,6 +2059,26 @@ static void redraw(void)
 	if (drawn_row >= 0)
 		draw_run(drawn_row, drawn_col,
 			cur + (size_t)drawn_row * (size_t)scr_cols + (size_t)drawn_col, 1, 1);
+	b0 = ex_y0 - pane_y();
+	b1 = ex_y1 - pane_y();
+	if (b0 < 0)
+		b0 = 0;
+	if (b1 > pane_hpx())
+		b1 = pane_hpx();
+	if (px_mode && shown_ok && b0 < b1) {
+		struct fview v;
+
+		v.runs = sruns;
+		v.nruns = nsruns;
+		v.text = stext;
+		v.idraws = sidraws;
+		v.nidraws = nsidraws;
+		v.cells = cur;
+		ex_clip = 1;
+		paint_band(&v, b0, b1);
+		ex_clip = 0;
+	}
+	clip_none();
 	XFlush(dpy);
 }
 
@@ -2168,8 +2250,13 @@ static int event(void)
 		scr_scroll_target = drag_target(ev.xmotion.y);
 		return scr_scroll_target != sc_top ? K_SCROLL : -1;
 	case Expose:
-		if (ev.xexpose.count == 0)
-			redraw();
+		expose_add(&ev.xexpose);
+		if (ev.xexpose.count == 0) {
+			/* (a move's later exposures, if here already, join in) */
+			while (XCheckTypedWindowEvent(dpy, win, Expose, &ev))
+				expose_add(&ev.xexpose);
+			redraw_box();
+		}
 		return -1;
 	case ConfigureNotify:
 		win_w = ev.xconfigure.width;
