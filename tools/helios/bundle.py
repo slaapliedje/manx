@@ -4,7 +4,7 @@ bundle.py DIR - lay Manx's sources out for building on Helios (the
 ATW800/2's T425) in DIR, to be copied to /helios/local/src/manx (or HDIR)
 and built there with  source build.csh :
 
-  c/        the C files, under unique 8.3 names
+  c/        the C files, under unique 8.3 names, and mont.s
   h/        the headers
   o/ ox/ ou/ om/ ot/  objects: shared, xmanx's, ufetch's, manxtrust's,
 		    test_sigkat's
@@ -58,8 +58,10 @@ def bearssl_files():
 
 
 # the object groups: (directory, sources)
-SHARED = files('net/*.c', 'os/*.c', 'tls/*.c', 'os/helios/os_time.c',
-	'os/helios/poll.c', 'os/sysv4/snprintf.c') + bearssl_files()
+# (tls/mont.c's place is taken by os/helios/mont.s, assembled: ASM)
+SHARED = [f for f in files('net/*.c', 'os/*.c', 'tls/*.c',
+	'os/helios/os_time.c', 'os/helios/poll.c', 'os/sysv4/snprintf.c')
+	if f != 'tls/mont.c'] + bearssl_files()
 XMANX = files('src/manx.c', 'src/pagecss.c', 'src/pageimg.c',
 	'frontend/x11/*.c', 'text/*.c', 'html/*.c', 'style/*.c', 'layout/*.c',
 	'image/*.c')
@@ -68,6 +70,8 @@ TRUST = files('src/manxtrust.c')
 TEST = files('tests/test_sigkat.c')
 GROUPS = [('o', SHARED), ('ox', XMANX), ('ou', UFETCH), ('om', TRUST),
 	('ot', TEST)]
+# assembly, into the shared objects: Montgomery multiplication on lmul
+ASM = ['os/helios/mont.s']
 
 HEADERS = files('os/*.h', 'net/*.h', 'text/*.h', 'html/*.h', 'style/*.h',
 	'layout/*.h', 'image/*.h', 'frontend/*.h', 'src/*.h', 'tls/*.h',
@@ -164,6 +168,14 @@ def main():
 			listing.append('c/%s.c %s' % (n, src))
 			lines.append('c -c %s -I%s/h -o %s/%s.o c/%s.c >& log/%s.log'
 				% (FLAGS, HDIR, group, n, n, n))
+	for src in ASM:
+		n = c_name(src)
+		if n in used:
+			sys.exit('bundle: name clash: %s (%s, %s)' % (n, used[n], src))
+		used[n] = src
+		shutil.copy(os.path.join(ROOT, src), os.path.join(out, 'c', n + '.s'))
+		listing.append('c/%s.s %s' % (n, src))
+		lines.append('c -c -T5 -o o/%s.o c/%s.s >& log/%s.log' % (n, n, n))
 	lines += [
 		'echo compiled > log/done.txt',
 		'c -o xmanx ox/*.o o/*.o %s >& log/xmanx.log' % LINK_X,
