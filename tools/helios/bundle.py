@@ -105,6 +105,45 @@ def header_name(path):
 	return short(base)
 
 
+def uninline(text):
+	"""BearSSL's headers define many small functions static inline, and
+	Helios C compiles every one of them into every file that includes
+	the header, used or not: some 18 KB a BearSSL file, most of a
+	megabyte in all. Each becomes a declaration here, its body kept
+	for brinline.c (BR_INLINE_BODIES), which compiles them once."""
+	lines = text.split('\n')
+	out = []
+	i = 0
+	while i < len(lines):
+		l = lines[i]
+		if not l.startswith('static inline'):
+			out.append(l)
+			i += 1
+			continue
+		j = i
+		while lines[j] != '{':
+			j += 1
+		k = j
+		while lines[k] != '}':
+			k += 1
+		out.append(l[len('static inline'):].lstrip())
+		out += lines[i + 1:j]
+		out.append('#ifdef BR_INLINE_BODIES')
+		out += lines[j:k + 1]
+		out += ['#else', ';', '#endif']
+		i = k + 1
+	return '\n'.join(out)
+
+
+BRINLINE = """/*
+ * brinline.c - BearSSL's static inline functions, compiled here once
+ * (tools/helios/bundle.py: the headers only declare them for Helios C).
+ */
+#define BR_INLINE_BODIES 1
+#include "inner.h"
+"""
+
+
 def rewrite(text, path, hmap):
 	"""Point #include lines at the headers' names in the bundle."""
 	def inc(m):
@@ -116,6 +155,8 @@ def rewrite(text, path, hmap):
 	if path.startswith(BR + '/src/'):
 		text = re.sub(r'(#\s*include\s*)"config\.h"',
 			r'\1"brconfig.h"', text)
+	if path.startswith(BR) and path.endswith('.h'):
+		text = uninline(text)
 	return text
 
 
@@ -168,6 +209,13 @@ def main():
 			listing.append('c/%s.c %s' % (n, src))
 			lines.append('c -c %s -I%s/h -o %s/%s.o c/%s.c >& log/%s.log'
 				% (FLAGS, HDIR, group, n, n, n))
+	# BearSSL's inline functions, once
+	used['brinline'] = 'brinline.c'
+	with open(os.path.join(out, 'c', 'brinline.c'), 'w') as f:
+		f.write(BRINLINE)
+	listing.append('c/brinline.c (bundle.py)')
+	lines.append('c -c %s -I%s/h -o o/brinline.o c/brinline.c >& log/brinline.log'
+		% (FLAGS, HDIR))
 	for src in ASM:
 		n = c_name(src)
 		if n in used:

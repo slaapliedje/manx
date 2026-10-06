@@ -457,11 +457,13 @@ void cookie_init(const char *path)
 
 void cookie_save(void)
 {
-	static char buf[COOKIE_BYTES_MAX + COOKIE_MAX * 600];
-	size_t len = 0;
+	/* (allocated for the moment: 280 KB, too much to keep on the T425
+	 * or a 4 MB 68030) */
+	size_t cap = COOKIE_BYTES_MAX + COOKIE_MAX * 600, len = 0;
+	char *buf;
 	int i;
 
-	if (!s_dirty || !s_path[0])
+	if (!s_dirty || !s_path[0] || (buf = xmalloc(cap)) == NULL)
 		return;
 	len += (size_t)sprintf(buf, "# manx cookies: domain host-only path secure "
 		"http-only expires name value\n");
@@ -471,7 +473,7 @@ void cookie_save(void)
 		if (!c->expires)
 			continue;	/* session cookies aren't kept */
 		if (len + strlen(c->domain) + strlen(c->path) + strlen(c->name)
-			+ strlen(c->value) + 40 > sizeof buf)
+			+ strlen(c->value) + 40 > cap)
 			break;
 		len += (size_t)sprintf(buf + len, "%s\t%d\t%s\t%d\t%d\t%ld\t%s\t%s\n",
 			c->domain, c->host_only, c->path, c->secure, c->http_only,
@@ -479,4 +481,5 @@ void cookie_save(void)
 	}
 	if (os_write_file(s_path, buf, len, 0600) == 0)
 		s_dirty = 0;
+	xfree(buf);
 }
