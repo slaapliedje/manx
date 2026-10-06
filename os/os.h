@@ -12,6 +12,8 @@
 #include <stdarg.h>
 int snprintf(char *buf, size_t n, const char *fmt, ...);
 int vsnprintf(char *buf, size_t n, const char *fmt, va_list ap);
+/* keys from Helios's console, waiting at most ms (os/helios/conin.c) */
+int os_con_read(char *buf, int n, int ms);
 #endif
 
 /* Monotonic-enough wall clock in microseconds since the first call.

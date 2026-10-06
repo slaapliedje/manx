@@ -6,12 +6,18 @@ and built there with  source build.csh :
 
   c/        the C files, under unique 8.3 names, and mont.s
   h/        the headers
-  o/ ox/ ou/ om/ ot/  objects: shared, xmanx's, ufetch's, manxtrust's,
-		    test_sigkat's
+  o/        objects: the network, TLS and the OS layer, shared by all
+  ob/       the browser itself (HTML, CSS, layout), manx's and xmanx's
+  ox/ oc/   xmanx's X11 window and images; manx's text screen
+  ou/ om/ ot/  ufetch's, manxtrust's, test_sigkat's
   log/      the compiler's and linker's output, one file each
-  build.csh compiles everything, then links xmanx, ufetch, manxtrust
-	    and test_sigkat
+  build.csh compiles everything, links the programs and installs them
   files.txt each file's 8.3 name and where it came from
+
+The programs go where Helios keeps its own: X11 clients in /helios/bin/x11
+(xmanx, beside xterm and twm), the rest in /helios/bin (manx, ufetch,
+manxtrus, test_sig). The shell runs nothing whose name is longer than 8
+letters, so manxtrust and test_sigkat are linked as manxtrus and test_sig.
 
 Helios reaches files through the I/O server and GEMDOS. Names are 8.3,
 and GEMDOS truncates a longer one when it opens a file, so a header is
@@ -62,14 +68,25 @@ def bearssl_files():
 SHARED = [f for f in files('net/*.c', 'os/*.c', 'tls/*.c',
 	'os/helios/os_time.c', 'os/helios/poll.c', 'os/sysv4/snprintf.c')
 	if f != 'tls/mont.c'] + bearssl_files()
-XMANX = files('src/manx.c', 'src/pagecss.c', 'src/pageimg.c',
-	'frontend/x11/*.c', 'text/*.c', 'html/*.c', 'style/*.c', 'layout/*.c',
-	'image/*.c')
+BROWSER = files('src/manx.c', 'src/pagecss.c', 'text/*.c', 'html/*.c',
+	'style/*.c', 'layout/*.c')
+XMANX = files('frontend/x11/*.c', 'src/pageimg.c', 'image/*.c')
+MANX = files('frontend/*.c', 'src/pageimg_none.c', 'os/helios/terminfo.c',
+	'os/helios/conin.c')
 UFETCH = files('src/ufetch.c')
 TRUST = files('src/manxtrust.c')
 TEST = files('tests/test_sigkat.c')
-GROUPS = [('o', SHARED), ('ox', XMANX), ('ou', UFETCH), ('om', TRUST),
-	('ot', TEST)]
+GROUPS = [('o', SHARED), ('ob', BROWSER), ('ox', XMANX), ('oc', MANX),
+	('ou', UFETCH), ('om', TRUST), ('ot', TEST)]
+
+# the programs: (name on Helios, its objects, link options, where it goes)
+PROGRAMS = [
+	('xmanx', 'ox/*.o ob/*.o o/*.o', LINK_X, '/helios/bin/x11'),
+	('manx', 'oc/*.o ob/*.o o/*.o', LINK, '/helios/bin'),
+	('ufetch', 'ou/*.o o/*.o', LINK, '/helios/bin'),
+	('manxtrus', 'om/*.o o/*.o', LINK, '/helios/bin'),
+	('test_sig', 'ot/*.o o/*.o', LINK, '/helios/bin'),
+]
 # assembly, into the shared objects: Montgomery multiplication on lmul
 ASM = ['os/helios/mont.s']
 
@@ -224,13 +241,18 @@ def main():
 		shutil.copy(os.path.join(ROOT, src), os.path.join(out, 'c', n + '.s'))
 		listing.append('c/%s.s %s' % (n, src))
 		lines.append('c -c -T5 -o o/%s.o c/%s.s >& log/%s.log' % (n, n, n))
+	lines.append('echo compiled > log/done.txt')
+	for name, objs, link, _ in PROGRAMS:
+		lines.append('c -o %s %s %s >& log/%s.lnk' % (name, objs, link, name))
+	lines.append('echo linked > log/linked.txt')
+	lines.append('# installed where Helios keeps its programs: X11 clients '
+		'in /helios/bin/x11')
+	for name, _, _, where in PROGRAMS:
+		lines.append('cp %s %s/%s' % (name, where, name))
 	lines += [
-		'echo compiled > log/done.txt',
-		'c -o xmanx ox/*.o o/*.o %s >& log/xmanx.log' % LINK_X,
-		'c -o ufetch ou/*.o o/*.o %s >& log/ufetch.log' % LINK,
-		'c -o manxtrust om/*.o o/*.o %s >& log/trust.log' % LINK,
-		'c -o test_sigkat ot/*.o o/*.o %s >& log/test.log' % LINK,
-		'echo linked > log/linked.txt',
+		'# (the shell lists the directories on its path once: rehash)',
+		'rehash',
+		'echo installed > log/inst.txt',
 		'# back home: root\'s startx is found there, through . in the path',
 		'cd']
 	for l in lines:

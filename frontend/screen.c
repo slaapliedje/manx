@@ -15,6 +15,16 @@
 #include "entropy.h"
 #include "screen.h"
 
+#if defined(ICANNON) && !defined(ICANON)
+/* Helios's termios.h: its own spellings, no tcflag_t, and VMIN and VTIME
+ * kept apart from c_cc. (Helios has no terminfo either: os/helios/
+ * terminfo.c says so, and this file speaks ANSI, as its console does.) */
+typedef unsigned long tcflag_t;
+#define ICANON		ICANNON
+#define TCSAFLUSH	TCSADFLUSH
+#define HELIOS_TERMIOS	1
+#endif
+
 /* terminfo, declared here: the headers of ncurses and SVR4 disagree */
 extern int setupterm(char *term, int fd, int *err);
 extern char *tigetstr(char *cap);
@@ -85,8 +95,51 @@ static void oflush(void)
 	olen = 0;
 }
 
+#ifdef MANX_HELIOS
+/* Helios's console window (TERM=ansi) takes its control sequences after
+ * the 8-bit CSI, 0x9B: ESC [ shows as text there. So on the way out ESC [
+ * becomes CSI, an ESC held back until the next byte shows what follows
+ * it. (A telnet client's terminal gets them as they are.) */
+static int csi8, esc_held;
+
+static void oput1(char c)
+{
+	if (olen == sizeof obuf)
+		oflush();
+	obuf[olen++] = c;
+}
+
+static void oput_csi8(const char *s, size_t n)
+{
+	size_t i;
+
+	for (i = 0; i < n; i++) {
+		char c = s[i];
+
+		if (esc_held) {
+			esc_held = 0;
+			if (c == '[') {
+				oput1((char)0x9B);
+				continue;
+			}
+			oput1('\033');
+		}
+		if (c == '\033')
+			esc_held = 1;
+		else
+			oput1(c);
+	}
+}
+#endif
+
 static void oput(const char *s, size_t n)
 {
+#ifdef MANX_HELIOS
+	if (csi8) {
+		oput_csi8(s, n);
+		return;
+	}
+#endif
 	if (olen + n > sizeof obuf)
 		oflush();
 	if (n > sizeof obuf) {
@@ -134,7 +187,7 @@ static void oattr(int a)
 {
 	if (a == out_attr)
 		return;
-	ocap(c_sgr0 ? c_sgr0 : "\033[m");
+	ocap(c_sgr0 ? c_sgr0 : "\033[0m");
 	if (a & CA_BOLD)
 		ocap(c_bold ? c_bold : "\033[1m");
 	if ((a & CA_UNDER) || ((a & CA_LINK) && !ncolors))
@@ -178,6 +231,10 @@ static void raw_mode(void)
 	t.c_iflag &= ~(tcflag_t)(IXON | ICRNL | INLCR | ISTRIP | BRKINT);
 	t.c_cc[VMIN] = 1;
 	t.c_cc[VTIME] = 0;
+#ifdef HELIOS_TERMIOS
+	t.c_min = 1;
+	t.c_time = 0;
+#endif
 	tcsetattr(0, TCSAFLUSH, &t);
 }
 
@@ -233,17 +290,24 @@ static int ilen;
 /* wait up to ms for input and append it to ibuf: 1 if something came */
 static int fill(int ms)
 {
+#ifndef MANX_HELIOS
 	struct pollfd p;
+#endif
 	long n;
 
 	if (ilen == (int)sizeof ibuf)
 		return 1;
+#ifdef MANX_HELIOS
+	/* (select() is for sockets on Helios: os/helios/conin.c) */
+	n = os_con_read((char *)ibuf + ilen, (int)(sizeof ibuf - (size_t)ilen), ms);
+#else
 	p.fd = 0;
 	p.events = POLLIN;
 	p.revents = 0;
 	if (poll(&p, 1, ms) <= 0)
 		return 0;
-	n = read(0, ibuf + ilen, sizeof ibuf - (size_t)ilen);
+	n = read(0, (char *)ibuf + ilen, sizeof ibuf - (size_t)ilen);
+#endif
 	if (n <= 0)
 		return 0;
 	ilen += (int)n;
@@ -371,6 +435,7 @@ static int has_utf8(const char *s)
 	return 0;
 }
 
+#ifndef MANX_HELIOS
 /* Write é and ask where the cursor went: one column on a UTF-8
  * terminal, two on an 8-bit one, no answer from a terminal that can't
  * say. */
@@ -391,7 +456,7 @@ static enum term_cs probe_cs(void)
 		p.revents = 0;
 		if (poll(&p, 1, 100) <= 0)
 			continue;
-		k = read(0, r + n, sizeof r - 1 - (size_t)n);
+		k = read(0, (char *)r + n, sizeof r - 1 - (size_t)n);
 		if (k <= 0)
 			break;
 		n += (int)k;
@@ -410,6 +475,7 @@ static enum term_cs probe_cs(void)
 		return TCS_LATIN1;
 	return TCS_ASCII;
 }
+#endif
 
 /* --- cells ------------------------------------------------------------- */
 
@@ -479,16 +545,20 @@ static int alloc_cells(void)
 
 static void get_size(int *rows, int *cols)
 {
+#ifdef TIOCGWINSZ
 	struct winsize w;
+#endif
 	const char *e;
 
 	*rows = 0;
 	*cols = 0;
+#ifdef TIOCGWINSZ
 	if (ioctl(1, TIOCGWINSZ, &w) == 0 && w.ws_row > 2 && w.ws_col > 10) {
 		*rows = w.ws_row;
 		*cols = w.ws_col;
 		return;
 	}
+#endif
 	if ((e = getenv("LINES")) != NULL)
 		*rows = atoi(e);
 	if ((e = getenv("COLUMNS")) != NULL)
@@ -497,6 +567,12 @@ static void get_size(int *rows, int *cols)
 		*rows = tigetnum("lines");
 	if (*cols < 10 && has_terminfo)
 		*cols = tigetnum("cols");
+#ifdef MANX_HELIOS
+	/* Helios's console window: 25 lines (a telnet client sets TERM) */
+	e = getenv("TERM");
+	if (*rows < 3 && (e == NULL || strcmp(e, "ansi") == 0))
+		*rows = 25;
+#endif
 	if (*rows < 3)
 		*rows = 24;
 	if (*cols < 10)
@@ -524,6 +600,11 @@ int scr_check_size(void)
 
 int scr_open(const char *cs_env)
 {
+#ifdef MANX_HELIOS
+	const char *term = getenv("TERM");
+
+	csi8 = term == NULL || strcmp(term, "ansi") == 0;
+#endif
 	if (!isatty(0) || !isatty(1))
 		return -1;
 	tcgetattr(0, &saved_tio);
@@ -541,7 +622,13 @@ int scr_open(const char *cs_env)
 		|| has_utf8(getenv("LANG")))
 		scr_cs = TCS_UTF8;
 	else
+#ifdef MANX_HELIOS
+		/* Helios's console can't say what it shows (its font is
+		 * Atari's): ASCII, unless charset says otherwise */
+		scr_cs = TCS_ASCII;
+#else
 		scr_cs = probe_cs();
+#endif
 	ocap(c_smcup);
 	ocap(c_smkx);
 	oflush();
@@ -556,7 +643,7 @@ void scr_close(void)
 	if (!opened)
 		return;
 	oattr(0);
-	ocap(c_sgr0 ? c_sgr0 : "\033[m");
+	ocap(c_sgr0 ? c_sgr0 : "\033[0m");
 	ocap(c_cnorm);
 	ocap(c_rmkx);
 	if (c_rmcup)

@@ -110,14 +110,21 @@ has no 64-bit integers, so BearSSL is built with `BR_NO_U64`
 test-no64` tests that build on the host. `tools/helios/bundle.py DIR`
 lays the sources out in 8.3 names with a `build.csh`; copy DIR to
 `/helios/local/src/manx` and `source build.csh` there (about an hour in
-Hatari). It builds `xmanx`, `ufetch`, `manxtrust` and `test_sigkat`,
-which checks the hashes and signature arithmetic on the T425. Helios
-reaches the network through its own TCP/IP; on the TT, through a
-DaynaPORT.
+Hatari). It builds and installs `xmanx` in `/helios/bin/x11`, beside
+Helios's other X clients, and `manx` (the text browser, for Helios's
+console or a telnet login), `ufetch`, `manxtrus` and `test_sig` in
+`/helios/bin` (Helios's shell runs nothing named longer than 8 letters:
+those two are manxtrust and test_sigkat). `test_sig` checks the hashes
+and signature arithmetic on the T425. Helios reaches the network
+through its own TCP/IP; on the TT, through a DaynaPORT.
 
 ## Running
 
-Copy `manx` and `manxtrust` to the machine. Then, once:
+Copy `manx`, `xmanx`, `manxtrust` and `ufetch` to the machine with
+`tools/install.sh`, and run `sh install.sh` there as root: `manx`,
+`manxtrust` and `ufetch` go to `/usr/bin`, `xmanx` to `/usr/x11r6/bin`
+on Atari System V (`/usr/X/bin` on AMIX). From the build machine,
+`tools/tt/ttinstall` does all that for the TT. Then, once:
 
 ```sh
 manxtrust roots cacert.pem   # trusted roots, from any PEM bundle (e.g. curl's cacert.pem)
