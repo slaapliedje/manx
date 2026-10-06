@@ -247,7 +247,7 @@ static int query(const unsigned char ns[4], const char *name,
 	sa.sin_family = AF_INET;
 	sa.sin_port = htons(53);
 	memcpy(&sa.sin_addr, ns, 4);
-	if (sendto(fd, q, (int)qlen, 0, (struct sockaddr *)&sa, sizeof sa) < 0) {
+	if (sendto(fd, (char *)q, (int)qlen, 0, (struct sockaddr *)&sa, sizeof sa) < 0) {
 		close(fd);
 		return -1;
 	}
@@ -268,7 +268,7 @@ static int query(const unsigned char ns[4], const char *name,
 			continue;
 		if (n <= 0)
 			break;
-		n = recvfrom(fd, r, sizeof r, 0, (struct sockaddr *)&from,
+		n = recvfrom(fd, (char *)r, sizeof r, 0, (struct sockaddr *)&from,
 			(void *)&fromlen);
 		if (n < 0) {
 			if (SOCK_RETRY(errno))

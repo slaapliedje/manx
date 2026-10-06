@@ -7,6 +7,13 @@
 
 #include <stddef.h>
 
+#ifdef MANX_HELIOS
+/* Helios's C library has no snprintf: os/sysv4/snprintf.c supplies it */
+#include <stdarg.h>
+int snprintf(char *buf, size_t n, const char *fmt, ...);
+int vsnprintf(char *buf, size_t n, const char *fmt, va_list ap);
+#endif
+
 /* Monotonic-enough wall clock in microseconds since the first call.
  * 32 bits of microseconds wrap after 71 minutes: callers take
  * differences of nearby readings only. */

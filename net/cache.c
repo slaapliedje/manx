@@ -263,6 +263,10 @@ void cache_commit(const struct cache_meta *m)
 		if (fclose(f) != 0)
 			ok = 0;
 		remove(s_wtmp);
+#ifdef MANX_HELIOS
+		if (ok)
+			remove(s_wkey_path);	/* GEMDOS's rename won't replace a file */
+#endif
 		if (!ok || rename(final_tmp, s_wkey_path) != 0) {
 			remove(final_tmp);
 			return;

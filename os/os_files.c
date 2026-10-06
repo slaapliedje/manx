@@ -30,7 +30,11 @@ const char *os_datadir(void)
 	if ((e = getenv("MANX_HOME")) != NULL && *e && strlen(e) < sizeof dir)
 		strcpy(dir, e);
 	else if ((e = getenv("HOME")) != NULL && *e && strlen(e) + sizeof "/.manx" < sizeof dir)
+#ifdef MANX_HELIOS
+		sprintf(dir, "%s/manx", e);	/* (GEMDOS: no names starting '.') */
+#else
 		sprintf(dir, "%s/.manx", strcmp(e, "/") == 0 ? "" : e);
+#endif
 	else
 		return NULL;
 	mkdir(dir, 0700);		/* fails harmlessly if it exists */
@@ -76,13 +80,29 @@ int os_write_file(const char *path, const void *data, size_t len, int mode)
 
 	if (strlen(path) + 5 > sizeof tmp)
 		return -1;
+#ifdef MANX_HELIOS
+	/* GEMDOS keeps 8.3 names, so "x.html.tmp" would be "x.htm" itself:
+	 * the extension is replaced instead */
+	{
+		const char *slash = strrchr(path, '/'), *dot = strrchr(path, '.');
+
+		if (dot == NULL || (slash != NULL && dot < slash))
+			dot = path + strlen(path);
+		sprintf(tmp, "%.*s.tmp", (int)(dot - path), path);
+	}
+#else
 	sprintf(tmp, "%s.tmp", path);
+#endif
 	f = fopen(tmp, "wb");
 	if (f == NULL)
 		return -1;
 	chmod(tmp, (mode_t)mode);
 	ok = fwrite(data, 1, len, f) == len;
 	ok = (fclose(f) == 0) && ok;
+#ifdef MANX_HELIOS
+	if (ok)
+		unlink(path);	/* GEMDOS's rename won't replace a file */
+#endif
 	if (!ok || rename(tmp, path) < 0) {
 		unlink(tmp);
 		return -1;

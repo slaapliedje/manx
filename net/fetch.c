@@ -260,8 +260,9 @@ static int http_once(const struct url *u, const char *method,
 		const struct tls_info *ti = &c->tls->info;
 		char msg[200];
 
-		char pre[64] = "";
+		char pre[64];
 
+		pre[0] = '\0';	/* (Helios C cannot initialise an auto array) */
 		if (ti->pre_jobs)
 			snprintf(pre, sizeof pre, " (%d signature%s ahead, %d on the T425, %d used)",
 				ti->pre_jobs, ti->pre_jobs == 1 ? "" : "s", ti->pre_t425,

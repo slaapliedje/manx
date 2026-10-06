@@ -103,6 +103,14 @@ This needs:
 
 `toolchain/sysv4-cc` explains how the three fit together.
 
+`xmanx` also builds with Helios 1.31's C compiler and runs on the
+ATW800/2's T425 itself, under Helios's X server. That build speaks HTTP
+and Gopher only: Helios C has no 64-bit integers, which BearSSL needs.
+`tools/helios/bundle.sh DIR` lays the sources out in 8.3 names with a
+`build.csh`; copy DIR to `/helios/local/src/manx` and `source build.csh`
+there (about 14 minutes). Helios reaches the network through its own
+TCP/IP; on the TT, through a DaynaPORT.
+
 ## Running
 
 Copy `manx` and `manxtrust` to the machine. Then, once:

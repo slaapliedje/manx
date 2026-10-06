@@ -59,7 +59,7 @@ int tcp_write_all(int fd, const void *buf, size_t len)
 	const unsigned char *p = buf;
 
 	while (len > 0) {
-		int n = write(fd, p, (unsigned)len);
+		int n = write(fd, (const char *)p, (unsigned)len);
 
 		if (n < 0) {
 			if (SOCK_RETRY(errno))

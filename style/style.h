@@ -14,7 +14,7 @@ enum display {
 	D_LIST_ITEM,
 	D_NONE,
 	D_TABLE_ROW,		/* a line of its own, cells side by side */
-	D_TABLE_CELL,		/* inline, set apart from its neighbours */
+	D_TABLE_CELL		/* inline, set apart from its neighbours */
 };
 
 /* text attributes (bits) */

@@ -105,8 +105,7 @@ int scr_url_edit(const char *text, int pos);
  * NULL from scr_metrics(): a screen of cells only, where the page goes
  * through scr_put() like everything else.
  */
-struct lmetrics;
-const struct lmetrics *scr_metrics(void);
+const struct lmetrics *scr_metrics(void);	/* (layout.h) */
 int scr_pane_w(void);
 int scr_pane_h(void);
 /* page text at x, y (the top of its line, whose baseline is ascent
@@ -124,7 +123,9 @@ void scr_text(int x, int y, int ascent, const char *s, int n, int attr,
  * pane, its top left, w x h; img NULL: a frame where one will be. attr:
  * CA_* (CA_REV: a selected link's highlight).
  */
+#ifndef MANX_PIXELS_H		/* (C89 lets it be declared again; Helios C does not) */
 struct px_format;
+#endif
 const struct px_format *scr_pixels(void);
 void *scr_image_new(int w, int h, int masked);
 void scr_image_row(void *img, int y, const unsigned char *px,
