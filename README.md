@@ -28,6 +28,8 @@ Aztec C built a good share of the Amiga's and the Atari ST's software.
   ([crypt68k](https://github.com/slaapliedje/crypt68k)), shared with an
   ATW800/2 card's T425 transputer when there is one.
   Its own DNS resolver, because a static SVR4 program can't use the system's.
+  It asks again after a second when no answer comes, and keeps answers for
+  their time to live (at least 10 minutes) in `~/.manx/dns` for the next run.
 - gzip/deflate content, decoded as it arrives. Pages come 4-6x smaller,
   which matters at the TT's 35 KB/s.
 - HTML parsed as it streams, into a compact document (16-byte nodes, a

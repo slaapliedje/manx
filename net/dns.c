@@ -6,10 +6,17 @@
  * dotted quads are parsed, /etc/hosts is searched, then each nameserver of
  * /etc/resolv.conf gets a recursive A query over UDP. A CNAME without an
  * address in the same answer is followed with a new query.
+ *
+ * Answers are remembered for their time to live (at least TTL_MIN: a
+ * lookup over a slow link costs more than a stale address risks), in
+ * memory and, with dns_cache_init, in a file that the next program run
+ * starts from. When no server answers, an expired answer still serves.
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <time.h>
 #include "sock.h"
 #include "os.h"
 #include "dns.h"
@@ -23,9 +30,29 @@
 #endif
 
 #define MAXNS		3
-#define TRY_MS		2500	/* per query per server */
+#define TRY_MS		1000	/* the first wait for an answer, then doubled */
+#define SENDS		2	/* sends of a query per server and round */
 #define ROUNDS		2
 #define MAXCNAME	6
+
+#define CACHE_MAX	64		/* names remembered */
+#define NAME_MAX_LEN	96		/* (longer names aren't) */
+#define TTL_MIN		600L		/* seconds, whatever the answer said */
+#define TTL_MAX		86400L
+#define STALE_MAX	(7L * 86400)	/* past expiry, kept for when asking fails */
+
+struct dns_entry {
+	char name[NAME_MAX_LEN];
+	unsigned char ip[4];
+	long expires;			/* time(), seconds */
+};
+
+/* the system's files (dns_set_files: a test's own) */
+static const char *s_hosts = HOSTS_FILE, *s_resolv = RESOLV_FILE;
+
+static struct dns_entry s_cache[CACHE_MAX];
+static int s_ncache;
+static char s_cache_path[600];		/* "": memory only */
 
 static int parse_quad(const char *s, unsigned char ip[4])
 {
@@ -69,7 +96,7 @@ static int name_eq(const char *a, const char *b)
 /* /etc/hosts: "address name aliases..." with # comments */
 static int from_hosts(const char *name, unsigned char ip[4])
 {
-	FILE *f = fopen(HOSTS_FILE, "r");
+	FILE *f = fopen(s_hosts, "r");
 	char line[256];
 	int found = 0;
 
@@ -95,7 +122,7 @@ static int from_hosts(const char *name, unsigned char ip[4])
 
 static int nameservers(unsigned char ns[MAXNS][4])
 {
-	FILE *f = fopen(RESOLV_FILE, "r");
+	FILE *f = fopen(s_resolv, "r");
 	char line[256];
 	int n = 0;
 
@@ -200,7 +227,7 @@ static int read_name(const unsigned char *m, size_t len, size_t off,
  * 0 = no such name / no answer, -1 = malformed or not ours.
  */
 static int parse_answer(const unsigned char *m, size_t len, unsigned short id,
-	unsigned char ip[4], char *cname, size_t cap)
+	unsigned char ip[4], char *cname, size_t cap, long *ttl)
 {
 	unsigned qd, an, i;
 	size_t off = 12;
@@ -216,35 +243,45 @@ static int parse_answer(const unsigned char *m, size_t len, unsigned short id,
 		off = skip_name(m, len, off) + 4;
 	for (i = 0; i < an && off < len; i++) {
 		unsigned type, rdlen;
+		long rr_ttl;
 
 		off = skip_name(m, len, off);
 		if (off + 10 > len)
 			return -1;
 		type = (unsigned)m[off] << 8 | m[off + 1];
+		rr_ttl = (long)((unsigned long)m[off + 4] << 24
+			| (unsigned long)m[off + 5] << 16
+			| (unsigned long)m[off + 6] << 8 | m[off + 7]);
 		rdlen = (unsigned)m[off + 8] << 8 | m[off + 9];
 		off += 10;
 		if (off + rdlen > len)
 			return -1;
 		if (type == 1 && rdlen == 4) {
 			memcpy(ip, m + off, 4);
+			if (rr_ttl < *ttl)
+				*ttl = rr_ttl;
 			return 1;
 		}
-		if (type == 5 && !have_cname)
+		if (type == 5 && !have_cname) {
 			have_cname = read_name(m, len, off, cname, cap);
+			if (have_cname && rr_ttl < *ttl)
+				*ttl = rr_ttl;
+		}
 		off += rdlen;
 	}
 	return have_cname ? 2 : 0;
 }
 
 static int query(const unsigned char ns[4], const char *name,
-	unsigned char ip[4], char *cname, size_t cap)
+	unsigned char ip[4], char *cname, size_t cap, long *ttl)
 {
 	unsigned char q[300], r[1024];
 	struct sockaddr_in sa;
 	unsigned short id = next_id();
 	size_t qlen = build_query(q, sizeof q, name, id);
 	unsigned long t0;
-	int fd, rc = -1;
+	long wait;
+	int fd, sends, rc = -1;
 
 	if (qlen == 0)
 		return 0;
@@ -255,76 +292,190 @@ static int query(const unsigned char ns[4], const char *name,
 	sa.sin_family = AF_INET;
 	sa.sin_port = htons(53);
 	memcpy(&sa.sin_addr, ns, 4);
-	if (sendto(fd, (char *)q, (int)qlen, 0, (struct sockaddr *)&sa, sizeof sa) < 0) {
-		close(fd);
-		return -1;
-	}
-	t0 = os_msec();
-	for (;;) {
-		struct pollfd pfd;
-		struct sockaddr_in from;
-		int n, fromlen = sizeof from;
-		long left = TRY_MS - (long)(os_msec() - t0);
+	/* a lost query (or a slow server, itself asking upstream) is asked
+	 * again soon, on the same socket under the same id: whichever answer
+	 * comes first will do */
+	for (sends = 0, wait = TRY_MS; sends < SENDS && rc < 0; sends++, wait *= 2) {
+		if (sendto(fd, (char *)q, (int)qlen, 0, (struct sockaddr *)&sa,
+				sizeof sa) < 0)
+			break;
+		t0 = os_msec();
+		for (;;) {
+			struct pollfd pfd;
+			struct sockaddr_in from;
+			int n, fromlen = sizeof from;
+			long left = wait - (long)(os_msec() - t0);
 
-		if (left <= 0)
-			break;
-		pfd.fd = fd;
-		pfd.events = POLLIN;
-		pfd.revents = 0;
-		n = poll(&pfd, 1, (int)left);
-		if (n < 0 && SOCK_RETRY(errno))
-			continue;
-		if (n <= 0)
-			break;
-		n = recvfrom(fd, (char *)r, sizeof r, 0, (struct sockaddr *)&from,
-			(void *)&fromlen);
-		if (n < 0) {
-			if (SOCK_RETRY(errno))
+			if (left <= 0)
+				break;
+			pfd.fd = fd;
+			pfd.events = POLLIN;
+			pfd.revents = 0;
+			n = poll(&pfd, 1, (int)left);
+			if (n < 0 && SOCK_RETRY(errno))
 				continue;
-			break;
+			if (n == 0)
+				break;		/* (send again) */
+			if (n < 0)
+				goto out;
+			n = recvfrom(fd, (char *)r, sizeof r, 0, (struct sockaddr *)&from,
+				(void *)&fromlen);
+			if (n < 0) {
+				if (SOCK_RETRY(errno))
+					continue;
+				goto out;
+			}
+			/* only the server we asked, and only our id */
+			if (memcmp(&from.sin_addr, ns, 4) != 0)
+				continue;
+			rc = parse_answer(r, (size_t)n, id, ip, cname, cap, ttl);
+			if (rc >= 0)
+				break;
 		}
-		/* only the server we asked, and only our id */
-		if (memcmp(&from.sin_addr, ns, 4) != 0)
-			continue;
-		rc = parse_answer(r, (size_t)n, id, ip, cname, cap);
-		if (rc >= 0)
-			break;
 	}
+out:
 	close(fd);
 	return rc;
 }
+
+/* --- the cache ------------------------------------------------------------ */
+
+static struct dns_entry *cache_find(const char *name)
+{
+	int i;
+
+	for (i = 0; i < s_ncache; i++)
+		if (strcmp(s_cache[i].name, name) == 0)
+			return &s_cache[i];
+	return NULL;
+}
+
+/* a new answer: in place of the old one for the name, else of the one
+ * that expires first */
+static void cache_put(const char *name, const unsigned char ip[4], long expires)
+{
+	struct dns_entry *e = cache_find(name);
+	int i;
+
+	if (strlen(name) >= NAME_MAX_LEN)
+		return;
+	if (e == NULL) {
+		if (s_ncache < CACHE_MAX)
+			e = &s_cache[s_ncache++];
+		else
+			for (e = &s_cache[0], i = 1; i < s_ncache; i++)
+				if (s_cache[i].expires < e->expires)
+					e = &s_cache[i];
+		strcpy(e->name, name);
+	}
+	memcpy(e->ip, ip, 4);
+	e->expires = expires;
+}
+
+static void cache_save(void)
+{
+	char *buf, *p;
+	int i;
+
+	if (!s_cache_path[0])
+		return;
+	buf = xmalloc((size_t)s_ncache * (NAME_MAX_LEN + 32) + 1);
+	if (buf == NULL)
+		return;
+	p = buf;
+	for (i = 0; i < s_ncache; i++) {
+		const struct dns_entry *e = &s_cache[i];
+
+		sprintf(p, "%ld %u.%u.%u.%u %s\n", e->expires, e->ip[0], e->ip[1],
+			e->ip[2], e->ip[3], e->name);
+		p += strlen(p);
+	}
+	os_write_file(s_cache_path, buf, (size_t)(p - buf), 0600);
+	xfree(buf);
+}
+
+void dns_set_files(const char *hosts, const char *resolv)
+{
+	s_hosts = hosts;
+	s_resolv = resolv;
+}
+
+void dns_cache_init(const char *path)
+{
+	FILE *f;
+	char line[NAME_MAX_LEN + 40];
+	long now = (long)time(NULL);
+
+	s_cache_path[0] = '\0';
+	if (path == NULL || strlen(path) >= sizeof s_cache_path)
+		return;
+	strcpy(s_cache_path, path);
+	if ((f = fopen(path, "r")) == NULL)
+		return;
+	while (fgets(line, sizeof line, f)) {
+		char *t = strtok(line, " \t\r\n"), *q = strtok(NULL, " \t\r\n"),
+			*n = strtok(NULL, " \t\r\n");
+		unsigned char ip[4];
+		long expires;
+
+		if (t == NULL || q == NULL || n == NULL || !parse_quad(q, ip))
+			continue;
+		expires = atol(t);
+		if (expires + STALE_MAX > now)
+			cache_put(n, ip, expires);
+	}
+	fclose(f);
+}
+
+/* --- lookups --------------------------------------------------------------- */
 
 int dns_resolve(const char *host, unsigned char ip[4])
 {
 	unsigned char ns[MAXNS][4];
 	char name[256], cname[256];
-	int nns, hop;
+	struct dns_entry *e;
+	long now = (long)time(NULL), ttl = TTL_MAX;
+	int nns, hop, rc = -1;
 
 	if (parse_quad(host, ip))
 		return DNS_OK;
 	if (from_hosts(host, ip))
 		return DNS_OK;
+	e = cache_find(host);
+	if (e && e->expires > now) {
+		memcpy(ip, e->ip, 4);
+		return DNS_OK;
+	}
 	nns = nameservers(ns);
-	if (nns == 0)
-		return DNS_NOSERVER;
 	if (strlen(host) >= sizeof name)
 		return DNS_NOTFOUND;
 	strcpy(name, host);
-	for (hop = 0; hop < MAXCNAME; hop++) {
-		int round, s, rc = -1;
+	for (hop = 0; hop < MAXCNAME && nns > 0; hop++) {
+		int round, s;
 
+		rc = -1;
 		for (round = 0; round < ROUNDS && rc < 0; round++)
 			for (s = 0; s < nns && rc < 0; s++)
-				rc = query(ns[s], name, ip, cname, sizeof cname);
-		if (rc < 0)
-			return DNS_TIMEOUT;
-		if (rc == 0)
-			return DNS_NOTFOUND;
-		if (rc == 1)
-			return DNS_OK;
+				rc = query(ns[s], name, ip, cname, sizeof cname, &ttl);
+		if (rc != 2)
+			break;
 		strcpy(name, cname);	/* CNAME only: ask again */
 	}
-	return DNS_NOTFOUND;
+	if (rc == 1) {
+		if (ttl < TTL_MIN)
+			ttl = TTL_MIN;
+		cache_put(host, ip, now + ttl);
+		cache_save();
+		return DNS_OK;
+	}
+	/* no answer (or no server to ask): an old one is better than none */
+	if (rc < 0 && e) {
+		memcpy(ip, e->ip, 4);
+		return DNS_OK;
+	}
+	if (nns == 0)
+		return DNS_NOSERVER;
+	return rc < 0 ? DNS_TIMEOUT : DNS_NOTFOUND;
 }
 
 const char *dns_strerror(int err)

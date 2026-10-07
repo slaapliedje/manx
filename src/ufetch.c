@@ -23,6 +23,7 @@
 #include "entropy.h"
 #include "tls.h"
 #include "conn.h"
+#include "dns.h"
 #include "fetch.h"
 
 static int g_verbose;
@@ -78,7 +79,7 @@ int main(int argc, char **argv)
 {
 	const char *out_path = NULL, *pem = getenv("MANX_CAFILE"), *method = "GET";
 	struct fetch_opts post;
-	char seed_path[600];
+	char seed_path[600], dns_path[600];
 	struct fetch_cb cb;
 	static struct fetch_result res;
 	int a, fails = 0;
@@ -111,6 +112,7 @@ int main(int argc, char **argv)
 	signal(SIGPIPE, SIG_IGN);
 
 	entropy_init(os_datapath(seed_path, sizeof seed_path, "seed"));
+	dns_cache_init(os_datapath(dns_path, sizeof dns_path, "dns"));
 	if (g_verbose) {
 		const struct entropy_report *er = entropy_report();
 

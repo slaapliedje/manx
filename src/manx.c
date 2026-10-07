@@ -29,6 +29,7 @@
 #include "entropy.h"
 #include "tls.h"
 #include "conn.h"
+#include "dns.h"
 #include "url.h"
 #include "fetch.h"
 #include "utf8.h"
@@ -2254,6 +2255,7 @@ int main(int argc, char **argv)
 		cache_init(os_datapath(path, sizeof path, "cache"),
 			config_long("cache_kb", 2048) * 1024L);
 	entropy_init(os_datapath(path, sizeof path, "seed"));
+	dns_cache_init(os_datapath(path, sizeof path, "dns"));
 	/* the first run builds the trust store: say so, it takes a minute */
 	tls_init(config_str("cafile", NULL), tls_note);
 	if (doc_init(&g_doc, 0) < 0 || scr_open(config_str("charset", NULL)) < 0) {
