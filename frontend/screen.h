@@ -53,6 +53,10 @@ void scr_close(void);
 /* Check the window size: 1 when it changed (everything will be redrawn). */
 int scr_check_size(void);
 
+/* xmanx: fill the screen with the window, or (zoomed) put it back as it
+ * was. 0, or -1 where there is no window to zoom. */
+int scr_zoom(void);
+
 /*
  * The page's text colours, 0xRRGGBB, for CA_FG(1..n): each screen shows
  * them as it can (a terminal: clear colours in its own eight, greys as

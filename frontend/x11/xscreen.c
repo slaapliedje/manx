@@ -396,6 +396,50 @@ static int cols_fit(void)
 	return (win_w - SBW - 2 * PAD) / cw;
 }
 
+/*
+ * Z: the window to fill the screen, and back. The window manager's frame
+ * (title, borders) is measured, and the frame asked to sit at 0,0: with
+ * the window's gravity NorthWest, a move asks where the frame goes (twm
+ * and ICCCM alike).
+ */
+static int zoomed, zoom_x, zoom_y, zoom_w, zoom_h;
+
+int scr_zoom(void)
+{
+	Window root, parent, *kids, top = win;
+	unsigned n, w, h, bw, depth;
+	int x, y, sw, sh;
+
+	if (zoomed) {
+		zoomed = 0;
+		XMoveResizeWindow(dpy, win, zoom_x, zoom_y, (unsigned)zoom_w,
+			(unsigned)zoom_h);
+		return 0;
+	}
+	/* the frame: the window's ancestor just below the root */
+	while (XQueryTree(dpy, top, &root, &parent, &kids, &n)) {
+		if (kids)
+			XFree((char *)kids);
+		if (parent == root)
+			break;
+		top = parent;
+	}
+	if (!XGetGeometry(dpy, top, &root, &x, &y, &w, &h, &bw, &depth))
+		return -1;
+	sw = DisplayWidth(dpy, DefaultScreen(dpy));
+	sh = DisplayHeight(dpy, DefaultScreen(dpy));
+	zoom_x = x;
+	zoom_y = y;
+	zoom_w = win_w;
+	zoom_h = win_h;
+	zoomed = 1;
+	/* what the frame adds round the window, kept in the new size */
+	XMoveResizeWindow(dpy, win, 0, 0,
+		(unsigned)(sw - ((int)(w + 2 * bw) - win_w)),
+		(unsigned)(sh - ((int)(h + 2 * bw) - win_h)));
+	return 0;
+}
+
 int scr_check_size(void)
 {
 	int r = rows_fit(), c = cols_fit();

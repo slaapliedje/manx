@@ -758,6 +758,7 @@ static const char help_html[] =
 	"r              reload           ^L        redraw\n"
 	"a              bookmark this page  v      the bookmarks\n"
 	"z, Esc         stop loading     q         quit\n"
+	"Z              xmanx: the window fills the screen, or back\n"
 	"</pre><h1>Forms</h1><p>Select a field (Up/Down, Tab) and press Enter: "
 	"type in a text field (Enter moves to the next; in the last one it "
 	"sends the form), tick a checkbox, choose from a list, or press a "
@@ -771,7 +772,8 @@ static const char help_html[] =
 	"link_color = blue      links' colour (cyan; blue suits white)\n"
 	"proportional = off     xmanx: the page in a fixed font\n"
 	"cookies = off          no cookies\n"
-	"geometry = 120x40+0+0  xmanx: the window's columns, rows (and place)\n"
+	"geometry = 120x40+0+0  xmanx: the window's columns, rows (and place;\n"
+	"                       or: xmanx -geometry 120x40 URL)\n"
 	"images = off           xmanx: no pictures, only their alt text\n"
 	"stylesheets = off      ignore pages' &lt;style&gt; (what they hide shows)\n"
 	"cache_kb = 2048        the disk cache's size (0: none)\n"
@@ -2220,18 +2222,24 @@ static void img_work(void)
 int main(int argc, char **argv)
 {
 	char path[600], in[URL_MAX], go[URL_MAX];
-	const char *start, *err = NULL;
-	int quit = 0;
+	const char *start, *geometry = NULL, *err = NULL;
+	int quit = 0, a = 1;
 
 	signal(SIGPIPE, SIG_IGN);
 	/* settings: ~/.manx/config, MANX_<KEY> overriding */
 	if (config_load(os_datapath(path, sizeof path, "config"), &err) < 0)
 		fprintf(stderr, "manx: %s\n", err);
-	start = argc > 1 ? argv[1] : config_str("start", "about:start");
+	/* -geometry COLSxROWS[+X+Y], as X programs take it (xmanx) */
+	while (a + 1 < argc && (strcmp(argv[a], "-geometry") == 0
+			|| strcmp(argv[a], "-g") == 0)) {
+		geometry = argv[a + 1];
+		a += 2;
+	}
+	start = a < argc ? argv[a] : config_str("start", "about:start");
 	g_search = config_str("search", SEARCH_URL);
 	scr_color = config_bool("color", 1);
 	scr_font = config_str("font", NULL);
-	scr_geometry = config_str("geometry", NULL);
+	scr_geometry = geometry ? geometry : config_str("geometry", NULL);
 	scr_proportional = config_bool("proportional", 1);
 	g_images = config_bool("images", 1);
 	html_stylesheets = config_bool("stylesheets", 1);
@@ -2262,7 +2270,7 @@ int main(int argc, char **argv)
 		fprintf(stderr, "manx: needs %s\n", scr_needs);
 		return 1;
 	}
-	if (argc > 1 && !strstr(start, "://") && strncmp(start, "about:", 6)) {
+	if (a < argc && !strstr(start, "://") && strncmp(start, "about:", 6)) {
 		long sz, mt;
 
 		if (os_file_info(start, &sz, &mt) == 0) {
@@ -2360,6 +2368,10 @@ int main(int argc, char **argv)
 			break;
 		case '?': case 'h': case K_F1:
 			go_url("about:help");
+			break;
+		case 'Z':
+			if (scr_zoom() < 0)
+				message("Z zooms xmanx's window.", NULL);
 			break;
 		case 'z':
 			if (g_img_busy || g_css_busy) {

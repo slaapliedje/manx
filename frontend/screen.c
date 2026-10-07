@@ -579,6 +579,11 @@ static void get_size(int *rows, int *cols)
 		*cols = 80;
 }
 
+int scr_zoom(void)
+{
+	return -1;	/* (a terminal: its size is the terminal's) */
+}
+
 int scr_check_size(void)
 {
 	int r, c;

@@ -154,6 +154,7 @@ Settings go in `~/.manx/config`, one `key = value` a line, or as
 | `color`, `link_color` | `off` for none; the links' colour (cyan on a terminal, blue in a window) |
 | `font` | `xmanx`'s font for its title and status lines, a fixed-width X font (`fixed`) |
 | `proportional` | `off`: `xmanx` shows the page in that font too, as on a terminal |
+| `geometry` | `xmanx`'s window in columns and rows, `120x40` or `120x40+0+0` (also `xmanx -geometry 120x40 URL`); `Z` makes it fill the screen, and back |
 | `cookies` | `off` for none |
 | `cache_kb` | the disk cache's size (2048; 0 for none) |
 | `cafile` | a PEM bundle to build the roots from |
