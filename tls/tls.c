@@ -431,18 +431,28 @@ static int learn_chain(struct xdefer *xd, int upto)
 
 /* --- connections ---------------------------------------------------------- */
 
+/* Where a connection's time goes (tls_info, ufetch -v): waiting for the
+ * network, the key exchange's curve arithmetic, signatures. Running
+ * totals; tls_connect and tls_verify keep their differences. */
+static unsigned long s_t_net, s_t_ec, s_t_sig;
+static int s_reads;
+
 static int low_read(void *ctx, unsigned char *buf, size_t len)
 {
 	int fd = *(int *)ctx;
 
 	for (;;) {
 		struct pollfd pfd;
+		unsigned long t0;
 		int n;
 
 		pfd.fd = fd;
 		pfd.events = POLLIN;
 		pfd.revents = 0;
+		t0 = os_msec();
 		n = poll(&pfd, 1, READ_TIMEOUT_MS);
+		s_t_net += os_msec() - t0;
+		s_reads++;
 		if (n < 0 && SOCK_RETRY(errno))
 			continue;
 		if (n <= 0)
@@ -512,18 +522,30 @@ static size_t ec_xoff(int curve, size_t *len)
 static uint32_t ec_mul(unsigned char *G, size_t Glen, const unsigned char *x, size_t xlen,
 	int curve)
 {
-	return ec_for(curve)->mul(G, Glen, x, xlen, curve);
+	unsigned long t0 = os_msec();
+	uint32_t r = ec_for(curve)->mul(G, Glen, x, xlen, curve);
+
+	s_t_ec += os_msec() - t0;
+	return r;
 }
 
 static size_t ec_mulgen(unsigned char *R, const unsigned char *x, size_t xlen, int curve)
 {
-	return ec_for(curve)->mulgen(R, x, xlen, curve);
+	unsigned long t0 = os_msec();
+	size_t r = ec_for(curve)->mulgen(R, x, xlen, curve);
+
+	s_t_ec += os_msec() - t0;
+	return r;
 }
 
 static uint32_t ec_muladd(unsigned char *A, const unsigned char *B, size_t len,
 	const unsigned char *x, size_t xlen, const unsigned char *y, size_t ylen, int curve)
 {
-	return ec_for(curve)->muladd(A, B, len, x, xlen, y, ylen, curve);
+	unsigned long t0 = os_msec();
+	uint32_t r = ec_for(curve)->muladd(A, B, len, x, xlen, y, ylen, curve);
+
+	s_t_ec += os_msec() - t0;
+	return r;
 }
 
 static const br_ec_impl s_ec_all = {
@@ -531,6 +553,34 @@ static const br_ec_impl s_ec_all = {
 		| (uint32_t)1 << BR_EC_secp521r1 | (uint32_t)1 << BR_EC_curve25519,
 	ec_generator, ec_order, ec_xoff, ec_mul, ec_mulgen, ec_muladd
 };
+
+/* FAST's and FULL_X's: X25519 alone (through ec_for, to be timed) */
+static const br_ec_impl s_ec_x25519 = {
+	(uint32_t)1 << BR_EC_curve25519,
+	ec_generator, ec_order, ec_xoff, ec_mul, ec_mulgen, ec_muladd
+};
+
+/* the signature checks, timed */
+static uint32_t t_rsavrfy(const unsigned char *x, size_t xlen,
+	const unsigned char *hash_oid, size_t hash_len,
+	const br_rsa_public_key *pk, unsigned char *hash_out)
+{
+	unsigned long t0 = os_msec();
+	uint32_t r = rsavrfy_pkcs1(x, xlen, hash_oid, hash_len, pk, hash_out);
+
+	s_t_sig += os_msec() - t0;
+	return r;
+}
+
+static uint32_t t_ecvrfy(const br_ec_impl *impl, const void *hash, size_t hash_len,
+	const br_ec_public_key *pk, const void *sig, size_t sig_len)
+{
+	unsigned long t0 = os_msec();
+	uint32_t r = ecvrfy_asn1(impl, hash, hash_len, pk, sig, sig_len);
+
+	s_t_sig += os_msec() - t0;
+	return r;
+}
 
 static unsigned long ms_since(unsigned long t0)
 {
@@ -542,8 +592,8 @@ int tls_connect(struct tls_conn *c, int fd, const char *host, unsigned port,
 {
 	unsigned char seed[32];
 	struct session *sess;
-	unsigned long t0;
-	int err;
+	unsigned long t0, net0, ec0, sig0;
+	int err, reads0;
 
 	memset(&c->info, 0, sizeof c->info);
 	c->info.profile = profile;
@@ -566,22 +616,22 @@ int tls_connect(struct tls_conn *c, int fd, const char *host, unsigned port,
 	if (profile == TLS_FAST) {
 		br_ssl_engine_set_suites(&c->sc.eng, suites_fast,
 			sizeof suites_fast / sizeof suites_fast[0]);
-		br_ssl_engine_set_ec(&c->sc.eng, &EC_X25519);
+		br_ssl_engine_set_ec(&c->sc.eng, &s_ec_x25519);
 	} else {
 		br_ssl_engine_set_suites(&c->sc.eng, suites_full,
 			sizeof suites_full / sizeof suites_full[0]);
 		if (profile == TLS_FULL_X)
-			br_ssl_engine_set_ec(&c->sc.eng, &EC_X25519);
+			br_ssl_engine_set_ec(&c->sc.eng, &s_ec_x25519);
 		else
 			br_ssl_engine_set_ec(&c->sc.eng, &s_ec_all);
 	}
 	/* the fastest code measured on the TT: signatures checked by rsavrfy
 	 * and ecvrfy (on the 68030's mulu.l; P-521 through to i31), the key
 	 * exchange on m31 curves */
-	br_ssl_engine_set_rsavrfy(&c->sc.eng, rsavrfy_pkcs1);
-	br_ssl_engine_set_ecdsa(&c->sc.eng, ecvrfy_asn1);
-	br_x509_minimal_set_rsa(&c->xc, rsavrfy_pkcs1);
-	br_x509_minimal_set_ecdsa(&c->xc, &EC_ALL, ecvrfy_asn1);
+	br_ssl_engine_set_rsavrfy(&c->sc.eng, t_rsavrfy);
+	br_ssl_engine_set_ecdsa(&c->sc.eng, t_ecvrfy);
+	br_x509_minimal_set_rsa(&c->xc, t_rsavrfy);
+	br_x509_minimal_set_ecdsa(&c->xc, &EC_ALL, t_ecvrfy);
 	br_ssl_engine_set_buffer(&c->sc.eng, c->iobuf, sizeof c->iobuf, 1);
 	xdefer_install(&c->xd, &c->sc);
 	c->xd.iec = &EC_ALL;	/* not the key exchange's subset */
@@ -597,6 +647,10 @@ int tls_connect(struct tls_conn *c, int fd, const char *host, unsigned port,
 
 	/* the handshake: a flush with nothing written runs it to its end */
 	t0 = os_msec();
+	net0 = s_t_net;
+	ec0 = s_t_ec;
+	sig0 = s_t_sig;
+	reads0 = s_reads;
 	if (br_sslio_flush(&c->io) < 0) {
 		err = br_ssl_engine_last_error(&c->sc.eng);
 		if (sess)
@@ -604,6 +658,10 @@ int tls_connect(struct tls_conn *c, int fd, const char *host, unsigned port,
 		return err ? err : BR_ERR_IO;
 	}
 	c->info.t_handshake = ms_since(t0);
+	c->info.t_hs_net = s_t_net - net0;
+	c->info.t_hs_ec = s_t_ec - ec0;
+	c->info.t_hs_sig = s_t_sig - sig0;
+	c->info.hs_reads = s_reads - reads0;
 	c->info.version = br_ssl_engine_get_version(&c->sc.eng);
 	c->info.suite = c->sc.eng.session.cipher_suite;
 
@@ -630,13 +688,14 @@ int tls_connect(struct tls_conn *c, int fd, const char *host, unsigned port,
 int tls_verify(struct tls_conn *c)
 {
 	unsigned char hash[32];
-	unsigned long t0;
+	unsigned long t0, sig0;
 	int err, anchor_at, known;
 	const char *host = c->host;
 	unsigned port = c->port;
 
 	c->verify_pending = 0;
 	t0 = os_msec();
+	sig0 = s_t_sig;
 	known = 0;
 	if (c->xd.ncert > 0) {
 		br_sha256_context h;
@@ -648,6 +707,7 @@ int tls_verify(struct tls_conn *c)
 	}
 	err = xdefer_verify(&c->xd, &c->sc, &c->xc, known, &anchor_at);
 	c->info.t_verify = ms_since(t0);
+	c->info.t_v_sig = s_t_sig - sig0;
 	c->info.pre_jobs = c->xd.pre_jobs;
 	c->info.pre_t425 = c->xd.pre_t425;
 	c->info.pre_used = c->xd.pre_used;

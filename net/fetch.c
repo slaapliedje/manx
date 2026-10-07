@@ -274,6 +274,13 @@ static int http_once(const struct url *u, const char *method,
 			c->reconnected ? ", reconnected" : "", ti->t_handshake,
 			ti->t_verify, pre, ti->suite);
 		status(cb, "%s", msg);
+		if (!ti->resumed) {
+			snprintf(msg, sizeof msg, "TLS time: handshake %lu ms waiting "
+				"for the network (%d reads), %lu ms key exchange, %lu ms "
+				"signatures; validation %lu ms signatures", ti->t_hs_net,
+				ti->hs_reads, ti->t_hs_ec, ti->t_hs_sig, ti->t_v_sig);
+			status(cb, "%s", msg);
+		}
 		res->tls_resumed = ti->resumed;
 		res->tls_leaf_memo = ti->leaf_memo;
 		res->tls_learned = ti->learned;

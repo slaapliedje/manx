@@ -33,6 +33,10 @@ struct tls_info {
 	int learned;			/* intermediates learned this time */
 	unsigned version, suite;
 	unsigned long t_handshake, t_verify;	/* ms */
+	/* of the handshake: waiting for the network (in hs_reads reads), the
+	 * key exchange's curves, signatures; of the validation: signatures */
+	unsigned long t_hs_net, t_hs_ec, t_hs_sig, t_v_sig;
+	int hs_reads;
 	int pre_jobs, pre_t425, pre_used;	/* signature work done ahead (sigpre.h) */
 };
 
