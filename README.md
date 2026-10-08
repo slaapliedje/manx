@@ -33,9 +33,11 @@ Aztec C built a good share of the Amiga's and the Atari ST's software.
 - gzip/deflate content, decoded as it arrives. Pages come 4-6x smaller,
   which matters at the TT's 35 KB/s.
 - HTML parsed as it streams, into a compact document (16-byte nodes, a
-  1.2 MB cap). Lists, `<pre>`, tables of data as grids (those framing a
-  page row by row), form fields, anchors. UTF-8, windows-1252 and Latin-1
-  pages.
+  1.2 MB cap). Lists, `<pre>`, tables as grids, spans and tables in
+  tables included; tables framing a page (a column of links beside the
+  news) side by side from 96 columns wide (xmanx: a wide window, or
+  `Z`), one after another when narrower. Form fields, anchors. UTF-8,
+  windows-1252 and Latin-1 pages.
 - What style sheets hide (`display:none`, `visibility:hidden`,
   `list-style:none`), and how they want text to look: colours (names,
   `#hex`, `rgb()`, `hsl()`, `var()` from `:root`), bold, italics,

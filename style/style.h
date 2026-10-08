@@ -23,6 +23,8 @@ enum display {
 #define SA_LINK		0x04	/* set by the layout for a[href] */
 #define SA_FIELD	0x08	/* a form field */
 #define SA_MARK		0x10	/* drawn: a find match */
+#define SA_RULE		0x20	/* an <hr>'s dashes: as wide as their line, so
+				 * measured as nothing (a grid's columns) */
 
 /* faces (bits): which font a proportional screen draws with; a terminal
  * ignores them */

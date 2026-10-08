@@ -50,6 +50,48 @@ static void check(const char *name, const char *html, int width,
 	doc_free(&d);
 }
 
+/* line n of the page (0: the first) is want */
+static void check_line(const char *name, const char *html, int width, int n,
+	const char *want)
+{
+	struct page pg;
+	struct doc d;
+	const char *got = render(html, width, TCS_ASCII, &pg, &d), *e;
+
+	runs++;
+	while (n-- > 0 && got && (got = strchr(got, '\n')) != NULL)
+		got++;
+	e = got ? strchr(got, '\n') : NULL;
+	if (got == NULL || e == NULL || (size_t)(e - got) != strlen(want)
+		|| strncmp(got, want, strlen(want)) != 0) {
+		fails++;
+		printf("FAIL %s\n--- want\n%s\n--- got\n%.*s\n---\n", name, want,
+			got && e ? (int)(e - got) : 0, got ? got : "");
+	}
+	layout_free(&pg);
+	doc_free(&d);
+}
+
+/* a table framing a page: a column of 21 links beside some 1300 bytes of
+ * text */
+static char *frame_page(int nested)
+{
+	static char b[4096];
+	char *p = b;
+	int i;
+
+	p += sprintf(p, "<table><tr><td>");
+	if (nested)
+		p += sprintf(p, "<table><tr><td>a<td>b</table>");
+	for (i = 0; i < 21; i++)
+		p += sprintf(p, "link %d<br>", i);
+	p += sprintf(p, "<td>");
+	for (i = 0; i < 180; i++)
+		p += sprintf(p, "word%d ", i);
+	sprintf(p, "</table>");
+	return b;
+}
+
 /* the links' first lines and the anchors */
 static void check_links(void)
 {
@@ -210,10 +252,28 @@ int main(void)
 		"\xe4\xb8\xad\xe6\x96\x87\nabc\n");
 	check("nbsp keeps words", "<p>aaaa bbbb&nbsp;cc", 10, TCS_ASCII,
 		"aaaa\nbbbb cc\n");
-	/* a rule in a table cell breaks the row's line; what was before it
-	 * stays (it was lost: the rule's line was opened over it) */
-	check("hr in a cell", "<table><tr><td>before<hr>after<td>next</table>",
-		20, TCS_ASCII, "before\n--------------------\nafter  next\n");
+	/* a rule in a table cell laid out as rows breaks the row's line;
+	 * what was before it stays (it was lost: the rule's line was opened
+	 * over it) */
+	check("hr in a cell", "<table><tr><td>before<hr>after<td>nextnextnextnex"
+		"</table>", 20, TCS_ASCII,
+		"before\n--------------------\nafter\nnextnextnextnex\n");
+	/* in a grid's cell the rule is as wide as the cell (and no wider:
+	 * it doesn't keep the cells from sitting side by side) */
+	check("hr in a grid cell", "<table><tr><td>before<hr>after<td>next</table>",
+		20, TCS_ASCII, "before  next\n------\nafter\n");
+	/* a table framing a page: side by side where there is room for it,
+	 * as rows where there isn't (FRAME_MIN_EM) */
+	check_line("frame wide", frame_page(0), 100, 0, "link 0   word0 word1 word2 "
+		"word3 word4 word5 word6 word7 word8 word9 word10 word11 word12 word13");
+	check_line("frame narrow", frame_page(0), 80, 0, "link 0");
+	check_line("frame with a table in it", frame_page(1), 100, 0, "a  b     word0 "
+		"word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12 "
+		"word13");
+	/* a grid in a centred block is centred as a block, not a line at a
+	 * time */
+	check("centred grid", "<center><table><tr><td>a<td>bb</tr><tr><td>ccc<td>d"
+		"</table></center>", 30, TCS_ASCII, "           a    bb\n           ccc  d\n");
 	check_links();
 	/* tables of data as grids; those framing a page as rows */
 	check("grid", "<table><tr><th>Name<th>Size</tr><tr><td>apple<td>12</tr>"

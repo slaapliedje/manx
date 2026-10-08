@@ -86,6 +86,7 @@ struct lay {
 	int nlists;
 	int oom;
 	int small;			/* a grid cell's page: start its arrays small */
+	int gdepth;			/* the grids this is in a cell of */
 	struct saved st[MAX_DEPTH];	/* (last: written before read, never
 					 * cleared) */
 };
@@ -1233,10 +1234,14 @@ static int enter(struct lay *L, nodeid id, int depth)
 			open_line(L);
 		dw = text_w(L, "-", 1, 1);
 		n = (L->width - L->col) / (dw > 0 ? dw : 1);
+		L->attr |= SA_RULE;
+		set_span(L);
 		for (i = 0; i < n; i++)
 			put_bytes(L, "-", 1);
 		note_height(L);
 		L->col += n * dw;
+		L->attr &= ~SA_RULE;
+		set_span(L);
 		end_line(L);
 		return 0;
 	}
@@ -1521,13 +1526,27 @@ static void walk(struct lay *L, nodeid root, int depth)
 #define GRID_MAX_COLS	32
 #define GRID_MAX_CELLS	2048
 #define GRID_CELL_TEXT	800		/* a cell with more text frames a page */
-#define GRID_CELL_LINES	20		/* ... or more lines */
+#define GRID_CELL_LINES	20		/* ... or more lines, or a table */
+/* A table framing a page (a column of links beside the news, say) is laid
+ * out as a grid only where there is room for it: at least FRAME_MIN_EM
+ * wide (em: a terminal's column, or a "0" in a window), with its main
+ * text at least FRAME_COL_EM and the other columns FRAME_SIDE_EM (or as
+ * wide as they need). Narrower, its cells go one after another. */
+#define FRAME_MIN_EM	96
+#define FRAME_COL_EM	40
+#define FRAME_SIDE_EM	12
+#define FRAME_WORD_EM	30		/* a longer word (a URL) is broken there */
+#define FRAME_MEASURE	40		/* lines a framing cell is measured by */
+#define GRID_DEPTH	3		/* grids in grids' cells, so deep */
 
 struct gcell {
 	nodeid node;
 	int r, c, rs, cs;		/* its row and column, and spans */
 	int minw, maxw;
+	int minw_cap;			/* minw, words no wider than FRAME_WORD_EM */
+	int rule;			/* an <hr> in it: laid again at its width */
 	int laid_w;			/* the width pg was laid out at */
+	int frame;			/* it frames a page (see FRAME_MIN_EM) */
 	struct page pg;
 	int *lmap;			/* its links' numbers in the page, -1 */
 };
@@ -1538,6 +1557,7 @@ struct grid {
 	short *slot;			/* nrows x ncols: the cell there, -1 */
 	int w[GRID_MAX_COLS], x[GRID_MAX_COLS];
 	int *row_h, *row_at;		/* each row's lines, and its first */
+	int frame;			/* a cell frames a page */
 };
 
 /* is element id not shown at all (hidden, display:none, a sheet)? */
@@ -1555,8 +1575,8 @@ static int el_hidden(struct lay *L, nodeid id)
 	return s.display == D_NONE;
 }
 
-/* the text bytes in the subtree of id; a table in it: -1 */
-static long subtree_text(const struct doc *d, nodeid id)
+/* the text bytes in the subtree of id; *table: 1 if a table is in it */
+static long subtree_text(const struct doc *d, nodeid id, int *table)
 {
 	nodeid n = d->nodes[id].first;
 	long total = 0;
@@ -1567,7 +1587,7 @@ static long subtree_text(const struct doc *d, nodeid id)
 		if (nd->type == NODE_TEXT)
 			total += (long)strlen(doc_text(d, n));
 		else if (nd->type == NODE_ELEM && nd->tag == TAG_TABLE)
-			return -1;
+			*table = 1;
 		if (nd->type == NODE_ELEM && nd->first) {
 			n = nd->first;
 			continue;
@@ -1617,8 +1637,15 @@ static int grow_taken(short **taken, int *rows_cap, int need)
 	return 0;
 }
 
-/* the table's cells, where they sit: 0, or -1 when it isn't a grid */
-static int grid_build(struct lay *L, nodeid table, struct grid *g)
+/* is there room here for a table framing a page (avail: its width)? */
+static int frame_room(const struct lay *L, int avail)
+{
+	return avail >= FRAME_MIN_EM * L->em;
+}
+
+/* the table's cells, where they sit: 0, or -1 when it isn't a grid (avail:
+ * the width it would have) */
+static int grid_build(struct lay *L, nodeid table, struct grid *g, int avail)
 {
 	const struct doc *d = L->d;
 	nodeid kids[256];
@@ -1657,15 +1684,19 @@ static int grid_build(struct lay *L, nodeid table, struct grid *g)
 		for (c = d->nodes[tr].first; c; c = d->nodes[c].next) {
 			const struct node *cd = &d->nodes[c];
 			struct gcell *gc;
-			int rs, cs, k, j;
+			int rs, cs, k, j, nested = 0, frame = 0;
 			long text;
 
 			if (cd->type != NODE_ELEM || (cd->tag != TAG_TD && cd->tag != TAG_TH))
 				continue;
 			if (el_hidden(L, c))
 				continue;
-			if ((text = subtree_text(d, c)) < 0 || text > GRID_CELL_TEXT)
-				goto linear;
+			/* a cell framing a page: a grid only where there is room */
+			if ((text = subtree_text(d, c, &nested)) > GRID_CELL_TEXT || nested) {
+				if (!frame_room(L, avail))
+					goto linear;
+				frame = 1;
+			}
 			cs = attr_num(d, c, ATTR_COLSPAN, 1, GRID_MAX_COLS);
 			rs = attr_num(d, c, ATTR_ROWSPAN, 1, 64);
 			if (grow_taken(&taken, &rows_cap, r + rs) < 0)
@@ -1690,6 +1721,9 @@ static int grid_build(struct lay *L, nodeid table, struct grid *g)
 			gc = &g->cell[g->ncells];
 			memset(gc, 0, sizeof *gc);
 			gc->node = c;
+			gc->frame = frame;
+			if (frame)
+				g->frame = 1;
 			gc->r = r;
 			gc->c = col;
 			gc->rs = rs;
@@ -1788,6 +1822,10 @@ static void line_widths(const struct lay *L, const struct page *tp, unsigned lon
 		sp = &tp->spans[s];
 		if (s + 1 < tp->nspans && tp->spans[s + 1].off < end)
 			next = tp->spans[s + 1].off;
+		if (sp->attr & SA_RULE) {	/* (as wide as it is let be) */
+			off = next;
+			continue;
+		}
 		*w += seg_w(L, tp, sp->attr, sp->face, tp->text + off, (int)(next - off));
 		if ((sp->attr & SA_FIELD) || (sp->face & LF_IMAGE))
 			run += seg_w(L, tp, sp->attr, sp->face, tp->text + off,
@@ -1814,8 +1852,10 @@ static void line_widths(const struct lay *L, const struct page *tp, unsigned lon
 }
 
 /* lay cell gc out into its page, width wide, as a block's content, with
- * S (a struct lay of the grid's, reused for each cell) */
-static int lay_cell(struct lay *L, struct lay *S, struct gcell *gc, int width)
+ * S (a struct lay of the grid's, reused for each cell); max_lines: stop
+ * there (0: all of it) */
+static int lay_cell(struct lay *L, struct lay *S, struct gcell *gc, int width,
+	unsigned long max_lines)
 {
 	struct page *pg = &gc->pg;
 	size_t have = used(L->p), room = L->p->byte_cap > have ? L->p->byte_cap - have : 0;
@@ -1835,6 +1875,8 @@ static int lay_cell(struct lay *L, struct lay *S, struct gcell *gc, int width)
 	 * 68030 clearing it for every cell costs) */
 	memset(S, 0, offsetof(struct lay, st));
 	S->small = 1;
+	S->gdepth = L->gdepth + 1;
+	S->max_lines = max_lines;
 	S->p = pg;
 	S->d = L->d;
 	S->fs = L->fs;
@@ -1888,11 +1930,20 @@ static int grid_widths(struct lay *L, struct lay *S, struct grid *g, int avail, 
 		struct gcell *gc = &g->cell[i];
 		unsigned long ln;
 
-		if (lay_cell(L, S, gc, avail) < 0)
+		/* (a cell framing a page is measured by its first lines: the
+		 * widest is all of avail, the longest word no wider than
+		 * FRAME_WORD_EM; laying all of it out twice costs a 68030) */
+		if (lay_cell(L, S, gc, avail, gc->frame ? FRAME_MEASURE : 0) < 0)
 			return -1;
-		if (gc->pg.nlines > GRID_CELL_LINES)
-			return -1;		/* (a page's frame) */
-		gc->minw = gc->maxw = 0;
+		if (gc->pg.nlines > GRID_CELL_LINES) {
+			if (!frame_room(L, avail))
+				return -1;	/* (a page's frame, no room for it) */
+			gc->frame = g->frame = 1;
+		}
+		gc->minw = gc->maxw = gc->minw_cap = gc->rule = 0;
+		for (ln = 0; ln < gc->pg.nspans; ln++)
+			if (gc->pg.spans[ln].attr & SA_RULE)
+				gc->rule = 1;
 		for (ln = 0; ln < gc->pg.nlines; ln++) {
 			int w, word;
 
@@ -1901,7 +1952,19 @@ static int grid_widths(struct lay *L, struct lay *S, struct grid *g, int avail, 
 				gc->maxw = w;
 			if (word > gc->minw)
 				gc->minw = word;
+			if (word > FRAME_WORD_EM * L->em)
+				word = FRAME_WORD_EM * L->em;
+			if (word > gc->minw_cap)
+				gc->minw_cap = word;
 		}
+	}
+	/* (a page's frame breaks its longest words rather than not fit:
+	 * the layout breaks a word longer than its line) */
+	for (i = 0; i < g->ncells; i++) {
+		struct gcell *gc = &g->cell[i];
+
+		if (g->frame)
+			gc->minw = gc->minw_cap;
 		if (gc->cs == 1) {
 			if (gc->minw > cmin[gc->c])
 				cmin[gc->c] = gc->minw;
@@ -1940,8 +2003,45 @@ static int grid_widths(struct lay *L, struct lay *S, struct grid *g, int avail, 
 	for (c = 0; c < g->ncols; c++)
 		g->w[c] = smax <= avail ? cmax[c] : cmin[c] + (smax > smin ?
 			(int)((long)(cmax[c] - cmin[c]) * (avail - smin) / (smax - smin)) : 0);
+	/* a page's frame: its narrow columns (a sidebar of links, gutters) at
+	 * their widest, the others sharing the rest so */
+	if (g->frame && smax > avail) {
+		int side = FRAME_SIDE_EM * L->em, fixed = 0, rmin = 0, rmax = 0;
+
+		for (c = 0; c < g->ncols; c++)
+			if (cmax[c] <= side)
+				fixed += cmax[c];
+			else {
+				rmin += cmin[c];
+				rmax += cmax[c];
+			}
+		if (rmax > rmin && fixed + rmin <= avail)
+			for (c = 0; c < g->ncols; c++)
+				g->w[c] = cmax[c] <= side ? cmax[c] : cmin[c]
+					+ (int)((long)(cmax[c] - cmin[c])
+					* (avail - fixed - rmin) / (rmax - rmin));
+	}
 	for (c = 0; c < g->ncols; c++)
-		g->x[c] = c ? g->x[c - 1] + g->w[c - 1] + gap : 0;
+		g->x[c] = c ? g->x[c - 1] + g->w[c - 1]
+			+ (g->w[c - 1] ? gap : 0) : 0;	/* (none after nothing) */
+	/* a page's frame only if it reads well: the framing cell wanting
+	 * the most room (the page's main text, beside its sidebars) wide
+	 * enough or as wide as it would be, no column squeezed */
+	if (g->frame) {
+		const struct gcell *main = NULL;
+		int w;
+
+		for (i = 0; i < g->ncells; i++)
+			if (g->cell[i].frame && (!main || g->cell[i].maxw > main->maxw))
+				main = &g->cell[i];
+		w = g->x[main->c + main->cs - 1] + g->w[main->c + main->cs - 1]
+			- g->x[main->c];
+		if (w < FRAME_COL_EM * L->em && w < main->maxw)
+			return -1;
+		for (c = 0; c < g->ncols; c++)	/* (wider ones than the side's) */
+			if (g->w[c] < FRAME_SIDE_EM * L->em && cmax[c] > FRAME_SIDE_EM * L->em)
+				return -1;
+	}
 	return 0;
 }
 
@@ -2055,20 +2155,21 @@ static int grid_table(struct lay *L, nodeid id)
 	struct grid g;
 	struct lay *S;
 	int gap = L->m ? L->em : 2, avail, i, c, total, attr = L->attr, face = L->face;
-	int cell = L->cell;
+	int cell = L->cell, was_align = L->align, align = L->align, shift = 0, gw;
+	const char *ta;
 	unsigned short link = L->link;
 	unsigned long base = 0, ln;
 	nodeid n;
 
-	if (L->pre || L->marker_w)
+	if (L->pre || L->marker_w || L->gdepth >= GRID_DEPTH)
 		return 0;
-	if (grid_build(L, id, &g) < 0)
+	avail = L->width - (L->indent > L->width / 2 ? L->width / 2 : L->indent);
+	if (grid_build(L, id, &g, avail) < 0)
 		return 0;
 	if ((S = xmalloc(sizeof *S)) == NULL) {
 		grid_free(&g);
 		return 0;
 	}
-	avail = L->width - (L->indent > L->width / 2 ? L->width / 2 : L->indent);
 	if (grid_widths(L, S, &g, avail, gap) < 0) {
 		xfree(S);
 		grid_free(&g);
@@ -2079,7 +2180,8 @@ static int grid_table(struct lay *L, nodeid id)
 		struct gcell *gc = &g.cell[i];
 		int w = g.x[gc->c + gc->cs - 1] + g.w[gc->c + gc->cs - 1] - g.x[gc->c];
 
-		if (gc->maxw > w && lay_cell(L, S, gc, w) < 0) {
+		if ((gc->maxw > w || (gc->rule && gc->laid_w != w) || gc->pg.partial)
+			&& lay_cell(L, S, gc, w, 0) < 0) {
 			xfree(S);
 			grid_free(&g);
 			return 0;
@@ -2113,6 +2215,21 @@ static int grid_table(struct lay *L, nodeid id)
 	}
 	g.row_at[g.nrows] = total;
 
+	/* the grid is placed as a block - centred or to the right as a whole
+	 * (its align=, or where it stands), not a line at a time - and its
+	 * cells' text keeps the alignment the cells gave it */
+	gw = g.x[g.ncols - 1] + g.w[g.ncols - 1];
+	ta = doc_attr(L->d, id, ATTR_ALIGN);
+	if (ta && (ta[0] == 'c' || ta[0] == 'C'))
+		align = CSS_TA_CENTER;
+	else if (ta && (ta[0] == 'r' || ta[0] == 'R'))
+		align = CSS_TA_RIGHT;
+	else if (ta && (ta[0] == 'l' || ta[0] == 'L'))
+		align = CSS_TA_LEFT;
+	if (align >= CSS_TA_CENTER && !L->small && avail > gw)
+		shift = align == CSS_TA_CENTER ? (avail - gw) / 2 : avail - gw;
+	L->align = 0;
+
 	/* the caption, then the rows a line at a time (in a cell of a table
 	 * laid out as rows, the grid is a block of its own all the same) */
 	L->cell = 0;
@@ -2136,7 +2253,7 @@ static int grid_table(struct lay *L, nodeid id)
 		open_line(L);
 		if (ln == 0)
 			base = L->p->nlines;
-		x0 = L->col;
+		x0 = L->col + shift;
 		for (c = 0; c < g.ncols; c++) {
 			int k = g.slot[i * g.ncols + c];
 			struct gcell *gc;
@@ -2191,6 +2308,7 @@ static int grid_table(struct lay *L, nodeid id)
 	block_break(L, 1);
 	L->cell = cell;
 	L->cell_break = 0;
+	L->align = was_align;
 	grid_free(&g);
 	return 1;
 }
