@@ -16,6 +16,7 @@
 #include <poll.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <X11/keysym.h>
 #include "os.h"
 
 static Display *dpy;
@@ -140,6 +141,8 @@ int main(int argc, char **argv)
 				fprintf(stderr, "xkeys: no key %s\n", s);
 				return 1;
 			}
+			if (ks >= XK_A && ks <= XK_Z)	/* (a capital: shifted) */
+				state |= ShiftMask;
 			send_key(w, ks, state);
 		}
 		XFlush(dpy);
