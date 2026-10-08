@@ -1,0 +1,17 @@
+# S04t425wipe - Atari System V's boot zeroes the ATW800/2's T425's memory
+# (t425wipe, from Manx): what a Helios session, or a Manx that was killed,
+# left there; a reset clears nothing. It runs from /etc/rc2.d before xdm
+# starts. If X is up already (a change of run level), the T425's first
+# 2 MB - the card's memory past 2 MB, the X server's at 32 bits a pixel -
+# are left: only what the T425 alone sees is zeroed.
+case "$1" in
+start)
+	if [ -f /usr/bin/t425wipe ] && [ -c /dev/link1 ]; then
+		if ps -e | grep Xatw > /dev/null; then
+			/usr/bin/t425wipe -p
+		else
+			/usr/bin/t425wipe
+		fi
+	fi
+	;;
+esac

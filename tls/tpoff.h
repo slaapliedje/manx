@@ -7,7 +7,8 @@
  * trouble (no device, no program file, a timeout, a bad crc, a reply out
  * of step) it is reset and left alone for the rest of the run, and the
  * 68030 does the work, as it always does without the card (AMIX, a TT
- * without an ATW800/2).
+ * without an ATW800/2). The memory tpsig used is zeroed when it's given
+ * up and when the program ends (tpwipe.h).
  */
 #ifndef MANX_TPOFF_H
 #define MANX_TPOFF_H
@@ -17,6 +18,9 @@
 /* Where: the link device and tp/tpsig.c's bootable file (NULL for the
  * defaults: /dev/link1, and tpsig.btl in the Manx directory). off: never. */
 void tpoff_config(const char *dev, const char *btl, int off);
+
+/* Don't use it, saying why (xmanx: the desktop shares its memory). */
+void tpoff_forbid(const char *why);
 
 /* Booted and answering (booting it the first time it's asked)? */
 int tpoff_up(void);

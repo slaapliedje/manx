@@ -26,7 +26,11 @@ Aztec C built a good share of the Amiga's and the Atari ST's software.
   ChaCha20-Poly1305 and X25519 first. Keep-alive and session resumption.
   Certificate checks and X25519 in 68030 assembly
   ([crypt68k](https://github.com/slaapliedje/crypt68k)), shared with an
-  ATW800/2 card's T425 transputer when there is one.
+  ATW800/2 card's T425 transputer when there is one. What the T425 worked
+  on is zeroed afterwards: a reset doesn't clear its memory, and anyone who
+  can open its link can read it back. `t425wipe` zeroes all of it, and
+  Atari System V's boot runs it (`/etc/rc2.d/S04t425wipe`, installed with
+  the rest), for what a Helios session left.
   Its own DNS resolver, because a static SVR4 program can't use the system's.
   It asks again after a second when no answer comes, and keeps answers for
   their time to live (at least 10 minutes) in `~/.manx/dns` for the next run.
@@ -161,6 +165,7 @@ Settings go in `~/.manx/config`, one `key = value` a line, or as
 | `cache_kb` | the disk cache's size (2048; 0 for none) |
 | `cafile` | a PEM bundle to build the roots from |
 | `early_requests` | `off`: send nothing before the certificate is checked |
+| `transputer` | `off`: certificate checks on the 68030 alone, not shared with the ATW800/2's T425. The T425's first 2 MB are the card's memory past 2 MB, the screen's when the desktop has 32 bits a pixel: `xmanx` then leaves the T425 alone by itself, `manx` and `ufetch` need `off` |
 
 `?` in the browser lists the keys.
 

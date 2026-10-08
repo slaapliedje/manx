@@ -1,18 +1,20 @@
 #!/bin/sh
 # ttinstall [DIR] - install the TT's build (DIR: build/sysv4) on the TT,
 # running Atari System V: the binaries and tools/install.sh go to
-# /work/dev/ub/inst, then install.sh puts manx, manxtrust and ufetch in
-# /usr/bin and xmanx in /usr/x11r6/bin.
+# /work/dev/ub/inst, then install.sh puts manx, manxtrust, ufetch and
+# t425wipe in /usr/bin, xmanx in /usr/x11r6/bin and the boot's
+# S04t425wipe in /etc/rc2.d.
 set -e
 here=$(dirname "$0")
 dir=${1:-build/sysv4}
 d=/work/dev/ub/inst
 "$here/ttsh" "mkdir -p $d; chown dev $d; true" >/dev/null
-for p in manx manxtrust ufetch xmanx; do
+for p in manx manxtrust ufetch t425wipe xmanx; do
 	if [ -f "$dir/$p" ]; then
 		"$here/ttput" "$dir/$p" "$d/$p" >/dev/null
 		echo "sent $p"
 	fi
 done
 "$here/ttput" "$here/../install.sh" "$d/install.sh" >/dev/null
+"$here/ttput" "$here/../S04t425wipe" "$d/S04t425wipe" >/dev/null
 "$here/ttsh" "cd $d && sh install.sh"

@@ -85,7 +85,7 @@ HTML_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard text/*.c html/*.c style/*.c layou
 IMG_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard image/*.c))
 
 SPIKES := $(B)/tlsbench
-TOOLS  := $(B)/manx $(B)/ufetch $(B)/manxtrust $(B)/uparse
+TOOLS  := $(B)/manx $(B)/ufetch $(B)/manxtrust $(B)/uparse $(B)/t425wipe
 FRONT_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard frontend/*.c))
 # xmanx: the same browser in an X11 window (X11=0 to leave it out)
 X11 ?= 1
@@ -98,11 +98,11 @@ BENCH  := $(B)/bench_parse $(B)/bench_micro $(B)/bench_loops $(B)/bench_mem \
 
 all: $(SPIKES) $(TOOLS) $(BENCH)
 
-$(B)/tlsbench: $(B)/spikes/tlsbench.o $(B)/tls/rsavrfy.o $(B)/tls/ecvrfy.o $(B)/tls/sigmath.o $(B)/tls/mont.o $(B)/tls/sigpre.o $(B)/tls/tpoff.o $(B)/tls/tpjob.o $(C68K_OBJ) $(OS_OBJ) $(BR_LIB)
+$(B)/tlsbench: $(B)/spikes/tlsbench.o $(B)/tls/rsavrfy.o $(B)/tls/ecvrfy.o $(B)/tls/sigmath.o $(B)/tls/mont.o $(B)/tls/sigpre.o $(B)/tls/tpoff.o $(B)/tls/tpwipe.o $(B)/tls/tpjob.o $(C68K_OBJ) $(OS_OBJ) $(BR_LIB)
 	$(LD) -o $@ $^ $(LDLIBS)
 
 # the ATW800/2's T425 against the 68030 (on the TT; elsewhere: "no device")
-$(B)/tp_check: $(B)/tests/tp_check.o $(B)/tls/tpoff.o $(B)/tls/tpjob.o $(B)/tls/sigmath.o $(B)/tls/mont.o $(OS_OBJ)
+$(B)/tp_check: $(B)/tests/tp_check.o $(B)/tls/tpoff.o $(B)/tls/tpwipe.o $(B)/tls/tpjob.o $(B)/tls/sigmath.o $(B)/tls/mont.o $(OS_OBJ)
 	$(LD) -o $@ $^ $(LDLIBS)
 
 $(B)/manx: $(B)/src/manx.o $(B)/src/pagecss.o $(B)/src/pageimg_none.o $(FRONT_OBJ) $(HTML_OBJ) $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
@@ -112,6 +112,10 @@ $(B)/xmanx: $(B)/src/manx.o $(B)/src/pagecss.o $(B)/src/pageimg.o $(X11_OBJ) $(H
 	$(LD) -o $@ $^ $(X11LIB) $(LDLIBS)
 
 $(B)/ufetch: $(B)/src/ufetch.o $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
+	$(LD) -o $@ $^ $(LDLIBS)
+
+# zero the ATW800/2's T425's memory (the TT's boot runs it)
+$(B)/t425wipe: $(B)/src/t425wipe.o $(B)/tls/tpwipe.o $(OS_OBJ)
 	$(LD) -o $@ $^ $(LDLIBS)
 
 $(B)/uparse: $(B)/src/uparse.o $(HTML_OBJ) $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)

@@ -8,9 +8,16 @@
  * for IBOARDSIZE, its id and its command line, in iserver's protocol (a
  * 2-byte length, the tag, the rest): answered here, then tpsig's own
  * protocol (tpproto.h) takes over.
+ *
+ * What tpsig worked on stays in the T425's memory through a reset, for
+ * anyone who can open the link to read back: so once it has been sent,
+ * the memory it uses is zeroed (tpwipe.h) when the T425 is given up, at
+ * exit, and at a SIGHUP, SIGINT or SIGTERM that would end the program.
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
@@ -18,6 +25,7 @@
 #include "config.h"
 #include "tpproto.h"
 #include "tpoff.h"
+#include "tpwipe.h"
 
 #define TLK_IOC		('L' << 8)	/* sp1 driver-tlk/tlk.h */
 #define TLK_RESET	(TLK_IOC | 1)
@@ -33,6 +41,41 @@ static int g_out;			/* a job is out */
 static unsigned char g_seq;
 static char g_dev[256] = "/dev/link1", g_btl[512], g_why[96];
 static unsigned long g_jobs, g_waited;
+static int g_dirty;			/* tpsig may be in the T425's memory */
+
+/* tpsig's memory: its C runtime is told IBOARDSIZE #100000 (below), so
+ * all it touches is in the first megabyte */
+static const unsigned long g_used[][2] = {
+	{ TPW_CHIP_FREE, TPW_EXT }, { TPW_EXT, 0x80100000UL }
+};
+
+static void wipe(void)
+{
+	if (g_fd >= 0 && g_dirty && tpwipe(g_fd, g_used, 2) == 0)
+		g_dirty = 0;
+}
+
+static void at_exit(void)
+{
+	wipe();
+}
+
+static void on_signal(int sig)
+{
+	wipe();
+	signal(sig, SIG_DFL);
+	raise(sig);
+}
+
+/* a signal that would end the program wipes first (one the program
+ * handles or ignores is left to it) */
+static void catch_signal(int sig)
+{
+	void (*old)(int) = signal(sig, on_signal);
+
+	if (old != SIG_DFL)
+		signal(sig, old);
+}
 
 void tpoff_config(const char *dev, const char *btl, int off)
 {
@@ -49,6 +92,7 @@ static int down(const char *why)
 {
 	if (g_fd >= 0) {
 		ioctl(g_fd, TLK_RESET, 0);	/* stop whatever it was doing */
+		wipe();
 		close(g_fd);
 		g_fd = -1;
 	}
@@ -56,6 +100,15 @@ static int down(const char *why)
 	g_out = 0;
 	snprintf(g_why, sizeof g_why, "%s", why);
 	return -1;
+}
+
+void tpoff_forbid(const char *why)
+{
+	g_configured = 1;
+	if (g_state == T_UP)
+		down(why);
+	g_state = T_OFF;
+	snprintf(g_why, sizeof g_why, "off: %s", why);
 }
 
 /* move all n bytes, waiting at most ms for each piece */
@@ -154,6 +207,17 @@ static int boot(void)
 	if (ioctl(g_fd, TLK_RESET, 0) < 0) {
 		xfree(btl);
 		return down("can't reset it");
+	}
+	if (!g_dirty) {
+		static int caught;
+
+		g_dirty = 1;
+		if (!caught++) {
+			atexit(at_exit);
+			catch_signal(SIGHUP);
+			catch_signal(SIGINT);
+			catch_signal(SIGTERM);
+		}
 	}
 	i = move(btl, len, 1, 3000);
 	xfree(btl);
@@ -269,7 +333,7 @@ const char *tpoff_state(void)
 {
 	switch (g_state) {
 	case T_OFF:
-		return "off";
+		return g_why[0] ? g_why : "off";
 	case T_UNTRIED:
 		return "not used yet";
 	}

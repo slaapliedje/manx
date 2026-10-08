@@ -27,6 +27,7 @@
 #include "style.h"
 #include "screen.h"
 #include "pixels.h"
+#include "tpoff.h"
 
 int scr_rows = 25, scr_cols = 80;
 int scr_color = 1;
@@ -164,6 +165,30 @@ static Display *open_display(void)
 	return XOpenDisplay(buf);
 }
 
+/*
+ * The ATW800/2's T425 shares its first 2 MB with the card's memory past
+ * 2 MB, which the card shows (and X draws in) when the X server uses the
+ * 4 MB layout - a desktop at 32 bits per pixel: Manx's program for the
+ * T425 would land on the screen, and X's drawing on it. The server says
+ * where it is, in _ATW_FRAMEBUFFER (sp1's Xatw): the card window's
+ * address and size first.
+ */
+static void atw_check(void)
+{
+	Atom a = XInternAtom(dpy, "_ATW_FRAMEBUFFER", True);
+	Atom type;
+	int fmt;
+	unsigned long n, after;
+	unsigned char *p = NULL;
+
+	if (a == None || XGetWindowProperty(dpy, DefaultRootWindow(dpy), a, 0, 8,
+		False, XA_INTEGER, &type, &fmt, &n, &after, &p) != Success || p == NULL)
+		return;
+	if (fmt == 32 && n >= 2 && ((unsigned long *)p)[1] > 0x200000UL)
+		tpoff_forbid("the desktop shares its memory");
+	XFree((char *)p);
+}
+
 /* the bold face of f (same name with Bold for Medium), or NULL */
 static XFontStruct *bold_of(XFontStruct *f)
 {
@@ -292,6 +317,7 @@ int scr_open(const char *cs_env)
 	(void)cs_env;
 	if ((dpy = open_display()) == NULL)
 		return -1;
+	atw_check();
 	if (getenv("MANX_XTRACE")) {
 		xtrace_on = 1;
 		xtrace_stop = atol(getenv("MANX_XTRACE"));
