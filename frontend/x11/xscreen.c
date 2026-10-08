@@ -231,6 +231,55 @@ static void place_controls(void)
 	gy = ctrl_h + PAD;
 }
 
+/*
+ * MANX_XTRACE (set to anything, or a number N: stop for good after N
+ * requests, to see what the server has drawn): each request waited for
+ * before the next goes out, and logged first to stderr with its sequence
+ * number - and its opcode (Xproto.h's X_*) where the Display is public
+ * (X11R4/R5: AMIX's) - and the events that come in. The last line before
+ * a hang names the request a server never answers. MANX_XGET=N: from
+ * request N on, a pixel read back after each as well (see below).
+ */
+static int xtrace_on;			/* MANX_XTRACE: events logged too */
+static long xtrace_stop, xtrace_n;	/* MANX_XTRACE=N: stop after N */
+static long xtrace_get;		/* MANX_XGET=N: a pixel read back from N on */
+
+static int xtrace_after(Display *d)
+{
+	static int busy;	/* (XGetImage below ends in this function too) */
+
+	if (busy)
+		return 0;
+	busy = 1;
+	xtrace_n++;
+	if (xtrace_stop && xtrace_n >= xtrace_stop) {
+		XSync(d, False);
+		fprintf(stderr, "xt: stopped after %ld requests\n", xtrace_n);
+		for (;;)
+			sleep(60);
+	}
+#ifndef XlibSpecificationRelease
+	fprintf(stderr, "xt %lu op %d\n", d->request,
+		*(unsigned char *)d->last_req);
+#else
+	fprintf(stderr, "xt %lu\n", NextRequest(d) - 1);
+#endif
+	XSync(d, False);
+	/* reading a pixel back makes a server finish drawing first: a server
+	 * that hands its drawing to a board stops here, after the request the
+	 * board could not do */
+	if (xtrace_get && xtrace_n >= xtrace_get) {
+		XImage *im = XGetImage(d, RootWindow(d, DefaultScreen(d)), 0, 0,
+			1, 1, AllPlanes, ZPixmap);
+
+		if (im)
+			XDestroyImage(im);
+		fprintf(stderr, "xt   (drawn)\n");
+	}
+	busy = 0;
+	return 0;
+}
+
 int scr_open(const char *cs_env)
 {
 	XSetWindowAttributes wa;
@@ -243,6 +292,12 @@ int scr_open(const char *cs_env)
 	(void)cs_env;
 	if ((dpy = open_display()) == NULL)
 		return -1;
+	if (getenv("MANX_XTRACE")) {
+		xtrace_on = 1;
+		xtrace_stop = atol(getenv("MANX_XTRACE"));
+		xtrace_get = getenv("MANX_XGET") ? atol(getenv("MANX_XGET")) : 0;
+		XSetAfterFunction(dpy, xtrace_after);
+	}
 	scr = DefaultScreen(dpy);
 	font = XLoadQueryFont(dpy, (char *)(scr_font && *scr_font ? scr_font : "fixed"));
 	if (font == NULL && (font = XLoadQueryFont(dpy, "fixed")) == NULL) {
@@ -1427,10 +1482,32 @@ static void paint_image(const struct idraw *d, int b0, int b1)
 	}
 }
 
+/* a cell's colours and font */
+static void cell_look(const struct cell *cl, unsigned long *fg, unsigned long *bg,
+	XFontStruct **f)
+{
+	*fg = px_fg;
+	*bg = px_bg;
+	if (cl->fg && text_ok[cl->fg])
+		*fg = text_px[cl->fg];
+	else if ((cl->a & CA_LINK) && link_px_ok)
+		*fg = px_link[scr_link_color & 7];
+	if (cl->a & CA_REV) {
+		unsigned long t = *fg;
+
+		*fg = *bg;
+		*bg = t;
+	}
+	*f = (cl->a & CA_BOLD) && bold ? bold : font;
+}
+
 /* the cells over the pane (ch 0: none) in pane rows [b0, b1), from the
- * grid g */
+ * grid g: a row's cells that look alike, side by side, in one request (a
+ * screen of single characters was some 2000 requests: slow on every
+ * server, and more than AMIX's X2410 on an emulated A2410 could take) */
 static void paint_cells(const struct cell *g, int b0, int b1)
 {
+	char buf[400];			/* (scr_cols is at most 400) */
 	int r, c;
 
 	for (r = 1; r < scr_rows - 1; r++) {
@@ -1439,27 +1516,28 @@ static void paint_cells(const struct cell *g, int b0, int b1)
 
 		if (y >= b1 || y + ch <= b0)
 			continue;
-		for (c = 0; c < scr_cols; c++) {
-			char b = (char)(cl[c].ch ? cl[c].ch : ' ');
-			unsigned long fg = px_fg, bg = px_bg;
+		c = 0;
+		while (c < scr_cols) {
+			unsigned long fg, bg, fg2, bg2;
+			XFontStruct *f, *f2;
+			int c0 = c, n = 0;
 
-			if (cl[c].ch == 0)
+			if (cl[c].ch == 0) {
+				c++;
 				continue;
-			if (cl[c].fg && text_ok[cl[c].fg])
-				fg = text_px[cl[c].fg];
-			else if ((cl[c].a & CA_LINK) && link_px_ok)
-				fg = px_link[scr_link_color & 7];
-			if (cl[c].a & CA_REV) {
-				unsigned long t = fg;
-
-				fg = bg;
-				bg = t;
 			}
+			cell_look(&cl[c], &fg, &bg, &f);
+			do {
+				buf[n++] = (char)cl[c].ch;
+				if (++c >= scr_cols || cl[c].ch == 0)
+					break;
+				cell_look(&cl[c], &fg2, &bg2, &f2);
+			} while (fg2 == fg && bg2 == bg && f2 == f);
 			XSetForeground(dpy, gc, fg);
 			XSetBackground(dpy, gc, bg);
-			XSetFont(dpy, gc, (cl[c].a & CA_BOLD) && bold ? bold->fid : font->fid);
-			XDrawImageString(dpy, win, gc, pane_x() + c * cw, pane_y() + y + ascent,
-				&b, 1);
+			XSetFont(dpy, gc, f->fid);
+			XDrawImageString(dpy, win, gc, pane_x() + c0 * cw,
+				pane_y() + y + ascent, buf, n);
 		}
 	}
 }
@@ -2236,6 +2314,10 @@ static int event(void)
 	int b, x, y;
 
 	XNextEvent(dpy, &ev);
+	if (xtrace_on)
+		fprintf(stderr, "xe type %d %d,%d %dx%d count %d\n", ev.type,
+			ev.xexpose.x, ev.xexpose.y, ev.xexpose.width,
+			ev.xexpose.height, ev.xexpose.count);
 	switch (ev.type) {
 	case KeyPress:
 		entropy_event();	/* key timing feeds the TLS entropy pool */
