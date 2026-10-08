@@ -765,11 +765,33 @@ int tls_write(struct tls_conn *c, const void *buf, size_t len)
 	return 0;
 }
 
+/*
+ * Not br_sslio_close: that waits for the server's close_notify, and when
+ * a response was left part read (a stopped image) it spins for ever -
+ * the engine, closing, won't hand over the data it holds, and won't take
+ * another record while it holds it. So what came is dropped, our
+ * close_notify goes out, and the server's isn't waited for (RFC 5246
+ * 7.2.1 allows that; the socket is closed next).
+ */
 void tls_close(struct tls_conn *c)
 {
-	if (c->open)
-		br_sslio_close(&c->io);
+	br_ssl_engine_context *e = &c->sc.eng;
+	size_t len;
+
+	if (!c->open)
+		return;
 	c->open = 0;
+	if (br_ssl_engine_recvapp_buf(e, &len) != NULL)
+		br_ssl_engine_recvapp_ack(e, len);
+	br_ssl_engine_close(e);
+	while (br_ssl_engine_current_state(e) & BR_SSL_SENDREC) {
+		unsigned char *buf = br_ssl_engine_sendrec_buf(e, &len);
+		int n = low_write(&c->fd, buf, len);
+
+		if (n <= 0)
+			break;
+		br_ssl_engine_sendrec_ack(e, (size_t)n);
+	}
 }
 
 int tls_retry_full(int err)
