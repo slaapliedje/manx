@@ -35,4 +35,10 @@ void cookie_clear(void);
 /* For tests: a cookie date to seconds since 1970, or -1. */
 long cookie_parse_date(const char *s);
 
+/* Times are seconds since 1970 in a long, which on the 68030 is 32 bits:
+ * the latest is COOKIE_TIME_MAX (January 2038), everywhere alike. t + secs,
+ * held there rather than wrapping round. */
+#define COOKIE_TIME_MAX	2147483647L
+long cookie_time_add(long t, long secs);
+
 #endif /* MANX_COOKIE_H */

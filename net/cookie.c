@@ -105,10 +105,21 @@ long cookie_parse_date(const char *s)
 		year += 2000;
 	if (day < 1 || day > 31 || year < 1601 || hh > 23 || mm > 59 || ss > 59)
 		return -1;
-	if (year > 2100)
-		year = 2100;		/* far enough, and no 32-bit overflow */
+	/* (a 32-bit long holds 1970 to January 2038: before, the past;
+	 * after, the latest it can say) */
+	if (year < 1970)
+		return 0;
+	if (year > 2037)
+		return COOKIE_TIME_MAX;
 	return days_from_civil(year, month, day) * 86400L + hh * 3600L
 		+ mm * 60L + ss;
+}
+
+long cookie_time_add(long t, long secs)
+{
+	if (secs > 0 && t > COOKIE_TIME_MAX - secs)
+		return COOKIE_TIME_MAX;
+	return t + secs;
 }
 
 /* --- matching --------------------------------------------------------- */
@@ -358,7 +369,7 @@ void cookie_set(const struct url *u, const char *header, long now)
 	if (secure && strcmp(u->scheme, "https") != 0)
 		return;
 	if (have_max_age)
-		expires = max_age <= 0 ? 1 : now + max_age;
+		expires = max_age <= 0 ? 1 : cookie_time_add(now, max_age);
 	store(name, value, domain, path, expires, host_only, secure, http_only,
 		now);
 }

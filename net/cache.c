@@ -314,12 +314,12 @@ long cache_freshness(const char *cache_control, const char *expires,
 	if (cache_control && directive(cache_control, "no-cache", NULL))
 		return 0;
 	if (cache_control && directive(cache_control, "max-age", &age))
-		return age > 0 ? now + age : 0;
+		return age > 0 ? cookie_time_add(now, age) : 0;
 	if (expires && (t = cookie_parse_date(expires)) > 0) {
 		/* relative to the server's clock, if it says what it is */
 		d = date ? cookie_parse_date(date) : -1;
 		if (d > 0)
-			t = now + (t - d);
+			t = cookie_time_add(now, t - d);
 		return t > now ? t : 0;
 	}
 	return 0;

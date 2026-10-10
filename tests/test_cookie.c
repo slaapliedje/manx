@@ -57,6 +57,20 @@ int main(void)
 	date("Thu, 01 Jan 1970 00:00:00 GMT", 0L);
 	date("21 Oct 2015", -1L);		/* no time */
 	date("nonsense", -1L);
+	/* a long is 32 bits on the 68030: the far future is January 2038,
+	 * the far past 1970, and adding holds there */
+	date("Thu, 31 Dec 2037 23:59:59 GMT", 2145916799L);
+	date("Fri, 31 Dec 9999 23:59:59 GMT", COOKIE_TIME_MAX);
+	date("Thu, 01 Jan 1601 00:00:00 GMT", 0L);
+	runs++;
+	if (cookie_time_add(2000000000L, 500000000L) != COOKIE_TIME_MAX
+		|| cookie_time_add(100L, -50L) != 50L) {
+		fails++;
+		printf("FAIL cookie_time_add\n");
+	}
+	set("http://far.example/", "f=6; Expires=Fri, 31 Dec 9999 23:59:59 GMT");
+	set("http://far.example/", "g=7; Max-Age=99999999999");
+	want("http://far.example/", "f=6; g=7");
 
 	/* host-only by default, sent to that host only */
 	set("http://example.com/", "a=1");
