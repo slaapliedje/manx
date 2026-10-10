@@ -33,6 +33,7 @@ static struct psheet g_s[PCSS_MAX_SHEETS];
 static int g_n;
 static struct doc *g_d;
 static struct url g_base;
+static int g_local;		/* the page is a file: subresources may be */
 static char g_referer[URL_MAX];
 
 /* does rel name a style sheet (and not an alternate one)? */
@@ -79,6 +80,9 @@ void pcss_begin(struct doc *d, const struct url *base, const char *page_url)
 	g_d = d;
 	g_base = *base;
 	snprintf(g_referer, sizeof g_referer, "%s", page_url ? page_url : "");
+	/* (a page from the network gets no local files: a fifo or a tty
+	 * would hang the reading - <base href> can't change that) */
+	g_local = strncmp(g_referer, "file:", 5) == 0;
 	for (id = 2; id < d->nnodes && g_n < PCSS_MAX_SHEETS; id++) {
 		const char *rel, *href, *media;
 
@@ -268,7 +272,7 @@ int pcss_step(int (*poll)(void *ctx, int shown), void *ctx)
 	if (url_resolve(&g_base, p->href, &u) < 0
 		|| url_format(&u, url, sizeof url, 0) < 0
 		|| (strncmp(url, "http://", 7) && strncmp(url, "https://", 8)
-		&& strncmp(url, "file://", 7))) {
+		&& (strncmp(url, "file://", 7) || !g_local))) {
 		p->state = S_DONE;
 		return PCSS_WORKED;
 	}

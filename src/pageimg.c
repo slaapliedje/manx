@@ -57,6 +57,7 @@ static struct pent *g_e;
 static int g_n;
 static const struct doc *g_d;
 static struct url g_base;
+static int g_local;		/* the page is a file: subresources may be */
 static char g_referer[URL_MAX];
 static size_t g_held;
 static unsigned g_gen;
@@ -115,6 +116,9 @@ void pimg_begin(const struct doc *d, const struct url *base, const char *page_ur
 	g_d = d;
 	g_base = *base;
 	snprintf(g_referer, sizeof g_referer, "%s", page_url ? page_url : "");
+	/* (a page from the network gets no local files: a fifo or a tty
+	 * would hang the reading - <base href> can't change that) */
+	g_local = strncmp(g_referer, "file:", 5) == 0;
 	for (id = 2; id < d->nnodes; id++)
 		if (d->nodes[id].type == NODE_ELEM
 			&& (d->nodes[id].tag == TAG_IMG || d->nodes[id].tag == TAG_IMAGE))
@@ -393,7 +397,7 @@ static int fetch_one(struct pent *e, int (*poll)(void *ctx, int shown), void *ct
 		if (url_resolve(&g_base, e->src, &u) < 0
 			|| url_format(&u, url, sizeof url, 0) < 0
 			|| (strncmp(url, "http://", 7) && strncmp(url, "https://", 8)
-			&& strncmp(url, "file://", 7))) {
+			&& (strncmp(url, "file://", 7) || !g_local))) {
 			e->state = P_FAILED;
 			return PIMG_WORKED;
 		}
