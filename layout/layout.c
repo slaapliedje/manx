@@ -229,8 +229,20 @@ static void set_span(struct lay *L)
 			s->color = (unsigned char)L->fg;
 			if (p->nspans >= 2 && s[-1].attr == s->attr
 				&& s[-1].link == s->link && s[-1].face == s->face
-				&& s[-1].color == s->color)
-				p->nspans--;
+				&& s[-1].color == s->color) {
+				unsigned long last = --p->nspans - 1, k;
+
+				/* what was taken as the gone one's number is the
+				 * one before's: the open line's, the word's, blank
+				 * lines' (else a later span takes the number, and
+				 * a line seems to start with it) */
+				if (L->line_span > last)
+					L->line_span = last;
+				if (L->word_span > last)
+					L->word_span = last;
+				for (k = p->nlines; k > 0 && p->lines[k - 1].span > last; k--)
+					p->lines[k - 1].span = last;
+			}
 			return;
 		}
 	}
@@ -2402,6 +2414,11 @@ int layout_images_w(const struct page *p, const char *s, int n)
 unsigned long layout_span_at(const struct page *p, unsigned long s,
 	unsigned long off)
 {
+	/* (s is where to start looking: back too, should it be past off) */
+	if (s >= p->nspans)
+		s = p->nspans ? p->nspans - 1 : 0;
+	while (s > 0 && p->spans[s].off > off)
+		s--;
 	while (s + 1 < p->nspans && p->spans[s + 1].off <= off)
 		s++;
 	return s;

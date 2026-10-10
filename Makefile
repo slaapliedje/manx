@@ -230,8 +230,23 @@ fuzz: build/fuzz/fuzz_html build/fuzz/fuzz_image
 	python3 tests/gen_images.py build/test/img > build/test/img/manifest
 	build/fuzz/fuzz_image $(FUZZ_ITERS) $(FUZZ_SEED) build/test/img
 
+# before a push: the tests, then both fuzzers a while (c1492af broke
+# wide grids with every test passing; only fuzzing showed it)
+CHECK_ITERS ?= 3000
+check: test build/fuzz/fuzz_html build/fuzz/fuzz_image
+	@if ls build/corpus/*.html > /dev/null 2>&1; then \
+		for s in 1 2 3; do \
+			build/fuzz/fuzz_html $(CHECK_ITERS) $$s build/corpus/*.html || exit 1; \
+		done; \
+	else \
+		echo "check: no build/corpus (tests/fetch_corpus.sh): no HTML fuzzing"; \
+	fi
+	@mkdir -p build/test/img
+	python3 tests/gen_images.py build/test/img > build/test/img/manifest
+	build/fuzz/fuzz_image $(CHECK_ITERS) 1 build/test/img
+
 clean:
 	rm -rf build
 
-.PHONY: all clean test fuzz
+.PHONY: all clean test fuzz check
 -include $(shell find build -name '*.d' 2>/dev/null)

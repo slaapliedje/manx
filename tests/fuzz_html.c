@@ -118,6 +118,13 @@ static char *dump_of(const unsigned char *s, size_t n, int chunked, size_t cap)
 				if (pg.spans[i].off < pg.spans[i - 1].off
 					|| pg.spans[i].link > pg.nlinks)
 					abort();
+			/* each line's span is one begun by its first byte (a
+			 * later one's number was a stale index: the start of
+			 * the line drawn, or copied into a grid, in its look) */
+			for (i = 0; i < pg.nlines && pg.nspans; i++)
+				if (pg.lines[i].span >= pg.nspans
+					|| pg.spans[pg.lines[i].span].off > pg.lines[i].off)
+					abort();
 			/* images: only with metrics, whole, each a real one */
 			for (i = 0; i < pg.nspans; i++) {
 				unsigned long e = i + 1 < pg.nspans ? pg.spans[i + 1].off : pg.text_len, o;

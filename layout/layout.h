@@ -133,7 +133,7 @@ int layout_run_m(struct page *p, const struct doc *d, int width,
 	const struct forms *fs, const struct lmetrics *m);
 void layout_free(struct page *p);
 
-/* The span index in effect at text offset off, searching from span s. */
+/* The span index in effect at text offset off, looking from span s. */
 unsigned long layout_span_at(const struct page *p, unsigned long s,
 	unsigned long off);
 

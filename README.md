@@ -91,6 +91,7 @@ Everything also builds and runs on Linux, for development and tests:
 make                 # build/host/manx, xmanx, manxtrust, ufetch, uparse, benchmarks
 make test            # unit tests, TLS known-answer tests
 make fuzz            # the HTML engine and layout under ASan/UBSan
+make check           # before a push: the tests, then both fuzzers (~40 s)
 ```
 
 For the 68030: one static AMIX program, which also runs on Atari System V
