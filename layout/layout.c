@@ -86,6 +86,8 @@ struct lay {
 	int nlists;
 	int oom;
 	int small;			/* a grid cell's page: start its arrays small */
+	int at_width;			/* a cell at its column's width: lines centre */
+	int aligned;			/* a cell had lines to centre or put right */
 	int gdepth;			/* the grids this is in a cell of */
 	struct saved st[MAX_DEPTH];	/* (last: written before read, never
 					 * cleared) */
@@ -333,9 +335,14 @@ static void close_line_at(struct lay *L, unsigned long end)
 			end--;
 			endcol -= space_w(L);
 		}
-	/* centred or to the right (not a table row's line of cells, nor a
-	 * grid cell's: its width is what its lines measure) */
-	if (L->align >= CSS_TA_CENTER && !L->pre && !L->cell && !L->small
+	/* centred or to the right (not a table row's line of cells; a grid
+	 * cell's only at its column's width: measured, it would seem as wide
+	 * as it was let be - it says it has some, to be laid again) */
+	if (L->align >= CSS_TA_CENTER && !L->pre && !L->cell && L->small
+		&& !L->at_width && end > L->line_off)
+		L->aligned = 1;
+	if (L->align >= CSS_TA_CENTER && !L->pre && !L->cell
+		&& (!L->small || L->at_width)
 		&& end > L->line_off && endcol < L->width) {
 		int shift = L->width - endcol;
 		unsigned long k;
@@ -1557,6 +1564,8 @@ struct gcell {
 	int minw, maxw;
 	int minw_cap;			/* minw, words no wider than FRAME_WORD_EM */
 	int rule;			/* an <hr> in it: laid again at its width */
+	int aligned;			/* lines to centre or put right: laid again */
+	int at_width;			/* laid at its width (lines centred as asked) */
 	int laid_w;			/* the width pg was laid out at */
 	int frame;			/* it frames a page (see FRAME_MIN_EM) */
 	struct page pg;
@@ -1867,7 +1876,7 @@ static void line_widths(const struct lay *L, const struct page *tp, unsigned lon
  * S (a struct lay of the grid's, reused for each cell); max_lines: stop
  * there (0: all of it) */
 static int lay_cell(struct lay *L, struct lay *S, struct gcell *gc, int width,
-	unsigned long max_lines)
+	unsigned long max_lines, int at_width)
 {
 	struct page *pg = &gc->pg;
 	size_t have = used(L->p), room = L->p->byte_cap > have ? L->p->byte_cap - have : 0;
@@ -1881,6 +1890,8 @@ static int lay_cell(struct lay *L, struct lay *S, struct gcell *gc, int width,
 	pg->main_line = -1;
 	pg->content_line = -1;
 	gc->laid_w = width;
+	gc->at_width = at_width;
+	gc->aligned = 0;
 	if (room < 4096)
 		return -1;
 	/* (all but the saved-state stack, written before it's read: on a
@@ -1889,6 +1900,7 @@ static int lay_cell(struct lay *L, struct lay *S, struct gcell *gc, int width,
 	S->small = 1;
 	S->gdepth = L->gdepth + 1;
 	S->max_lines = max_lines;
+	S->at_width = at_width;
 	S->p = pg;
 	S->d = L->d;
 	S->fs = L->fs;
@@ -1901,13 +1913,17 @@ static int lay_cell(struct lay *L, struct lay *S, struct gcell *gc, int width,
 	S->heading_line = -1;
 	style_of(L->d, gc->node, &s);	/* (a <th>: bold) */
 	S->attr = L->attr | s.attr;
-	S->align = L->align;
+	/* (quirks-style, as the pages this matters for are: a table doesn't
+	 * take the alignment around it - a cell's is its own, or its row's) */
+	S->align = 0;
 	if (L->fg && L->p->palette)
 		S->fg = page_color(pg, L->p->palette[L->fg - 1]);
 	{
-		/* the cell's own look: its sheet, style="", align= */
+		/* the cell's own look: its sheet, style="", align= (or its row's) */
 		struct css_text ct;
 		const char *st = doc_attr(L->d, gc->node, ATTR_STYLE);
+		const char *al = doc_attr(L->d, gc->node, ATTR_ALIGN);
+		nodeid row = L->d->nodes[gc->node].parent;
 
 		memset(&ct, 0, sizeof ct);
 		if (L->d->sheet)
@@ -1916,8 +1932,9 @@ static int lay_cell(struct lay *L, struct lay *S, struct gcell *gc, int width,
 		if (st)
 			css_inline_text(L->d->sheet, st, &ct);
 		s.display = D_BLOCK;		/* (its lines are its own) */
-		text_look(S, L->d->nodes[gc->node].tag, &s, &ct,
-			doc_attr(L->d, gc->node, ATTR_ALIGN));
+		if (al == NULL && row && L->d->nodes[row].tag == TAG_TR)
+			al = doc_attr(L->d, row, ATTR_ALIGN);
+		text_look(S, L->d->nodes[gc->node].tag, &s, &ct, al);
 	}
 	set_span(S);
 	if (doc_attr(L->d, gc->node, ATTR_ID))
@@ -1927,6 +1944,7 @@ static int lay_cell(struct lay *L, struct lay *S, struct gcell *gc, int width,
 	/* (no blank lines at its end) */
 	while (pg->nlines && pg->lines[pg->nlines - 1].len == 0)
 		pg->nlines--;
+	gc->aligned = S->aligned;
 	return pg->truncated ? -1 : 0;
 }
 
@@ -1945,7 +1963,7 @@ static int grid_widths(struct lay *L, struct lay *S, struct grid *g, int avail, 
 		/* (a cell framing a page is measured by its first lines: the
 		 * widest is all of avail, the longest word no wider than
 		 * FRAME_WORD_EM; laying all of it out twice costs a 68030) */
-		if (lay_cell(L, S, gc, avail, gc->frame ? FRAME_MEASURE : 0) < 0)
+		if (lay_cell(L, S, gc, avail, gc->frame ? FRAME_MEASURE : 0, 0) < 0)
 			return -1;
 		if (gc->pg.nlines > GRID_CELL_LINES) {
 			if (!frame_room(L, avail))
@@ -2192,8 +2210,9 @@ static int grid_table(struct lay *L, nodeid id)
 		struct gcell *gc = &g.cell[i];
 		int w = g.x[gc->c + gc->cs - 1] + g.w[gc->c + gc->cs - 1] - g.x[gc->c];
 
-		if ((gc->maxw > w || (gc->rule && gc->laid_w != w) || gc->pg.partial)
-			&& lay_cell(L, S, gc, w, 0) < 0) {
+		if ((gc->maxw > w || (gc->rule && gc->laid_w != w) || gc->pg.partial
+			|| (gc->aligned && !gc->at_width))
+			&& lay_cell(L, S, gc, w, 0, 1) < 0) {
 			xfree(S);
 			grid_free(&g);
 			return 0;
