@@ -67,7 +67,7 @@ static int g_img_busy;			/* the page's images aren't all in */
 static int g_css_busy;			/* nor its linked style sheets */
 static int g_img_relayout;		/* sizes came in: lay out again */
 static unsigned long g_img_drawn, g_img_relaid;	/* when last drawn, laid out */
-static int g_keyq[16];			/* keys read while images loaded */
+static int g_keyq[16];			/* keys read while loading */
 static int g_nkeyq;
 /* the #fragment the page was opened at: gone back to as images come in
  * and the lines above it grow, until the user moves */
@@ -635,15 +635,20 @@ static void on_head(void *ctx, int status, const char *ctype,
 		&& cache_begin(g_ckey) == 0;
 }
 
-/* a key while loading: z, Esc, ^C, ^G stop it */
+/* a key while loading: z, Esc, ^C, ^G stop it; others wait for the page
+ * (not a click or the scrollbar: where they were may move) */
 static int stop_asked(void)
 {
 	int k;
 
-	while ((k = scr_getkey(0)) >= 0)
+	while ((k = scr_getkey(0)) >= 0) {
 		if (k == 'z' || k == 27 || k == 3 || k == 7 || k == 'q'
 			|| k == K_CLOSE)
 			return 1;
+		if (k != K_MOUSE && k != K_SCROLL
+			&& g_nkeyq < (int)(sizeof g_keyq / sizeof g_keyq[0]))
+			g_keyq[g_nkeyq++] = k;
+	}
 	return 0;
 }
 
@@ -1393,9 +1398,9 @@ static int menu(const char *title, char **items, int n, int cur)
 
 static void choose_option(struct field *f)
 {
-	nodeid opts[200];
-	char *items[200];
-	int n = forms_options(&g_forms, f, opts, 200), i, cur = 0, pick;
+	static nodeid opts[FORMS_MAX_OPTIONS];
+	static char *items[FORMS_MAX_OPTIONS];
+	int n = forms_options(&g_forms, f, opts, FORMS_MAX_OPTIONS), i, cur = 0, pick;
 
 	if (n == 0) {
 		message("The list is empty.", NULL);
@@ -1405,10 +1410,15 @@ static void choose_option(struct field *f)
 		struct field tmp = *f;
 
 		tmp.selected = opts[i];
-		items[i] = xstrdup(forms_text(&g_forms, &tmp));
+		if ((items[i] = xstrdup(forms_text(&g_forms, &tmp))) == NULL) {
+			n = i;			/* (no memory: the ones so far) */
+			break;
+		}
 		if (opts[i] == f->selected)
 			cur = i;
 	}
+	if (n == 0)
+		return;
 	pick = menu("Choose:", items, n, cur);
 	for (i = 0; i < n; i++)
 		xfree(items[i]);
@@ -1789,20 +1799,70 @@ static int prompt(const char *label, char *buf, size_t n)
 	return prompt_mask(label, buf, n, 0);
 }
 
+/* What's typed is in the terminal's charset: on a UTF-8 terminal a
+ * character is several bytes, moved over and deleted whole, and a column
+ * or two wide (none for a combining mark) */
+static size_t ch_prev(const char *b, size_t pos)
+{
+	if (pos == 0)
+		return 0;
+	pos--;
+	if (scr_cs == TCS_UTF8)
+		while (pos > 0 && ((unsigned char)b[pos] & 0xC0) == 0x80)
+			pos--;
+	return pos;
+}
+
+static size_t ch_next(const char *b, size_t pos, size_t len)
+{
+	if (pos >= len)
+		return len;
+	pos++;
+	if (scr_cs == TCS_UTF8)
+		while (pos < len && ((unsigned char)b[pos] & 0xC0) == 0x80)
+			pos++;
+	return pos;
+}
+
+static int ch_cols(const char *b, size_t n)
+{
+	const char *s = b, *e = b + n;
+	int w = 0;
+
+	if (scr_cs != TCS_UTF8)
+		return (int)n;
+	while (s < e) {
+		if ((unsigned char)*s < 0x80) {
+			s++;
+			w++;
+		} else {
+			int k = ucs_width(utf8_get(&s));
+
+			w += k > 0 ? k : 0;
+		}
+	}
+	return w;
+}
+
 /* A line editor on the status line (or, with PM_URL, in the window's URL
  * field): 1 when Enter was pressed. */
 static int prompt_mask(const char *label, char *buf, size_t n, int flags)
 {
 	size_t len = strlen(buf), pos = len;
-	int r = scr_rows - 1, lw = (int)strlen(label);
+	int r = scr_rows - 1, lw = (int)strlen(label), skip = 0;
 	static char stars[1024];
 
 	for (;;) {
 		int k, avail = scr_cols - lw - 1, start = 0;
 
 		/* show the part around the cursor */
-		if ((int)pos > avail)
-			start = (int)pos - avail;
+		if (ch_cols(buf, pos) > avail) {
+			size_t st = 0;
+
+			while (st < pos && ch_cols(buf + st, pos - st) > avail)
+				st = ch_next(buf, st, len);
+			start = (int)st;
+		}
 		draw_status();
 		if ((flags & PM_URL) && scr_url_edit(buf, (int)pos))
 			scr_cursor(-1, -1);
@@ -1815,7 +1875,7 @@ static int prompt_mask(const char *label, char *buf, size_t n, int flags)
 				scr_put(r, lw, stars + start, (int)len - start, 0);
 			} else
 				scr_put(r, lw, buf + start, (int)len - start, 0);
-			scr_cursor(r, lw + (int)pos - start);
+			scr_cursor(r, lw + ch_cols(buf + start, pos - (size_t)start));
 		}
 		scr_flush(0);
 		k = scr_getkey(-1);
@@ -1832,24 +1892,26 @@ static int prompt_mask(const char *label, char *buf, size_t n, int flags)
 			return 0;
 		case 8: case 127:
 			if (pos) {
-				memmove(buf + pos - 1, buf + pos, len - pos + 1);
-				pos--;
-				len--;
+				size_t p0 = ch_prev(buf, pos);
+
+				memmove(buf + p0, buf + pos, len - pos + 1);
+				len -= pos - p0;
+				pos = p0;
 			}
 			break;
 		case K_DEL: case 4:
 			if (pos < len) {
-				memmove(buf + pos, buf + pos + 1, len - pos);
-				len--;
+				size_t p1 = ch_next(buf, pos, len);
+
+				memmove(buf + pos, buf + p1, len - p1 + 1);
+				len -= p1 - pos;
 			}
 			break;
 		case K_LEFT: case 2:
-			if (pos)
-				pos--;
+			pos = ch_prev(buf, pos);
 			break;
 		case K_RIGHT: case 6:
-			if (pos < len)
-				pos++;
+			pos = ch_next(buf, pos, len);
 			break;
 		case K_HOME: case 1:
 			pos = 0;
@@ -1866,7 +1928,22 @@ static int prompt_mask(const char *label, char *buf, size_t n, int flags)
 			len = pos;
 			break;
 		default:
-			if (k >= 32 && k < 256 && k != 127 && len + 1 < n) {
+			if (k < 32 || k >= 256 || k == 127)
+				break;
+			/* (a UTF-8 character that won't fit whole isn't begun) */
+			if (scr_cs == TCS_UTF8 && (k & 0xC0) == 0x80 && skip) {
+				skip--;
+				break;
+			}
+			if (scr_cs == TCS_UTF8 && k >= 0xC0) {
+				int more = k >= 0xF0 ? 3 : k >= 0xE0 ? 2 : 1;
+
+				if (len + 1 + (size_t)more >= n) {
+					skip = more;
+					break;
+				}
+			}
+			if (len + 1 < n) {
 				memmove(buf + pos + 1, buf + pos, len - pos + 1);
 				buf[pos++] = (char)k;
 				len++;
