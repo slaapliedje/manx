@@ -81,6 +81,21 @@ static void inner_text(const struct doc *d, nodeid id, char *out, size_t n,
 	}
 }
 
+/* the text inside id, all of it, in a new string (NULL: no memory) */
+static char *inner_dup(const struct doc *d, nodeid id)
+{
+	size_t n = 1;
+	nodeid c;
+	char *s;
+
+	for (c = d->nodes[id].first; c; c = d->nodes[c].next)
+		if (d->nodes[c].type == NODE_TEXT)
+			n += strlen(doc_text(d, c));
+	if ((s = xmalloc(n)) != NULL)
+		inner_text(d, id, s, n, 0);
+	return s;
+}
+
 /* the options of a select (optgroups looked into) */
 int forms_options(const struct forms *fs, const struct field *f,
 	nodeid *opts, int max)
@@ -111,7 +126,6 @@ int forms_options(const struct forms *fs, const struct field *f,
 static void initial(struct forms *fs, struct field *f)
 {
 	const struct doc *d = fs->d;
-	static char buf[8192];
 
 	xfree(f->value);
 	f->value = NULL;
@@ -123,8 +137,8 @@ static void initial(struct forms *fs, struct field *f)
 		f->checked = doc_attr(d, f->node, ATTR_CHECKED) != NULL;
 		break;
 	case FT_SELECT: {
-		nodeid o[256];
-		int n = forms_options(fs, f, o, 256), i;
+		static nodeid o[FORMS_MAX_OPTIONS];
+		int n = forms_options(fs, f, o, FORMS_MAX_OPTIONS), i;
 
 		for (i = 0; i < n && !f->selected; i++)
 			if (doc_attr(d, o[i], ATTR_SELECTED))
@@ -134,8 +148,8 @@ static void initial(struct forms *fs, struct field *f)
 		break;
 	}
 	case FT_TEXTAREA:
-		inner_text(d, f->node, buf, sizeof buf, 0);
-		f->value = xstrdup(buf);
+		/* (whole: what's sent back is what was there) */
+		f->value = inner_dup(d, f->node);
 		break;
 	default: {
 		const char *v = doc_attr(d, f->node, ATTR_VALUE);

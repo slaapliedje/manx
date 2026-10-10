@@ -45,7 +45,9 @@ void forms_set_text(struct field *f, const char *v);
  * are not). */
 void forms_click(struct forms *fs, struct field *f);
 
-/* the options of a select: up to max, and which is chosen */
+/* the options of a select: up to max, and which is chosen. Lists are
+ * taken up to FORMS_MAX_OPTIONS long (countries, time zones, years) */
+#define FORMS_MAX_OPTIONS	1024
 int forms_options(const struct forms *fs, const struct field *f,
 	nodeid *opts, int max);
 void forms_choose(struct field *f, nodeid option);

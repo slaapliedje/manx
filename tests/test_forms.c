@@ -70,6 +70,31 @@ int main(void)
 	submit("get", nth(FT_SUBMIT, 0), 0, "GET",
 		"http://h.test/search?q=68030+%26+friends&go=Go", "");
 
+	/* long lists and long text, whole: the 280th of 300 options is the
+	 * one chosen; a textarea's 10000 bytes go back as they came */
+	{
+		static char big[16384];
+		int o = sprintf(big, "<form action=/f><select name=s>"), i;
+
+		for (i = 0; i < 300; i++)
+			o += sprintf(big + o, "<option%s>o%d", i == 280 ? " selected" : "", i);
+		strcpy(big + o, "</select></form>");
+		load(big, "utf-8");
+		submit("option 280 of 300", NULL, 0, "GET", "http://h.test/f?s=o280", "");
+
+		o = sprintf(big, "<form action=/t method=post><textarea name=t>");
+		memset(big + o, 'x', 10000);
+		strcpy(big + o + 10000, "</textarea></form>");
+		load(big, "utf-8");
+		f = nth(FT_TEXTAREA, 0);
+		runs++;
+		if (f == NULL || f->value == NULL || strlen(f->value) != 10000) {
+			fails++;
+			printf("FAIL a textarea of 10000 bytes: %lu\n", f && f->value
+				? (unsigned long)strlen(f->value) : 0UL);
+		}
+	}
+
 	load("<form method=post action=login.cgi><input type=hidden name=t "
 		"value=x><input name=u><input type=password name=p>"
 		"<input type=checkbox name=keep><input type=checkbox name=c2 "
