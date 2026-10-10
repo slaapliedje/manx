@@ -133,33 +133,85 @@ static void make_table(void)
 	table_ready = 1;
 }
 
-/* does a style="" attribute say display:none or visibility:hidden? */
+/* does [a, b) say word w, in any case? */
+static int is_word(const char *a, const char *b, const char *w)
+{
+	for (; a < b && *w; a++, w++) {
+		char c = *a >= 'A' && *a <= 'Z' ? (char)(*a + 32) : *a;
+
+		if (c != *w)
+			return 0;
+	}
+	return a == b && !*w;
+}
+
+static int is_space(char c)
+{
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f';
+}
+
+/*
+ * Does a style="" attribute hide its element: display:none,
+ * visibility:hidden or collapse, content-visibility:hidden (what's inside
+ * isn't drawn)? Read as CSS reads it, a declaration at a time: the whole
+ * property name, any case (not --x-display, a custom property); a later
+ * declaration wins, unless the earlier was !important.
+ */
 static int css_hidden(const char *css)
 {
-	const char *p;
+	static const char *const prop[3] = { "display", "visibility", "content-visibility" };
+	int hide[3] = { 0, 0, 0 }, imp[3] = { 0, 0, 0 };
+	const char *p = css;
 
-	for (p = css; *p; p++) {
-		const char *v;
+	while (*p) {
+		const char *name, *ne, *v, *ve;
+		char q = 0;
+		int k, depth = 0, important = 0, h;
 
-		if (*p != 'd' && *p != 'v')
+		while (is_space(*p) || *p == ';')
+			p++;
+		name = p;
+		while (*p && *p != ':' && *p != ';')
+			p++;
+		for (ne = p; ne > name && is_space(ne[-1]); ne--)
+			;
+		if (*p != ':')
 			continue;
-		if (strncmp(p, "display", 7) == 0)
-			v = p + 7;
-		else if (strncmp(p, "visibility", 10) == 0)
-			v = p + 10;
-		else
+		v = ++p;
+		/* the value: to a ';' outside quotes and brackets */
+		while (*p && (q || depth || *p != ';')) {
+			if (q) {
+				if (*p == q)
+					q = 0;
+			} else if (*p == '"' || *p == '\'')
+				q = *p;
+			else if (*p == '(')
+				depth++;
+			else if (*p == ')' && depth)
+				depth--;
+			p++;
+		}
+		for (k = 0; k < 3 && !is_word(name, ne, prop[k]); k++)
+			;
+		if (k == 3)
 			continue;
-		while (*v == ' ')
+		for (ve = p; ve > v && is_space(ve[-1]); ve--)
+			;
+		while (v < ve && is_space(*v))
 			v++;
-		if (*v != ':')
+		if (ve - v >= 10 && is_word(ve - 10, ve, "!important")) {
+			important = 1;
+			for (ve -= 10; ve > v && is_space(ve[-1]); ve--)
+				;
+		}
+		if (imp[k] && !important)
 			continue;
-		v++;
-		while (*v == ' ')
-			v++;
-		if (strncmp(v, "none", 4) == 0 || strncmp(v, "hidden", 6) == 0)
-			return 1;
+		h = k == 0 ? is_word(v, ve, "none")
+			: is_word(v, ve, "hidden") || (k == 1 && is_word(v, ve, "collapse"));
+		hide[k] = h;
+		imp[k] = important;
 	}
-	return 0;
+	return hide[0] || hide[1] || hide[2];
 }
 
 void style_for(int tag, const char *hidden, const char *css, const char *id,

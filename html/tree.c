@@ -335,7 +335,11 @@ static void start_tag(struct tree *b, const struct tok_tag *t)
 	if (id == 0)
 		return;
 	if (f & TF_DROP) {
-		/* svg, math, template: keep the element, drop what's inside */
+		/* svg, math, template: keep the element, drop what's inside
+		 * (<svg/> and <math/> have nothing inside: foreign elements
+		 * close themselves; <template/> doesn't, as in browsers) */
+		if (t->self_closing && tag != TAG_TEMPLATE)
+			return;
 		b->skip_tag = tag;
 		b->skip_nest = 1;
 		return;

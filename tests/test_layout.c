@@ -202,6 +202,16 @@ static void check_grid_pixels(void)
 
 int main(void)
 {
+	/* foreign elements close themselves: what follows is the page's */
+	check("svg/ and math/", "<p>before</p><svg/><p>after</p><math/><p>end</p>",
+		40, TCS_ASCII, "before\n\nafter\n\nend\n");
+	/* style="" as CSS reads it: whole property names, the later
+	 * declaration wins (unless the earlier is !important), any case */
+	check("style= display", "<p style=\"--x-display:none\">a</p>"
+		"<p style=\"display:none;display:block\">b</p>"
+		"<p style=\"display:none !important;display:block\">c</p>"
+		"<p style=\"DISPLAY : NONE\">d</p><p>e</p>",
+		40, TCS_ASCII, "a\n\nb\n\ne\n");
 	check("wrap", "<p>The quick brown fox jumps over the lazy dog.", 16,
 		TCS_ASCII, "The quick brown\nfox jumps over\nthe lazy dog.\n");
 	check("word across elements", "<p>aaaa bbbb c<b>cc</b>c dd", 12,
