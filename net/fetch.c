@@ -425,9 +425,11 @@ static int http_fetch(struct url *u, const char *method,
 			return fail(res, "bad redirect location");
 		if (strcmp(next.scheme, "http") && strcmp(next.scheme, "https"))
 			return fail(res, "redirect to an unsupported scheme");
-		next.has_fragment = next.has_fragment || u->has_fragment;
-		if (!next.has_fragment)
+		/* (a fragment the target doesn't give is the one asked for) */
+		if (!next.has_fragment && u->has_fragment) {
 			strcpy(next.fragment, u->fragment);
+			next.has_fragment = 1;
+		}
 		*u = next;
 		res->redirects++;
 		/* after a POST: 301/302/303 go on with a GET (as browsers do),

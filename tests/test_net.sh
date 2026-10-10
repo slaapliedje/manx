@@ -24,6 +24,7 @@ check "content-length"  "^200 .*5 B"            "hello"          http://$H:8081/
 check "chunked"         "text/html; iso-8859-1" "<html>chunked"  http://$H:8081/chunked
 check "until close"     "^200 .*11 B"           "until close"    http://$H:8081/close
 check "redirects"       "2 redirect"            "hello"          http://$H:8081/redir
+check "redirect keeps #" "len#sec "              "hello"          "http://$H:8081/redir#sec"
 check "redirect loop"   "too many redirects"    ""               http://$H:8081/loop
 check "slow head"       "^200"                  "slow"           http://$H:8081/slowhead
 check "404"             "^404"                  ""               http://$H:8081/nothing
