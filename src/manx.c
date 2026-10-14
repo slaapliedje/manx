@@ -657,6 +657,7 @@ static void on_head(void *ctx, int status, const char *ctype,
 		&& strncmp(ctype, "text/", 5) != 0;
 	if (g_unsupported)
 		return;
+	g_doc.img_w = scr_pixels() ? scr_pane_w() : 0;	/* (srcset) */
 	html_load_begin(&g_load, &g_doc, charset,
 		!g_gopher && !is_html(ctype));
 	if (g_gopher)
@@ -764,6 +765,7 @@ static void load_string(const char *html, const char *url)
 	g_img_busy = g_css_busy = 0;
 	doc_free(&g_doc);
 	doc_init(&g_doc, 0);
+	g_doc.img_w = scr_pixels() ? scr_pane_w() : 0;	/* (srcset) */
 	html_load_begin(&g_load, &g_doc, "utf-8", 0);
 	html_load_feed(&g_load, (const unsigned char *)html, strlen(html));
 	html_load_end(&g_load);
@@ -950,6 +952,7 @@ static int load_cached(const char *key, const struct cache_meta *m,
 	doc_reset();
 	snprintf(g_ctype, sizeof g_ctype, "%s", m->type);
 	g_gopher = strcmp(m->type, "text/x-gopher-menu") == 0;
+	g_doc.img_w = scr_pixels() ? scr_pane_w() : 0;	/* (srcset) */
 	html_load_begin(&g_load, &g_doc, m->charset,
 		!g_gopher && !is_html(m->type));
 	if (g_gopher)

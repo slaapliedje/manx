@@ -120,16 +120,128 @@ nodeid doc_add_elem(struct doc *d, nodeid parent, int tag)
 	return id;
 }
 
+static int is_ws(char c)
+{
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f';
+}
+
+/* a picture this can show (not by its name WebP or AVIF) */
+static int showable(const char *u, const char *ue)
+{
+	const char *q = u;
+
+	while (q < ue && *q != '?' && *q != '#')
+		q++;
+	if (q - u >= 5) {
+		char t[6];
+		int i;
+
+		for (i = 0; i < 5; i++)
+			t[i] = (char)(q[i - 5] >= 'A' && q[i - 5] <= 'Z' ? q[i - 5] + 32 : q[i - 5]);
+		t[5] = '\0';
+		if (strcmp(t, ".webp") == 0 || strcmp(t, ".avif") == 0)
+			return 0;
+	}
+	return 1;
+}
+
+const char *doc_srcset_pick(const char *ss, int target, size_t *len)
+{
+	const char *p = ss, *bw = NULL, *wide = NULL, *bx = NULL;
+	size_t bw_n = 0, wide_n = 0, bx_n = 0;
+	long bw_v = 0, wide_v = 0, bx_v = 0;
+
+	while (*p) {
+		const char *u, *ue, *q;
+		long v = 0, frac = 0;
+		int fd = 0;
+
+		while (is_ws(*p) || *p == ',')
+			p++;
+		if (*p == '\0')
+			break;
+		u = p;
+		while (*p && !is_ws(*p))
+			p++;
+		ue = p;
+		if (ue[-1] == ',') {
+			/* (commas right after the URL: no descriptor) */
+			while (ue > u && ue[-1] == ',')
+				ue--;
+			q = ue;
+		} else {
+			while (is_ws(*p))
+				p++;
+			q = p;
+			while (*p && *p != ',')
+				p++;
+		}
+		if (ue == u || !showable(u, ue))
+			continue;
+		while (*q >= '0' && *q <= '9' && v < 100000)
+			v = v * 10 + (*q++ - '0');
+		if (*q == '.')
+			for (q++; *q >= '0' && *q <= '9'; q++)
+				if (fd < 3) {
+					frac = frac * 10 + (*q - '0');
+					fd++;
+				}
+		while (fd < 3) {
+			frac *= 10;
+			fd++;
+		}
+		if (*q == 'w' && v > 0) {
+			if (v >= target && (bw == NULL || v < bw_v)) {
+				bw = u;
+				bw_n = (size_t)(ue - u);
+				bw_v = v;
+			}
+			if (wide == NULL || v > wide_v) {
+				wide = u;
+				wide_n = (size_t)(ue - u);
+				wide_v = v;
+			}
+		} else {
+			long x = *q == 'x' ? v * 1000 + frac : 1000;
+
+			if (bx == NULL || x < bx_v) {
+				bx = u;
+				bx_n = (size_t)(ue - u);
+				bx_v = x;
+			}
+		}
+	}
+	if (bw) {
+		*len = bw_n;
+		return bw;
+	}
+	if (wide) {
+		*len = wide_n;
+		return wide;
+	}
+	*len = bx_n;
+	return bx;
+}
+
 void doc_attr_add(struct doc *d, int attr, const char *value)
 {
 	size_t n = strlen(value);
 
 	if (d->truncated)
 		return;
+	/* pictures' choices: none kept where none are shown; of a srcset
+	 * the one candidate fetched (whole lists took big pages' memory) */
+	if (attr == ATTR_SRCSET || attr == ATTR_DATA_SRCSET || attr == ATTR_DATA_SRC) {
+		if (d->img_w <= 0)
+			return;
+		if (attr != ATTR_DATA_SRC && (value = doc_srcset_pick(value, d->img_w, &n)) == NULL)
+			return;
+	}
 	if (grow(d, (void **)&d->attr, &d->attr_cap, d->attr_len + n + 3, 1) < 0)
 		return;
 	d->attr[d->attr_len++] = (unsigned char)attr;
-	memcpy(d->attr + d->attr_len, value, n + 1);
+	memcpy(d->attr + d->attr_len, value, n);
+	d->attr[d->attr_len + n] = '\0';
 	d->attr_len += n + 1;
 }
 

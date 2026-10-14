@@ -66,6 +66,10 @@ struct css_text {
 					 * CSS_RGB_SET | 0xRRGGBB */
 };
 
+/* Does a media query list (<source media="">) hold on a screen vw units
+ * wide? */
+int css_media_matches(const char *q, int vw);
+
 /* An HTML attribute's colour (bgcolor=, bordercolor=): a CSS colour, or
  * hex without its '#' as browsers take it. 1 and *rgb, or 0. */
 int css_attr_color(const char *v, unsigned long *rgb);

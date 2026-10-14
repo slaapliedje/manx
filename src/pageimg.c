@@ -18,12 +18,14 @@
  * nearest the lines shown first.
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include "os.h"
 #include "fetch.h"
 #include "cache.h"
 #include "tags.h"
+#include "css.h"
 #include "image.h"
 #include "pixels.h"
 #include "screen.h"
@@ -39,7 +41,8 @@ enum { P_NEW, P_HAVE, P_FAILED, P_SKIP };
 
 struct pent {
 	nodeid node;
-	const char *src;		/* the doc's */
+	const char *src;		/* the doc's, or own */
+	char *own;			/* a URL chosen from a srcset (copied) */
 	unsigned char state;
 	unsigned char bad;		/* decoding at bw x bh failed: not again */
 	unsigned char whole;		/* scr has every row */
@@ -90,6 +93,7 @@ void pimg_end(void)
 	for (i = 0; i < g_n; i++) {
 		drop_data(&g_e[i]);
 		drop_scr(&g_e[i]);
+		xfree(g_e[i].own);
 	}
 	xfree(g_e);
 	g_e = NULL;
@@ -103,6 +107,77 @@ static int tiny(const char *v)
 {
 	return v && (strcmp(v, "0") == 0 || strcmp(v, "1") == 0
 		|| strcmp(v, "0px") == 0 || strcmp(v, "1px") == 0);
+}
+
+/* a lazy-loading page's stand-in picture (the real one in data-src) */
+static int placeholder(const char *s)
+{
+	const char *b = strrchr(s, '/');
+
+	if (strncmp(s, "data:", 5) == 0)
+		return strlen(s) < 300;
+	b = b ? b + 1 : s;
+	return strncmp(b, "blank.", 6) == 0 || strncmp(b, "spacer.", 7) == 0
+		|| strncmp(b, "pixel.", 6) == 0 || strncmp(b, "transparent.", 12) == 0
+		|| strncmp(b, "placeholder", 11) == 0;
+}
+
+/* a <source type=""> this can show */
+static int shown_type(const char *t)
+{
+	return strncmp(t, "image/jpeg", 10) == 0 || strncmp(t, "image/jpg", 9) == 0
+		|| strncmp(t, "image/png", 9) == 0 || strncmp(t, "image/gif", 9) == 0
+		|| strncmp(t, "image/pjpeg", 11) == 0;
+}
+
+/*
+ * The picture <img> id is to show, when not just its src: in a <picture>,
+ * the first <source> this can show whose media= holds; else its srcset
+ * (or a lazy-loading page's data-srcset), a candidate the size it's shown
+ * at (doc_srcset_pick; the document keeps only that one); else data-src
+ * where src is a stand-in. A copy, or NULL for src as it is.
+ */
+static char *pick(const struct doc *d, nodeid id)
+{
+	nodeid par = d->nodes[id].parent, c;
+	int vw = scr_pane_w(), target = vw;
+	const char *v, *u = NULL;
+	size_t n = 0;
+	char *r;
+
+	if ((v = doc_attr(d, id, ATTR_WIDTH)) != NULL && atoi(v) > 0
+		&& !strchr(v, '%') && atoi(v) < target)
+		target = atoi(v);
+	if (par && d->nodes[par].tag == TAG_PICTURE)
+		for (c = d->nodes[par].first; c && c != id && u == NULL; c = d->nodes[c].next) {
+			const char *t, *m;
+
+			if (d->nodes[c].type != NODE_ELEM || d->nodes[c].tag != TAG_SOURCE
+				|| (v = doc_attr(d, c, ATTR_SRCSET)) == NULL)
+				continue;
+			if ((t = doc_attr(d, c, ATTR_TYPE)) != NULL && *t && !shown_type(t))
+				continue;
+			if ((m = doc_attr(d, c, ATTR_MEDIA)) != NULL && *m
+				&& !css_media_matches(m, vw))
+				continue;
+			u = doc_srcset_pick(v, target, &n);
+		}
+	if (u == NULL && ((v = doc_attr(d, id, ATTR_SRCSET)) != NULL
+		|| (v = doc_attr(d, id, ATTR_DATA_SRCSET)) != NULL))
+		u = doc_srcset_pick(v, target, &n);
+	if (u == NULL && (v = doc_attr(d, id, ATTR_DATA_SRC)) != NULL && *v) {
+		const char *s = doc_attr(d, id, ATTR_SRC);
+
+		if (s == NULL || *s == '\0' || placeholder(s)) {
+			u = v;
+			n = strlen(v);
+		}
+	}
+	if (u == NULL || n == 0 || (r = xmalloc(n + 1)) == NULL)
+		return NULL;
+	memcpy(r, u, n);
+	r[n] = '\0';
+	return r;
 }
 
 void pimg_begin(const struct doc *d, const struct url *base, const char *page_url)
@@ -140,6 +215,8 @@ void pimg_begin(const struct doc *d, const struct url *base, const char *page_ur
 		e = &g_e[g_n++];
 		e->node = (nodeid)id;
 		src = doc_attr(d, (nodeid)id, ATTR_SRC);
+		if ((e->own = pick(d, (nodeid)id)) != NULL)
+			src = e->own;
 		e->src = src;
 		if (src == NULL || *src == '\0'
 			|| (tiny(doc_attr(d, (nodeid)id, ATTR_WIDTH))

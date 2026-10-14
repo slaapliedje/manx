@@ -37,6 +37,11 @@ struct doc {
 	nodeid res_parent;		/* doc_text_reserve's parent */
 	int res_extend;			/* ... extending last_text */
 	struct css_sheet *sheet;	/* its <style> rules (style/css.h), or NULL */
+	int img_w;			/* pictures are shown up to this wide:
+					 * a srcset's choice is made for it as
+					 * the page is read (only that one is
+					 * kept); 0: none shown, so srcset and
+					 * data-src aren't kept at all */
 };
 
 /* An empty document with its root node; byte_cap bounds the memory it
@@ -51,6 +56,14 @@ void doc_free(struct doc *d);
 nodeid doc_add_elem(struct doc *d, nodeid parent, int tag);
 void doc_attr_add(struct doc *d, int attr, const char *value);
 void doc_attr_end(struct doc *d);
+
+/*
+ * Of an <img> or <source> srcset (url [Nw | Nx], ...), the candidate to
+ * fetch for a picture shown target units wide: the smallest at least that
+ * wide (w), else the widest; with densities (x), the lowest. Not WebP or
+ * AVIF, which can't be shown here. Its URL (*len bytes into ss), or NULL.
+ */
+const char *doc_srcset_pick(const char *ss, int target, size_t *len);
 
 /* Append text to parent: joined to its last child if that is text and
  * still ends the pool. */

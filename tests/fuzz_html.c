@@ -96,6 +96,8 @@ static char *dump_of(const unsigned char *s, size_t n, int chunked, size_t cap)
 
 	if (doc_init(&d, cap) < 0)
 		return strdup("oom");
+	/* half the time pictures shown (srcset chosen as the page is read) */
+	d.img_w = rnd(2) ? 1 + (int)rnd(2000) : 0;
 	html_load_begin(&l, &d, rnd(3) == 0 ? "windows-1252" : NULL, rnd(20) == 0);
 	while (off < n) {
 		size_t k = chunked ? 1 + rnd(97) : n - off;

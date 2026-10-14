@@ -323,6 +323,69 @@ static unsigned short media_id(struct css_sheet *s, const struct media *m)
 	return (unsigned short)++s->nmedia;
 }
 
+/* one query of a list, q[i..e): whether it can hold (print and the like
+ * can't), its width's range into *min, *max (0: none) */
+static int one_query(const char *q, size_t i, size_t e, long *min, long *max)
+{
+	int ok = 1, neg = 0, type = 0;
+
+	*min = *max = 0;
+	while (i < e) {
+		int c = (unsigned char)q[i];
+
+		if (is_space(c)) {
+			i++;
+		} else if (c == '(') {
+			size_t j = i + 1;
+			int r;
+
+			while (j < e && q[j] != ')')
+				j++;
+			r = feature(q + i + 1, j - i - 1, min, max);
+			if (r <= 0)
+				ok = 0;
+			i = j + 1;
+		} else {
+			size_t j = i;
+
+			while (j < e && !is_space((unsigned char)q[j]) && q[j] != '(')
+				j++;
+			if (starts(q + i, j - i, "not"))
+				neg = 1;
+			else if (starts(q + i, j - i, "only") || starts(q + i, j - i, "and"))
+				;
+			else if (starts(q + i, j - i, "all") || starts(q + i, j - i, "screen"))
+				type = 1;
+			else
+				type = -1;	/* print, speech... */
+			i = j;
+		}
+	}
+	if (type < 0)
+		ok = 0;
+	if (neg)
+		ok = type < 0 && *max == 0 && *min == 0;	/* "not print" */
+	return ok;
+}
+
+int css_media_matches(const char *q, int vw)
+{
+	size_t n = strlen(q), i = 0;
+
+	while (i <= n) {
+		size_t e = i;
+		long min, max;
+
+		while (e < n && q[e] != ',')
+			e++;
+		if (one_query(q, i, e, &min, &max) && (max == 0 || min <= max)
+			&& vw >= min && (max == 0 || vw <= max))
+			return 1;
+		i = e + 1;
+	}
+	return 0;
+}
+
 /* a media query list: 0 for "all", else 1 + its entry in s->media */
 static unsigned short parse_media(struct css_sheet *s, const char *q, size_t n)
 {
@@ -332,46 +395,12 @@ static unsigned short parse_media(struct css_sheet *s, const char *q, size_t n)
 	memset(&m, 0, sizeof m);
 	while (i <= n) {
 		size_t e = i;
-		long min = 0, max = 0;
-		int ok = 1, neg = 0, type = 0;
+		long min, max;
+		int ok;
 
 		while (e < n && q[e] != ',')
 			e++;
-		while (i < e) {
-			int c = (unsigned char)q[i];
-
-			if (is_space(c)) {
-				i++;
-			} else if (c == '(') {
-				size_t j = i + 1;
-				int r;
-
-				while (j < e && q[j] != ')')
-					j++;
-				r = feature(q + i + 1, j - i - 1, &min, &max);
-				if (r <= 0)
-					ok = 0;
-				i = j + 1;
-			} else {
-				size_t j = i;
-
-				while (j < e && !is_space((unsigned char)q[j]) && q[j] != '(')
-					j++;
-				if (starts(q + i, j - i, "not"))
-					neg = 1;
-				else if (starts(q + i, j - i, "only") || starts(q + i, j - i, "and"))
-					;
-				else if (starts(q + i, j - i, "all") || starts(q + i, j - i, "screen"))
-					type = 1;
-				else
-					type = -1;	/* print, speech... */
-				i = j;
-			}
-		}
-		if (type < 0)
-			ok = 0;
-		if (neg)
-			ok = type < 0 && max == 0 && min == 0;	/* "not print" */
+		ok = one_query(q, i, e, &min, &max);
 		if (ok && (max == 0 || min <= max) && m.n < MEDIA_ALTS) {
 			m.alt[m.n].min = (unsigned short)(min > 65535 ? 65535 : min);
 			m.alt[m.n].max = (unsigned short)(max > 65535 ? 65535 : max);

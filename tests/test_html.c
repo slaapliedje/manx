@@ -200,10 +200,41 @@ static void charsets(void)
 	}
 }
 
+/* srcset's candidates: the one fetched for a picture target wide */
+static void pick(const char *ss, int target, const char *want)
+{
+	size_t n = 0;
+	const char *u = doc_srcset_pick(ss, target, &n);
+
+	if (u == NULL ? want != NULL : (want == NULL || strlen(want) != n
+		|| strncmp(u, want, n) != 0)) {
+		fails++;
+		printf("FAIL srcset \"%s\" for %d: got \"%.*s\", want \"%s\"\n", ss,
+			target, u ? (int)n : 0, u ? u : "", want ? want : "(none)");
+	}
+}
+
+static void srcsets(void)
+{
+	const char *w = "a.jpg 320w, b.jpg 640w, c.jpg 1280w";
+
+	pick(w, 500, "b.jpg");		/* the smallest at least that wide */
+	pick(w, 2000, "c.jpg");		/* none is: the widest */
+	pick(w, 100, "a.jpg");
+	pick("b.jpg 2x, a.jpg 1x", 500, "a.jpg");	/* the lowest density */
+	pick("b.jpg 2x, a.jpg", 500, "a.jpg");		/* (no descriptor: 1x) */
+	pick("a.webp 320w, b.jpg 640w", 300, "b.jpg");	/* (not WebP) */
+	pick("x.jpg?w=320 320w,y.jpg 640w", 300, "x.jpg?w=320");
+	pick("a.jpg 1x,b.jpg 2x", 500, "a.jpg");	/* (a comma ends a descriptor) */
+	pick("a,b.jpg 2x", 500, "a,b.jpg");		/* (but not a URL: the spec's) */
+	pick("only.webp 1x", 500, NULL);
+}
+
 int main(void)
 {
 	tables();
 	charsets();
+	srcsets();
 
 	check_body("basic", "<p>Hello <b>world</b>",
 		"    <p>\n      \"Hello \"\n      <b>\n        \"world\"\n");
