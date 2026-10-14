@@ -166,7 +166,7 @@ Settings go in `~/.manx/config`, one `key = value` a line, or as
 | `cache_kb` | the disk cache's size (2048; 0 for none) |
 | `cafile` | a PEM bundle to build the roots from |
 | `early_requests` | `off`: send nothing before the certificate is checked |
-| `transputer` | `off`: certificate checks on the 68030 alone, not shared with the ATW800/2's T425. The T425's first 2 MB are the card's memory past 2 MB, the screen's when the desktop has 32 bits a pixel: `xmanx` then leaves the T425 alone by itself, `manx` and `ufetch` need `off` |
+| `transputer` | `off`: certificate checks on the 68030 alone, not shared with the ATW800/2's T425 (whose program runs in the T425's own memory, above the card's that a 32-bit desktop shows) |
 
 `?` in the browser lists the keys.
 

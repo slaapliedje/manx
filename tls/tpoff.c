@@ -9,6 +9,13 @@
  * 2-byte length, the tag, the rest): answered here, then tpsig's own
  * protocol (tpproto.h) takes over.
  *
+ * The bootable goes after tpreloc (tp/tpreloc.py), so it runs from
+ * 0x80200070: from 0x80000000 the T425's memory is the card's past 2 MB,
+ * which a desktop at 32 bits a pixel shows and draws in; from 2 MB up only
+ * the T425 sees it. (The INMOS bootstrap and C runtime place themselves
+ * with ldpi; the runtime's memory top is MostNeg + IBOARDSIZE, so that is
+ * answered #300000: tpsig has 0x80200070 to 0x80300000.)
+ *
  * What tpsig worked on stays in the T425's memory through a reset, for
  * anyone who can open the link to read back: so once it has been sent,
  * the memory it uses is zeroed (tpwipe.h) when the T425 is given up, at
@@ -43,11 +50,47 @@ static char g_dev[256] = "/dev/link1", g_btl[512], g_why[96];
 static unsigned long g_jobs, g_waited;
 static int g_dirty;			/* tpsig may be in the T425's memory */
 
-/* tpsig's memory: its C runtime is told IBOARDSIZE #100000 (below), so
- * all it touches is in the first megabyte */
+/* tpsig's memory: tpreloc runs it from 0x80200070, its C runtime told
+ * IBOARDSIZE #300000 (below), so it is all between that and 0x80300000 -
+ * and the chip's own, where tpreloc is */
+#define TP_TOP		0x80300000UL
 static const unsigned long g_used[][2] = {
-	{ TPW_CHIP_FREE, TPW_EXT }, { TPW_EXT, 0x80100000UL }
+	{ TPW_CHIP_FREE, TPW_EXT }, { TPW_SHARED_END, TP_TOP }
 };
+
+/* tp/tpreloc.py: 51 bytes, the bootable run from 0x80200070 */
+static const unsigned char reloc[] = {
+	0xb8,                                   /*   0  ajw 8 */
+	0xd1,                                   /*   1  stl 1 */
+	0xd2,                                   /*   2  stl 2 */
+	0xd3,                                   /*   3  stl 3 */
+	0x40,                                   /*   4  ldc 0 */
+	0xd4,                                   /*   5  stl 4 */
+	0x14,                                   /*   6  ldlp 4 */
+	0x73,                                   /*   7  ldl 3 */
+	0x41,                                   /*   8  ldc 1 */
+	0xf7,                                   /*   9  in */
+	0x27, 0x2f, 0x2d, 0x2f, 0x2f, 0x2f, 0x68, 0x40, /*  10  ldc -2145386384 */
+	0x73,                                   /*  18  ldl 3 */
+	0x74,                                   /*  19  ldl 4 */
+	0xf7,                                   /*  20  in */
+	0x27, 0x2f, 0x2d, 0x2f, 0x2f, 0x2f, 0x68, 0x40, /*  21  ldc -2145386384 */
+	0x74,                                   /*  29  ldl 4 */
+	0xf5,                                   /*  30  add */
+	0x83,                                   /*  31  adc 3 */
+	0x60, 0x4c,                             /*  32  ldc -4 */
+	0x24, 0xf6,                             /*  34  and */
+	0x23, 0xfc,                             /*  36  gajw */
+	0xd0,                                   /*  38  stl 0 */
+	0x70,                                   /*  39  ldl 0 */
+	0x33,                                   /*  40  ldnl 3 */
+	0x70,                                   /*  41  ldl 0 */
+	0x32,                                   /*  42  ldnl 2 */
+	0x70,                                   /*  43  ldl 0 */
+	0x31,                                   /*  44  ldnl 1 */
+	0x21, 0x2f, 0x2f, 0x2f, 0x2c, 0x0d,     /*  45  jabs 2149580912 */
+};
+
 
 static void wipe(void)
 {
@@ -102,15 +145,6 @@ static int down(const char *why)
 	return -1;
 }
 
-void tpoff_forbid(const char *why)
-{
-	g_configured = 1;
-	if (g_state == T_UP)
-		down(why);
-	g_state = T_OFF;
-	snprintf(g_why, sizeof g_why, "off: %s", why);
-}
-
 /* move all n bytes, waiting at most ms for each piece */
 static int move(unsigned char *b, size_t n, int out, int ms)
 {
@@ -150,7 +184,7 @@ static int serve_startup(void)
 				rp[out++] = 0;
 				rp[out++] = 7;
 				rp[out++] = 0;
-				memcpy(rp + out, "#100000", 7);	/* the T425: 1 MB */
+				memcpy(rp + out, "#300000", 7);	/* (to TP_TOP) */
 				out += 7;
 			} else
 				rp[out++] = 129;	/* SP.ERROR */
@@ -219,7 +253,15 @@ static int boot(void)
 			catch_signal(SIGTERM);
 		}
 	}
-	i = move(btl, len, 1, 3000);
+	{
+		unsigned char n = (unsigned char)sizeof reloc;
+
+		i = move(&n, 1, 1, 3000);
+		if (i == 0)
+			i = move((unsigned char *)reloc, sizeof reloc, 1, 3000);
+	}
+	if (i == 0)
+		i = move(btl, len, 1, 3000);
 	xfree(btl);
 	if (i < 0)
 		return down("boot timed out");

@@ -1,3 +1,4 @@
 build/
 .ufetch-seed
 fuzz-fail-*.html
+__pycache__/
