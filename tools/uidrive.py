@@ -19,7 +19,8 @@ step per line:
     png FILE           the screen as a picture (needs Pillow)
 
 Environment: ROWS, COLS (default 24x80). --tt: ASV_HOST (default
-192.168.3.250), ASV_TOOLS (where .asvpass lives, default
+192.168.3.250), ASV_PORT (default 23; another for ASV in Hatari, behind
+slirp), ASV_TOOLS (where .asvpass lives, default
 ~/dev/OpenUA/data/work/asv; the password never leaves this machine),
 TTCS (the MANX_CHARSET given to the program there, default latin1).
 --amix: AMIX_EMU (where .amixpass lives, default sp1's amix/work/emu);
@@ -94,7 +95,8 @@ def target(amix):
         return "127.0.0.1", 2323, os.path.join(emu, ".amixpass"), "/home/dev/manx"
     tools = os.environ.get("ASV_TOOLS",
                            os.path.expanduser("~/dev/OpenUA/data/work/asv"))
-    return (os.environ.get("ASV_HOST", "192.168.3.250"), 23,
+    return (os.environ.get("ASV_HOST", "192.168.3.250"),
+            int(os.environ.get("ASV_PORT", 23)),
             os.path.join(tools, ".asvpass"), "/work/dev/ub")
 
 
