@@ -984,7 +984,45 @@ static void template(int kind, struct sbuf *b)
 	}
 }
 
-/* $VISUAL or $EDITOR (vi) on path, the terminal handed over meanwhile */
+/* is there a program called name in a directory of $PATH? */
+static int on_path(const char *name)
+{
+	const char *p = getenv("PATH");
+	char f[1024];
+
+	if (p == NULL)
+		return 0;
+	for (;;) {
+		size_t n = strcspn(p, ":");
+
+		/* (an empty entry is the current directory) */
+		snprintf(f, sizeof f, "%.*s/%s", n ? (int)n : 1, n ? p : ".", name);
+		if (access(f, X_OK) == 0)
+			return 1;
+		if (p[n] == '\0')
+			return 0;
+		p += n + 1;
+	}
+}
+
+/* is the editor command ed vim, whatever directory and options? */
+static int is_vim(const char *ed)
+{
+	const char *w, *e, *b;
+
+	for (w = ed; *w == ' '; w++)
+		;
+	for (e = w; *e && *e != ' '; e++)
+		;
+	for (b = e; b > w && b[-1] != '/'; b--)
+		;
+	return (e - b == 3 && strncmp(b, "vim", 3) == 0)
+		|| (e - b == 4 && (strncmp(b, "nvim", 4) == 0 || strncmp(b, "gvim", 4) == 0));
+}
+
+/* $VISUAL or $EDITOR on path (vim if it is on $PATH, else vi), the
+ * terminal handed over meanwhile. vim is told the file is mail, which it
+ * can't tell from the name: lines wrap at 72, quotes are coloured. */
 static int edit_file(const char *path)
 {
 	const char *ed = getenv("VISUAL");
@@ -995,9 +1033,9 @@ static int edit_file(const char *path)
 	if (ed == NULL || *ed == '\0')
 		ed = getenv("EDITOR");
 	if (ed == NULL || *ed == '\0')
-		ed = "vi";
+		ed = on_path("vim") ? "vim" : "vi";
 	/* (through the shell: an editor with options, "emacs -nw") */
-	snprintf(line, sizeof line, "%s \"$1\"", ed);
+	snprintf(line, sizeof line, "%s %s\"$1\"", ed, is_vim(ed) ? "'+setf mail' " : "");
 	scr_suspend();
 	if ((pid = fork()) == 0) {
 		execl("/bin/sh", "sh", "-c", line, "sh", path, (char *)NULL);
@@ -1284,7 +1322,7 @@ static void compose(int kind)
 		int c, bad;
 
 		if (edit_file(path) < 0) {
-			say("Couldn't run the editor ($EDITOR, else vi).", NULL);
+			say("Couldn't run the editor ($EDITOR, else vim or vi).", NULL);
 			break;
 		}
 		xfree(text);

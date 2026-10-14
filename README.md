@@ -177,9 +177,10 @@ of its own so that the browser stays small. Each message is shown through
 the browser's page engine, HTML or plain text, with nothing it links to
 fetched (no pictures, no style sheets: they tell the sender it was
 read); a link opens in `manx`, and an attachment can be saved. Messages
-are written in `$EDITOR` (`vi` when it isn't set), as plain text, a
-reply quoting what it answers. Its settings are in the same
-`~/.manx/config`:
+are written in `$EDITOR` (when it isn't set, `vim` if there is one, else
+`vi`), as plain text, a reply quoting what it answers; vim is told the
+draft is mail, so lines wrap at 72 and quotes are coloured. Its settings
+are in the same `~/.manx/config`:
 
 | key | |
 |---|---|
