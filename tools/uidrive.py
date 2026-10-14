@@ -45,6 +45,15 @@ KEYS = {"UP": "\x1b[A", "DOWN": "\x1b[B", "RIGHT": "\x1b[C", "LEFT": "\x1b[D",
 CPR_QUERY, CPR_ANSWER = b"\x1b[6n", b"\x1b[1;2R"
 
 
+class Screen(pyte.Screen):
+    """pyte's, but it lets an xterm's private SGR by (vim's CSI > 4;2 m,
+    modifyOtherKeys), which pyte would hand to the SGR and crash on."""
+
+    def select_graphic_rendition(self, *attrs, private=False):
+        if not private:
+            super().select_graphic_rendition(*attrs)
+
+
 class Pty:
     """COMMAND in a local pseudo-terminal."""
 
@@ -230,7 +239,7 @@ def main():
     if not args:
         sys.exit(__doc__)
     conn = Telnet(" ".join(args), amix) if tt else Pty(args)
-    screen = pyte.Screen(COLS, ROWS)
+    screen = Screen(COLS, ROWS)
     stream = pyte.ByteStream(screen)
     t0 = time.time()
 
