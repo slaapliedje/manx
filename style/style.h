@@ -25,6 +25,8 @@ enum display {
 #define SA_MARK		0x10	/* drawn: a find match */
 #define SA_RULE		0x20	/* an <hr>'s dashes: as wide as their line, so
 				 * measured as nothing (a grid's columns) */
+#define SA_ONDARK	0x40	/* on a dark background (a cell's): its colour
+				 * as given, not darkened for white */
 
 /* faces (bits): which font a proportional screen draws with; a terminal
  * ignores them */

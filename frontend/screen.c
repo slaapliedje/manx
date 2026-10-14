@@ -888,6 +888,19 @@ void scr_text(int x, int y, int ascent, const char *s, int n, int attr,
 	scr_put(1 + y, x, s, n, attr);
 }
 
+/* nor boxes under the text */
+void scr_rect(int x, int y, int w, int h, unsigned long fill, int border,
+	unsigned long border_rgb)
+{
+	(void)x;
+	(void)y;
+	(void)w;
+	(void)h;
+	(void)fill;
+	(void)border;
+	(void)border_rgb;
+}
+
 /* a terminal shows no images */
 const struct px_format *scr_pixels(void)
 {

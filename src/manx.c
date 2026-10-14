@@ -168,6 +168,8 @@ static int cell_attr(int sa, int link)
 		a |= CA_BOLD;
 	if (sa & (SA_UNDER | SA_FIELD))
 		a |= CA_UNDER;
+	if (sa & SA_ONDARK)
+		a |= CA_ONDARK;
 	if (link) {
 		a |= CA_LINK;
 		if (link - 1 == g_sel)
@@ -288,6 +290,7 @@ static void draw_line_px(int y, long ln)
 	while (off < end) {
 		unsigned long next = end;
 		const struct lspan *sp;
+		int a;
 
 		s = layout_span_at(p, s, off);
 		sp = &p->spans[s];
@@ -295,11 +298,14 @@ static void draw_line_px(int y, long ln)
 			next = p->spans[s + 1].off;
 		/* (in fonts, italics and headings look like what they are:
 		 * no underline standing in for them, as on a terminal) */
+		/* (a grid cell's line keeps its own baseline) */
+		a = sp->asc ? sp->asc : lh->ascent;
+
 		if (sp->face & LF_IMAGE)
-			draw_images(x, y + lh->ascent, p->text + off, (int)(next - off),
+			draw_images(x, y + a, p->text + off, (int)(next - off),
 				cell_attr(sp->attr, sp->link));	/* (pictures: no colour) */
 		else
-			scr_text(x, y, lh->ascent, p->text + off, (int)(next - off),
+			scr_text(x, y, a, p->text + off, (int)(next - off),
 				cell_attr(sp->attr & (sp->face & (LF_ITALIC | LF_HMASK) ?
 				~SA_UNDER : 0xFF), sp->link) | CA_FG(sp->color), sp->face);
 		x += run_w(sp, p->text + off, (int)(next - off));
@@ -314,8 +320,8 @@ static void draw_line_px(int y, long ln)
 			unsigned long ms = layout_span_at(p, l->span, mo);
 
 			scr_text(l->indent + text_w_px(l, l->span, l->off, mo - l->off),
-				y, lh->ascent, p->text + mo, (int)k, CA_MARK | CA_REV,
-				p->spans[ms].face);
+				y, p->spans[ms].asc ? p->spans[ms].asc : lh->ascent,
+				p->text + mo, (int)k, CA_MARK | CA_REV, p->spans[ms].face);
 		}
 	}
 }
@@ -433,7 +439,33 @@ static void draw(int full)
 		 * picture fits) */
 		int y = 0, h = scr_pane_h();
 		long ln;
+		const long *tops = layout_tops(&g_page);
 
+		if (tops) {
+			long y0 = tops[g_top];
+			unsigned long b;
+
+			/* the boxes under the text: tables' and cells' backgrounds
+			 * and borders */
+			for (b = 0; b < g_page.nboxes; b++) {
+				const struct lbox *bx = &g_page.boxes[b];
+				long by;
+
+				if (bx->line > g_page.nlines)
+					continue;
+				by = tops[bx->line] - y0 + bx->dy;
+				if (by < h && by + bx->h > 0)
+					scr_rect(bx->x, (int)by, bx->w, (int)bx->h, bx->bg,
+						bx->border, bx->border_rgb);
+			}
+			/* lines above whose tall content (a cell's picture)
+			 * reaches down into view */
+			for (ln = g_top; ln > 0 && y0 - tops[ln] < g_page.max_over; ln--)
+				;
+			for (; ln < g_top; ln++)
+				if (tops[ln + 1] + g_page.heights[ln].over > y0)
+					draw_line_px((int)(tops[ln] - y0), ln);
+		}
 		for (ln = g_top; ln < (long)g_page.nlines && y < h; ln++) {
 			draw_line_px(y, ln);
 			y += g_page.heights[ln].height;
@@ -1668,29 +1700,15 @@ static long link_at(int row, int col)
 	return -1;
 }
 
-/* the link (0-based) under x, y of the pane, in fonts; or -1 */
-static long link_at_px(int x, int y)
+/* the link (0-based) of line ln at x across, yr below the line's top (a
+ * line above, its tall content reaching down: only what does), or -1 */
+static long link_on_line(long ln, int x, long yr)
 {
 	const struct page *p = &g_page;
-	const struct lline *l;
-	unsigned long off, end, s;
-	long ln;
-	int ly = 0, c;
+	const struct lline *l = &p->lines[ln];
+	unsigned long off = l->off, end = l->off + l->len, s = l->span;
+	int c = l->indent;
 
-	if (!g_have_page || !p->heights || x < 0 || y < 0)
-		return -1;
-	for (ln = g_top; ln < (long)p->nlines; ln++) {
-		if (y < ly + p->heights[ln].height)
-			break;
-		ly += p->heights[ln].height;
-	}
-	if (ln >= (long)p->nlines)
-		return -1;
-	l = &p->lines[ln];
-	off = l->off;
-	end = l->off + l->len;
-	s = l->span;
-	c = l->indent;
 	while (off < end) {
 		unsigned long next = end;
 		const struct lspan *sp;
@@ -1701,10 +1719,46 @@ static long link_at_px(int x, int y)
 		if (s + 1 < p->nspans && p->spans[s + 1].off < end)
 			next = p->spans[s + 1].off;
 		w = run_w(sp, p->text + off, (int)(next - off));
-		if (x >= c && x < c + w)
+		if (x >= c && x < c + w) {
+			/* (a descender's worth below its baseline) */
+			if (yr >= p->heights[ln].height
+				&& yr > (sp->asc ? sp->asc : p->heights[ln].ascent) + 4)
+				return -1;
 			return sp->link ? (long)sp->link - 1 : -1;
+		}
 		c += w;
 		off = next;
+	}
+	return -1;
+}
+
+/* the link (0-based) under x, y of the pane, in fonts; or -1 */
+static long link_at_px(int x, int y)
+{
+	const struct page *p = &g_page;
+	const long *tops;
+	long ln, k;
+	int ly = 0;
+
+	if (!g_have_page || !p->heights || x < 0 || y < 0)
+		return -1;
+	for (ln = g_top; ln < (long)p->nlines; ln++) {
+		if (y < ly + p->heights[ln].height)
+			break;
+		ly += p->heights[ln].height;
+	}
+	if (ln >= (long)p->nlines)
+		return -1;
+	if ((k = link_on_line(ln, x, y - ly)) >= 0)
+		return k;
+	/* a tall cell's line (a picture) reaching down from a band above */
+	if (p->max_over > 0 && (tops = layout_tops(&g_page)) != NULL) {
+		long ya = tops[g_top] + y, l2;
+
+		for (l2 = ln - 1; l2 >= 0 && ya - tops[l2 + 1] < p->max_over; l2--)
+			if (ya < tops[l2 + 1] + p->heights[l2].over
+				&& (k = link_on_line(l2, x, ya - tops[l2])) >= 0)
+				return k;
 	}
 	return -1;
 }

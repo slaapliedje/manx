@@ -28,6 +28,8 @@ struct lline {
  * lines are all 1 high, and don't spend memory saying so) */
 struct lheight {
 	unsigned short height, ascent;
+	unsigned short over;		/* how far what starts on it reaches
+					 * below it (a tall cell's line) */
 };
 
 /* attr/link from off up to the next span's off */
@@ -38,6 +40,9 @@ struct lspan {
 	unsigned char face;		/* LF_* (only with metrics; else 0) */
 	unsigned char color;		/* the page's style sheet's colour:
 					 * palette[color - 1]; 0: the screen's */
+	unsigned short asc;		/* its own baseline, this far below the
+					 * line's top (a grid cell's line); 0:
+					 * the line's */
 };
 
 /*
@@ -85,6 +90,20 @@ struct lanchor {
 	nodeid node;			/* has id=, or is <a name=> */
 	unsigned long line;
 };
+/*
+ * With metrics, a box under the text: a table's or a cell's background
+ * and border, its top dy below the top of line `line`, x across, w x h.
+ * Drawn in order, before the text.
+ */
+#define LBOX_NONE	0xFFFFFFFFUL	/* no fill, no border colour */
+struct lbox {
+	unsigned long line;
+	long dy, h;
+	int x, w;
+	unsigned long bg;		/* 0xRRGGBB, or LBOX_NONE */
+	unsigned long border_rgb;
+	unsigned char border;		/* its width, 0: none */
+};
 
 struct page {
 	const struct doc *d;
@@ -104,6 +123,10 @@ struct page {
 	unsigned long nanchors, anchors_cap;
 	struct limage *images;		/* NULL without metrics */
 	unsigned long nimages, images_cap;
+	struct lbox *boxes;		/* NULL without metrics */
+	unsigned long nboxes, boxes_cap;
+	long *tops;			/* lines' tops (layout_tops), or NULL */
+	int max_over;			/* the most any line's .over is */
 	unsigned long *palette;		/* the spans' colours, 0xRRGGBB */
 	int npalette;			/* (LAYOUT_MAX_COLORS at most) */
 	size_t byte_cap;		/* all of the above together */
@@ -132,6 +155,11 @@ int layout_run_m(struct page *p, const struct doc *d, int width,
 	enum term_cs cs, unsigned long max_lines, size_t byte_cap,
 	const struct forms *fs, const struct lmetrics *m);
 void layout_free(struct page *p);
+
+/* With metrics: where each line's top is (units from the page's top),
+ * tops[nlines] its foot; worked out the first time it's asked. NULL
+ * without metrics, or out of memory. */
+const long *layout_tops(struct page *p);
 
 /* The span index in effect at text offset off, looking from span s. */
 unsigned long layout_span_at(const struct page *p, unsigned long s,

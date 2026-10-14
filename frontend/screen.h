@@ -27,6 +27,7 @@ enum {
 #define CA_REV		0x04
 #define CA_LINK		0x08	/* a link's colour (underline without colour) */
 #define CA_MARK		0x10	/* a find match's colour (reverse without) */
+#define CA_ONDARK	0x20	/* on a dark box (scr_rect): colours as given */
 #define CA_FG(i)	((i) << 8)	/* the page's colour i (scr_palette) */
 #define CA_FG_OF(a)	(((a) >> 8) & 255)
 
@@ -112,6 +113,11 @@ int scr_url_edit(const char *text, int pos);
 const struct lmetrics *scr_metrics(void);	/* (layout.h) */
 int scr_pane_w(void);
 int scr_pane_h(void);
+/* A box under the page's text (X11; nothing on a terminal): at x, y of
+ * the pane, w x h, filled with fill (0xRRGGBB; LBOX_NONE: not filled), a
+ * border border units wide in border_rgb. Drawn before the text. */
+void scr_rect(int x, int y, int w, int h, unsigned long fill, int border,
+	unsigned long border_rgb);
 /* page text at x, y (the top of its line, whose baseline is ascent
  * below): attr CA_*, face LF_* */
 void scr_text(int x, int y, int ascent, const char *s, int n, int attr,

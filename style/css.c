@@ -2013,6 +2013,71 @@ int css_display(struct css_sheet *s, const struct doc *d, nodeid node,
 	return css_style(s, d, node, id, cls, vw, NULL);
 }
 
+/* the colour in a background (or background-color) value: its first
+ * word that is one (not url(...), positions, "no-repeat") */
+static int bg_color(const char *v, size_t vn, unsigned long *rgb)
+{
+	const char *e = v + vn;
+
+	while (v < e) {
+		const char *w;
+		int depth = 0;
+		struct cval c;
+
+		while (v < e && is_space((unsigned char)*v))
+			v++;
+		for (w = v; w < e && (depth || !is_space((unsigned char)*w)); w++)
+			if (*w == '(')
+				depth++;
+			else if (*w == ')' && depth)
+				depth--;
+		if (w > v && !starts(v, (size_t)(w - v), "url(")) {
+			parse_color(v, (size_t)(w - v), &c, 0);
+			if (c.kind == CV_RGB) {
+				*rgb = c.rgb;
+				return 1;
+			}
+		}
+		v = w;
+	}
+	return 0;
+}
+
+int css_attr_color(const char *v, unsigned long *rgb)
+{
+	struct cval c;
+	size_t n, i;
+	char b[8];
+
+	if (v == NULL)
+		return 0;
+	n = strlen(v);
+	parse_color(v, n, &c, 0);
+	if (c.kind == CV_RGB) {
+		*rgb = c.rgb;
+		return 1;
+	}
+	/* bgcolor=ffff99: hex, the '#' left out */
+	while (n && is_space((unsigned char)v[n - 1]))
+		n--;
+	while (n && is_space((unsigned char)*v)) {
+		v++;
+		n--;
+	}
+	if (n != 3 && n != 6)
+		return 0;
+	for (i = 0; i < n; i++)
+		if (!((v[i] >= '0' && v[i] <= '9') || ((v[i] | 32) >= 'a' && (v[i] | 32) <= 'f')))
+			return 0;
+	b[0] = '#';
+	memcpy(b + 1, v, n);
+	parse_color(b, n + 1, &c, 0);
+	if (c.kind != CV_RGB)
+		return 0;
+	*rgb = c.rgb;
+	return 1;
+}
+
 void css_inline_text(struct css_sheet *s, const char *style, struct css_text *t)
 {
 	const char *p = style, *e;
@@ -2063,6 +2128,12 @@ void css_inline_text(struct css_sheet *s, const char *style, struct css_text *t)
 					t->fg = CSS_RGB_SET | c.rgb;
 				else if (c.kind == CV_DEFAULT)
 					t->fg = CSS_RGB_DEFAULT;
+			} else if ((pn == 16 && starts(p, pn, "background-color"))
+				|| (pn == 10 && starts(p, pn, "background"))) {
+				unsigned long rgb;
+
+				if (bg_color(v, vn, &rgb))
+					t->bg = CSS_RGB_SET | rgb;
 			} else if (text_decl(s, p, pn, v, vn, imp, &td)) {
 				/* (s is only looked at for a colour) */
 				if (td.fw)

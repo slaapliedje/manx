@@ -62,7 +62,13 @@ enum { CSS_TA_LEFT = 1, CSS_TA_CENTER, CSS_TA_RIGHT };	/* text-align */
 struct css_text {
 	unsigned long fg;		/* 0: not said; CSS_RGB_* */
 	unsigned char weight, style, deco, align;
+	unsigned long bg;		/* background (style="" only): 0, or
+					 * CSS_RGB_SET | 0xRRGGBB */
 };
+
+/* An HTML attribute's colour (bgcolor=, bordercolor=): a CSS colour, or
+ * hex without its '#' as browsers take it. 1 and *rgb, or 0. */
+int css_attr_color(const char *v, unsigned long *rgb);
 
 /*
  * css_display, and how the element's text looks into *t (only what the

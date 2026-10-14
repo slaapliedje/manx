@@ -63,6 +63,29 @@ static int fake_image(void *ctx, nodeid node, int *w, int *h)
 	return 1;
 }
 
+/* the baseline image k on line ln sits on: its span's own (a grid's
+ * band), or the line's */
+static int img_ascent(const struct page *pg, unsigned long ln, unsigned long k)
+{
+	const struct lline *l = &pg->lines[ln];
+	unsigned long s = l->span, off = l->off, end = l->off + l->len, o;
+
+	while (off < end) {
+		unsigned long next = end;
+
+		s = layout_span_at(pg, s, off);
+		if (s + 1 < pg->nspans && pg->spans[s + 1].off < end)
+			next = pg->spans[s + 1].off;
+		if (pg->spans[s].face & LF_IMAGE)
+			for (o = off; o + LAYOUT_IMG_BYTES <= next; o += LAYOUT_IMG_BYTES)
+				if (layout_image(pg, pg->text + o) == (long)k)
+					return pg->spans[s].asc ? pg->spans[s].asc
+						: pg->heights[ln].ascent;
+		off = next;
+	}
+	return pg->heights[ln].ascent;
+}
+
 static char *dump_of(const unsigned char *s, size_t n, int chunked, size_t cap)
 {
 	static struct html_load l;
@@ -145,13 +168,13 @@ static char *dump_of(const unsigned char *s, size_t n, int chunked, size_t cap)
 
 				if (pg.images[i].w == 0 || pg.images[i].h == 0
 					|| ln > pg.nlines
-					|| (ln < pg.nlines && pg.heights[ln].ascent < pg.images[i].h)) {
+					|| (ln < pg.nlines && img_ascent(&pg, ln, i) < pg.images[i].h)) {
 					FILE *ff = fopen("fuzz-fail.html", "wb");
 
 					fprintf(stderr, "image %lu: %ux%u on line %lu of %lu (ascent %d);"
 						" width %d cs %d max_lines %lu cap %lu: fuzz-fail.html\n",
 						i, pg.images[i].w, pg.images[i].h, ln, pg.nlines,
-						ln < pg.nlines ? pg.heights[ln].ascent : -1,
+						ln < pg.nlines ? img_ascent(&pg, ln, i) : -1,
 						lw, (int)lcs, lmax, (unsigned long)lcap);
 					if (ff) {
 						fwrite(s, 1, n, ff);
@@ -160,6 +183,11 @@ static char *dump_of(const unsigned char *s, size_t n, int chunked, size_t cap)
 					abort();
 				}
 			}
+			/* boxes: only with metrics, on the page, of some size */
+			for (i = 0; i < pg.nboxes; i++)
+				if (!m || pg.boxes[i].line > pg.nlines || pg.boxes[i].w <= 0
+					|| pg.boxes[i].h <= 0 || pg.boxes[i].border > 8)
+					abort();
 			layout_free(&pg);
 		}
 		/* the forms: collect, lay out with them, change, submit */

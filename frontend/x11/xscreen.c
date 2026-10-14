@@ -82,6 +82,7 @@ static unsigned long px_fg, px_bg, px_mark, px_link[8];
  * (scr_palette) */
 static unsigned long text_px[256];
 static unsigned char text_ok[256];
+static unsigned long text_raw[256];	/* as given: for text on a dark box */
 static unsigned long px_bg1, px_bg2, px_bg3, px_hi;
 static int link_px_ok;
 
@@ -818,6 +819,18 @@ struct idraw {
 
 static struct idraw *idraws;
 static int nidraws, idraws_cap;
+
+/* a box under the text this frame (scr_rect): its fill, its border, as
+ * pixels (fill_ok, line_ok: there is one) */
+struct rdraw {
+	int x, y, w, h;
+	unsigned long fill, line;
+	short border;
+	unsigned char fill_ok, line_ok;
+};
+
+static struct rdraw *rdraws;
+static int nrdraws, rdraws_cap;
 static char *rtext;
 static unsigned rtext_len, rtext_cap;
 static unsigned long pane_sum = 1, drawn_sum;	/* this frame's, the shown one's */
@@ -839,6 +852,8 @@ static char *stext;
 static unsigned stext_len, stext_cap;
 static struct idraw *sidraws;
 static int nsidraws, sidraws_cap;
+static struct rdraw *srdraws;
+static int nsrdraws, srdraws_cap;
 static int shown_ok;			/* the window's pane shows that frame */
 static int shown_w, shown_h;		/* at this pane size */
 static int shown_over;			/* with cells over the pane */
@@ -946,6 +961,43 @@ int scr_pane_h(void)
 	return px_mode ? pane_hpx() : scr_rows - 2;
 }
 
+static int rgb_pixel(unsigned long rgb, unsigned long *px);
+
+void scr_rect(int x, int y, int w, int h, unsigned long fill, int border,
+	unsigned long border_rgb)
+{
+	struct rdraw *r;
+
+	if (!px_mode || w <= 0 || h <= 0)
+		return;
+	if (nrdraws == rdraws_cap) {
+		int c = rdraws_cap ? rdraws_cap * 2 : 32;
+		struct rdraw *q = xrealloc(rdraws, (size_t)c * sizeof *q);
+
+		if (q == NULL)
+			return;
+		rdraws = q;
+		rdraws_cap = c;
+	}
+	r = &rdraws[nrdraws];
+	memset(r, 0, sizeof *r);
+	r->x = x;
+	r->y = y;
+	r->w = w;
+	r->h = h;
+	r->fill_ok = (unsigned char)(fill != LBOX_NONE && scr_color
+		&& rgb_pixel(fill, &r->fill));
+	if (border > 0) {
+		r->border = (short)border;
+		/* (black and white: borders in the text's black) */
+		if (!scr_color || !rgb_pixel(border_rgb, &r->line))
+			r->line = px_fg;
+		r->line_ok = 1;
+	}
+	if (r->fill_ok || r->line_ok)
+		nrdraws++;
+}
+
 void scr_text(int x, int y, int ascent, const char *s, int n, int attr,
 	int face)
 {
@@ -1011,6 +1063,10 @@ static unsigned long pane_checksum(void)
 	n = (size_t)nidraws * sizeof *idraws;
 	for (i = 0; i < n; i++)
 		h = h * 33 + p[i];
+	p = (const unsigned char *)rdraws;
+	n = (size_t)nrdraws * sizeof *rdraws;
+	for (i = 0; i < n; i++)
+		h = h * 33 + p[i];
 	p = (const unsigned char *)(nxt + scr_cols);
 	n = (size_t)(scr_rows - 2) * (size_t)scr_cols * sizeof *nxt;
 	for (i = 0; i < n; i++)
@@ -1046,7 +1102,7 @@ static void paint_run(const struct run *r, const char *text)
 	int fill = 0;
 
 	if (r->fg && text_ok[r->fg])
-		fg = text_px[r->fg];
+		fg = r->attr & CA_ONDARK ? text_raw[r->fg] : text_px[r->fg];
 	else if ((r->attr & CA_LINK) && link_px_ok)
 		fg = px_link[scr_link_color & 7];
 	if (r->attr & CA_REV) {
@@ -1275,6 +1331,7 @@ void scr_palette(const unsigned long *rgb, int n)
 		unsigned long c = rgb[i - 1], r = c >> 16 & 255, g = c >> 8 & 255,
 			b = c & 255, y = (r * 299 + g * 587 + b * 114) / 1000;
 
+		rgb_pixel(c, &text_raw[i]);
 		/* the page is white here: too pale to read is darkened, its
 		 * hue kept */
 		if (y > 150) {
@@ -1576,8 +1633,44 @@ struct fview {
 	const char *text;
 	const struct idraw *idraws;
 	int nidraws;
+	const struct rdraw *rdraws;
+	int nrdraws;
 	const struct cell *cells;
 };
+
+/* [x0, x1) x [y0, y1) of the pane in pixel px, within rows [b0, b1) */
+static void fill_clipped(long x0, long y0, long x1, long y1, unsigned long px,
+	int b0, int b1)
+{
+	if (y0 < b0)
+		y0 = b0;
+	if (y1 > b1)
+		y1 = b1;
+	if (x0 < -PANE_IN)
+		x0 = -PANE_IN;
+	if (x1 > pane_wpx())
+		x1 = pane_wpx();
+	if (x0 >= x1 || y0 >= y1)
+		return;
+	XSetForeground(dpy, gc, px);
+	XFillRectangle(dpy, win, gc, pane_x() + PANE_IN + (int)x0, pane_y() + (int)y0,
+		(unsigned)(x1 - x0), (unsigned)(y1 - y0));
+}
+
+static void paint_rect(const struct rdraw *r, int b0, int b1)
+{
+	long x0 = r->x, y0 = r->y, x1 = (long)r->x + r->w, y1 = (long)r->y + r->h;
+	int k = r->border;
+
+	if (r->fill_ok)
+		fill_clipped(x0, y0, x1, y1, r->fill, b0, b1);
+	if (r->line_ok && k > 0) {
+		fill_clipped(x0, y0, x1, y0 + k, r->line, b0, b1);
+		fill_clipped(x0, y1 - k, x1, y1, r->line, b0, b1);
+		fill_clipped(x0, y0, x0 + k, y1, r->line, b0, b1);
+		fill_clipped(x1 - k, y0, x1, y1, r->line, b0, b1);
+	}
+}
 
 /* pane rows [b0, b1) of frame v, painted afresh */
 static void paint_band(const struct fview *v, int b0, int b1)
@@ -1590,6 +1683,12 @@ static void paint_band(const struct fview *v, int b0, int b1)
 	XSetForeground(dpy, gc, px_bg);
 	XFillRectangle(dpy, win, gc, band_clip.x, band_clip.y, band_clip.width,
 		band_clip.height);
+	for (i = 0; i < v->nrdraws; i++) {
+		const struct rdraw *r = &v->rdraws[i];
+
+		if (r->y < b1 && r->y + r->h > b0)
+			paint_rect(r, b0, b1);
+	}
 	for (i = 0; i < v->nruns; i++) {
 		run_rows(&v->runs[i], &y0, &y1);
 		if (y1 > b0 && y0 < b1)
@@ -1692,6 +1791,15 @@ static int run_like(const struct run *a, const char *ta, const struct run *b,
 	return a->x == b->x && a->a == b->a && a->attr == b->attr
 		&& a->face == b->face && a->fg == b->fg && a->n == b->n
 		&& memcmp(ta + a->off, tb + b->off, (size_t)a->n) == 0;
+}
+
+/* box a is box b moved down s */
+static int rect_like(const struct rdraw *a, const struct rdraw *b, int s)
+{
+	return a->x == b->x && a->y == b->y + s && a->w == b->w && a->h == b->h
+		&& a->fill_ok == b->fill_ok && a->line_ok == b->line_ok
+		&& a->border == b->border && (!a->fill_ok || a->fill == b->fill)
+		&& (!a->line_ok || a->line == b->line);
 }
 
 /* (arg: char *, as R5 has no XPointer) */
@@ -1871,6 +1979,22 @@ static void diff_frames(void)
 			damage(o->y - 2 + s, o->y + o->h + 2 + s);
 	}
 
+	/* the boxes (each against each) */
+	for (i = 0; i < nrdraws; i++) {
+		for (k = 0; k < nsrdraws; k++)
+			if (rect_like(&rdraws[i], &srdraws[k], s))
+				break;
+		if (k == nsrdraws)
+			damage(rdraws[i].y, rdraws[i].y + rdraws[i].h);
+	}
+	for (k = 0; k < nsrdraws; k++) {
+		for (i = 0; i < nrdraws; i++)
+			if (rect_like(&rdraws[i], &srdraws[k], s))
+				break;
+		if (i == nrdraws)
+			damage(srdraws[k].y + s, srdraws[k].y + srdraws[k].h + s);
+	}
+
 	/* the cells over the pane (a menu): rows where they changed */
 	if (s == 0 && (shown_over || cells_over)) {
 		int r;
@@ -1920,11 +2044,24 @@ static void keep_shown(void)
 		memcpy(sruns, runs, (size_t)nruns * sizeof *runs);
 	if (rtext_len)
 		memcpy(stext, rtext, rtext_len);
+	if (nrdraws > srdraws_cap) {
+		struct rdraw *q = xrealloc(srdraws, (size_t)nrdraws * sizeof *q);
+
+		if (q == NULL) {
+			shown_ok = 0;
+			return;
+		}
+		srdraws = q;
+		srdraws_cap = nrdraws;
+	}
 	if (nidraws)
 		memcpy(sidraws, idraws, (size_t)nidraws * sizeof *idraws);
+	if (nrdraws)
+		memcpy(srdraws, rdraws, (size_t)nrdraws * sizeof *rdraws);
 	nsruns = nruns;
 	stext_len = rtext_len;
 	nsidraws = nidraws;
+	nsrdraws = nrdraws;
 	shown_ok = 1;
 }
 
@@ -1976,6 +2113,8 @@ static void flush_pane(int full)
 	v.text = rtext;
 	v.idraws = idraws;
 	v.nidraws = nidraws;
+	v.rdraws = rdraws;
+	v.nrdraws = nrdraws;
 	v.cells = nxt;
 	for (i = 0; i < nbands; i++)
 		paint_band(&v, bands[i].y0, bands[i].y1);
@@ -2002,6 +2141,7 @@ void scr_erase(void)
 	}
 	nruns = 0;
 	nidraws = 0;
+	nrdraws = 0;
 	rtext_len = 0;
 }
 
@@ -2221,6 +2361,8 @@ static void redraw_box(void)
 		v.text = stext;
 		v.idraws = sidraws;
 		v.nidraws = nsidraws;
+		v.rdraws = srdraws;
+		v.nrdraws = nsrdraws;
 		v.cells = cur;
 		ex_clip = 1;
 		paint_band(&v, b0, b1);

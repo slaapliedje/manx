@@ -14,6 +14,7 @@
  */
 #include <stdio.h>
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
 #include "os.h"
 #include "tags.h"
@@ -86,6 +87,8 @@ struct lay {
 	int nlists;
 	int oom;
 	int small;			/* a grid cell's page: start its arrays small */
+	unsigned short asc;		/* a grid cell's line in a band: its own
+					 * baseline (struct lspan) */
 	int at_width;			/* a cell at its column's width: lines centre */
 	int aligned;			/* a cell had lines to centre or put right */
 	int gdepth;			/* the grids this is in a cell of */
@@ -102,7 +105,8 @@ static size_t used(const struct page *p)
 		+ p->spans_cap * sizeof(struct lspan)
 		+ p->links_cap * sizeof(struct llink)
 		+ p->anchors_cap * sizeof(struct lanchor)
-		+ p->images_cap * sizeof(struct limage);
+		+ p->images_cap * sizeof(struct limage)
+		+ p->boxes_cap * sizeof(struct lbox);
 }
 
 /* grow *arr (of *cap elements of size sz) to hold need; 0 or -1 */
@@ -217,11 +221,12 @@ static void set_span(struct lay *L)
 	struct page *p = L->p;
 	struct lspan *s;
 	unsigned char face = (unsigned char)(L->m ? L->face : 0);
+	unsigned short asc = L->m ? L->asc : 0;
 
 	if (p->nspans) {
 		s = &p->spans[p->nspans - 1];
 		if (s->attr == L->attr && s->link == L->link && s->face == face
-			&& s->color == L->fg)
+			&& s->color == L->fg && s->asc == asc)
 			return;
 		if (s->off == p->text_len) {
 			/* nothing shown with the last one: replace it */
@@ -229,9 +234,10 @@ static void set_span(struct lay *L)
 			s->link = L->link;
 			s->face = face;
 			s->color = (unsigned char)L->fg;
+			s->asc = asc;
 			if (p->nspans >= 2 && s[-1].attr == s->attr
 				&& s[-1].link == s->link && s[-1].face == s->face
-				&& s[-1].color == s->color) {
+				&& s[-1].color == s->color && s[-1].asc == s->asc) {
 				unsigned long last = --p->nspans - 1, k;
 
 				/* what was taken as the gone one's number is the
@@ -256,6 +262,7 @@ static void set_span(struct lay *L)
 	s->link = L->link;
 	s->face = face;
 	s->color = (unsigned char)L->fg;
+	s->asc = asc;
 }
 
 /* the page's palette index of colour rgb (added if new); 0 when there is
@@ -310,6 +317,7 @@ static void push_line(struct lay *L, unsigned long off, unsigned long len,
 		h = line_height(L, content, &a);
 		p->heights[p->nlines].height = (unsigned short)h;
 		p->heights[p->nlines].ascent = (unsigned short)a;
+		p->heights[p->nlines].over = 0;
 	}
 	ln = &p->lines[p->nlines++];
 	ln->off = off;
@@ -1388,6 +1396,13 @@ static int enter(struct lay *L, nodeid id, int depth)
 		sv->list = 1;
 	}
 	L->attr |= s.attr;
+	/* <font color=> (a sheet's colour, in text_look, beats it) */
+	if (tag == TAG_FONT) {
+		unsigned long rgb;
+
+		if (css_attr_color(doc_attr(L->d, id, ATTR_COLOR), &rgb))
+			L->fg = page_color(L->p, rgb);
+	}
 	text_look(L, tag, &s, &ct, ea.align);
 	if (tag == TAG_A && ea.href
 		&& GROW(L, links, links_cap, L->p->nlinks + 1, 64) == 0) {
@@ -1570,6 +1585,8 @@ struct gcell {
 	int frame;			/* it frames a page (see FRAME_MIN_EM) */
 	struct page pg;
 	int *lmap;			/* its links' numbers in the page, -1 */
+	unsigned long bg;		/* its background (or its row's), LBOX_NONE */
+	unsigned long box_i;		/* its page's boxes taken into the grid's */
 };
 
 struct grid {
@@ -1666,6 +1683,37 @@ static int frame_room(const struct lay *L, int avail)
 
 /* the table's cells, where they sit: 0, or -1 when it isn't a grid (avail:
  * the width it would have) */
+/* does table id have a look of its own: a border, or a background on it,
+ * a row or a cell (not those of a table inside)? In fonts such a table is
+ * a grid even of one column: its box is drawn */
+static int decorated(const struct doc *d, nodeid id)
+{
+	const char *b = doc_attr(d, id, ATTR_BORDER);
+	nodeid n;
+
+	if (b && (*b == '\0' || (*b >= '1' && *b <= '9')))
+		return 1;
+	for (n = id; n; ) {
+		const struct node *nd = &d->nodes[n];
+
+		if (nd->type == NODE_ELEM && (doc_attr(d, n, ATTR_BGCOLOR)
+			|| (doc_attr(d, n, ATTR_STYLE)
+			&& strstr(doc_attr(d, n, ATTR_STYLE), "background"))))
+			return 1;
+		/* on through the table, not into a table inside it */
+		if (nd->first && (n == id || nd->tag != TAG_TABLE))
+			n = nd->first;
+		else {
+			while (n != id && !d->nodes[n].next)
+				n = d->nodes[n].parent;
+			if (n == id)
+				break;
+			n = d->nodes[n].next;
+		}
+	}
+	return 0;
+}
+
 static int grid_build(struct lay *L, nodeid table, struct grid *g, int avail)
 {
 	const struct doc *d = L->d;
@@ -1763,7 +1811,8 @@ static int grid_build(struct lay *L, nodeid table, struct grid *g, int avail)
 	for (i = 0; i < g->ncells; i++)	/* (a rowspan past the last row) */
 		if (g->cell[i].r + g->cell[i].rs > g->nrows)
 			g->cell[i].rs = g->nrows - g->cell[i].r;
-	if (g->ncols < 2 || g->nrows == 0)
+	if ((g->ncols < 2 && !(g->ncols == 1 && L->m && decorated(L->d, table)))
+		|| g->nrows == 0)
 		goto linear;
 	g->slot = xmalloc((size_t)g->nrows * (size_t)g->ncols * sizeof *g->slot);
 	g->row_h = xmalloc((size_t)g->nrows * sizeof *g->row_h);
@@ -2085,6 +2134,7 @@ static void pad_to(struct lay *L, int x)
 	L->attr = 0;
 	L->link = 0;
 	L->fg = 0;
+	L->asc = 0;
 	if (L->m) {
 		char b[LAYOUT_IMG_BYTES];
 
@@ -2110,8 +2160,11 @@ static void pad_to(struct lay *L, int x)
 	L->col = x;
 }
 
-/* line ln of cell gc's page onto the open line */
-static void put_cell_line(struct lay *L, struct gcell *gc, unsigned long ln)
+/* line ln of cell gc's page onto the open line; dy >= 0 (with metrics):
+ * the line's top is that far below the open line's (a band of a grid),
+ * so its text keeps its own baseline; ondark: on a dark background */
+static void put_cell_line(struct lay *L, struct gcell *gc, unsigned long ln,
+	long dy, int ondark)
 {
 	const struct page *tp = &gc->pg;
 	const struct lline *l = &tp->lines[ln];
@@ -2128,8 +2181,14 @@ static void put_cell_line(struct lay *L, struct gcell *gc, unsigned long ln)
 		if (s + 1 < tp->nspans && tp->spans[s + 1].off < end)
 			next = tp->spans[s + 1].off;
 		w = seg_w(L, tp, sp->attr, sp->face, tp->text + off, (int)(next - off));
-		L->attr = sp->attr;
+		L->attr = sp->attr | (ondark ? SA_ONDARK : 0);
 		L->face = sp->face;
+		L->asc = 0;
+		if (dy >= 0 && L->m && tp->heights) {
+			long a = dy + (sp->asc ? sp->asc : tp->heights[ln].ascent);
+
+			L->asc = (unsigned short)(a > 0xFFFF ? 0xFFFF : a);
+		}
 		L->fg = sp->color && tp->palette ? page_color(p, tp->palette[sp->color - 1]) : 0;
 		L->link = 0;
 		if (sp->link && gc->lmap) {
@@ -2177,12 +2236,394 @@ static void put_cell_line(struct lay *L, struct gcell *gc, unsigned long ln)
 		L->col += w;
 		off = next;
 	}
+	L->asc = 0;
+}
+
+/* --- grids in fonts: bands across them, boxes under them ------------------ */
+
+/* a table's look, with metrics only (a terminal shows none of it) */
+struct gdecor {
+	int border;			/* the table's border's width, 0: none */
+	int spacing, padding;		/* cellspacing=, cellpadding= */
+	int hin;			/* a cell's box reaches this far beside its text */
+	int margin;			/* the cells' text this far in from the table's box */
+	unsigned long bg, border_rgb;	/* the table's; LBOX_NONE: none */
+};
+
+#define BORDER_GREY	0x808080UL	/* (browsers' raised and sunken greys) */
+
+/* attribute a of id in whole units (pixels): dflt if not said, or a % */
+static int attr_units(const struct doc *d, nodeid id, int a, int dflt)
+{
+	const char *v = doc_attr(d, id, a);
+	long n = 0;
+
+	if (v == NULL)
+		return dflt;
+	while (*v == ' ')
+		v++;
+	if (*v < '0' || *v > '9')
+		return dflt;
+	while (*v >= '0' && *v <= '9' && n < 100000)
+		n = n * 10 + (*v++ - '0');
+	return *v == '%' ? dflt : (int)n;
+}
+
+/* a style=""'s background colour, or LBOX_NONE */
+static unsigned long style_bg(const char *st)
+{
+	struct css_text ct;
+
+	if (st == NULL)
+		return LBOX_NONE;
+	memset(&ct, 0, sizeof ct);
+	css_inline_text(NULL, st, &ct);
+	return ct.bg & CSS_RGB_SET ? ct.bg & 0xFFFFFFUL : LBOX_NONE;
+}
+
+/* a cell's background: its own (bgcolor=, style=""), else its row's */
+static unsigned long cell_bg(const struct doc *d, nodeid cell)
+{
+	nodeid row = d->nodes[cell].parent;
+	unsigned long rgb;
+
+	if (css_attr_color(doc_attr(d, cell, ATTR_BGCOLOR), &rgb))
+		return rgb;
+	if ((rgb = style_bg(doc_attr(d, cell, ATTR_STYLE))) != LBOX_NONE)
+		return rgb;
+	if (row && d->nodes[row].tag == TAG_TR) {
+		if (css_attr_color(doc_attr(d, row, ATTR_BGCOLOR), &rgb))
+			return rgb;
+		return style_bg(doc_attr(d, row, ATTR_STYLE));
+	}
+	return LBOX_NONE;
+}
+
+/* too dark for the screen's darkened text colours to be read on */
+static int dark(unsigned long rgb)
+{
+	return rgb != LBOX_NONE && ((rgb >> 16 & 255) * 299 + (rgb >> 8 & 255) * 587
+		+ (rgb & 255) * 114) / 1000 < 110;
+}
+
+/* table id's look into *dc, its cells' backgrounds into its cells */
+static void grid_decor(struct lay *L, nodeid id, struct grid *g, int gap,
+	struct gdecor *dc)
+{
+	const struct doc *d = L->d;
+	const char *b = doc_attr(d, id, ATTR_BORDER);
+	unsigned long rgb;
+	int i, any = 0;
+
+	memset(dc, 0, sizeof *dc);
+	dc->bg = dc->border_rgb = LBOX_NONE;
+	for (i = 0; i < g->ncells; i++)
+		g->cell[i].bg = LBOX_NONE;
+	if (L->m == NULL)
+		return;
+	dc->border = b == NULL ? 0 : *b == '\0' ? 1 : attr_units(d, id, ATTR_BORDER, 1);
+	if (dc->border > 8)
+		dc->border = 8;
+	dc->spacing = attr_units(d, id, ATTR_CELLSPACING, 2);
+	dc->padding = attr_units(d, id, ATTR_CELLPADDING, 1);
+	if (dc->spacing > 40)
+		dc->spacing = 40;
+	if (dc->padding > 40)
+		dc->padding = 40;
+	if (css_attr_color(doc_attr(d, id, ATTR_BGCOLOR), &rgb))
+		dc->bg = rgb;
+	else
+		dc->bg = style_bg(doc_attr(d, id, ATTR_STYLE));
+	dc->border_rgb = css_attr_color(doc_attr(d, id, ATTR_BORDERCOLOR), &rgb)
+		? rgb : BORDER_GREY;
+	any = dc->bg != LBOX_NONE;
+	for (i = 0; i < g->ncells; i++)
+		if ((g->cell[i].bg = cell_bg(d, g->cell[i].node)) != LBOX_NONE)
+			any = 1;
+	/* (a box for each cell: room for it either side of the text) */
+	if (dc->border || any) {
+		dc->hin = gap > dc->spacing ? (gap - dc->spacing) / 2 : 0;
+		dc->margin = dc->hin + dc->border;
+	}
+}
+
+static void add_box(struct lay *L, unsigned long line, long dy, int x, int w,
+	long h, unsigned long bg, int border, unsigned long border_rgb)
+{
+	struct page *p = L->p;
+	struct lbox *b;
+
+	if (w <= 0 || h <= 0 || (bg == LBOX_NONE && border == 0)
+		|| GROW(L, boxes, boxes_cap, p->nboxes + 1, 16) < 0)
+		return;
+	b = &p->boxes[p->nboxes++];
+	b->line = line;
+	b->dy = dy;
+	b->x = x;
+	b->w = w;
+	b->h = h;
+	b->bg = bg;
+	b->border = (unsigned char)border;
+	b->border_rgb = border_rgb;
+}
+
+/* a cell's line in a grid in fonts: where it starts */
+struct bev {
+	long y;				/* its top, below the grid's */
+	int c, cell;
+	unsigned long ln;
+};
+
+static int bev_cmp(const void *a, const void *b)
+{
+	const struct bev *p = a, *q = b;
+
+	if (p->y != q->y)
+		return p->y < q->y ? -1 : 1;
+	return p->c - q->c;
+}
+
+/* a cell's valign= (else its row's): 0 top, 1 middle (as browsers, when
+ * neither says), 2 bottom */
+static int cell_valign(const struct doc *d, nodeid cell)
+{
+	const char *v = doc_attr(d, cell, ATTR_VALIGN);
+	nodeid row = d->nodes[cell].parent;
+
+	if (v == NULL && row && d->nodes[row].tag == TAG_TR)
+		v = doc_attr(d, row, ATTR_VALIGN);
+	if (v == NULL)
+		return 1;
+	if ((v[0] | 32) == 't' || (v[0] | 32) == 'b') {
+		/* top, baseline: at the top; bottom */
+		return (v[0] | 32) == 'b' && (v[1] | 32) == 'o' ? 2 : 0;
+	}
+	return 1;
+}
+
+/*
+ * With metrics: grid g as bands. Each cell's lines keep their own heights,
+ * one under the other, whatever the cells beside hold (a tall picture in
+ * one no longer opens gaps in the rest). A band - a line of the page - runs
+ * from where some cell's line starts to where the next one does; each
+ * cell's line goes in the band it starts in, at its own baseline (struct
+ * lspan's asc), reaching down into the bands below where it is taller
+ * (struct lheight's over). A row is as tall as its tallest cell, the
+ * others' text at its top, middle (as browsers, unless valign= says) or
+ * bottom; cellspacing and cellpadding between and around; the table's and
+ * the cells' backgrounds and borders are boxes under it all. 0, or -1
+ * (out of memory: nothing done).
+ */
+static int compose_bands(struct lay *L, struct grid *g, const struct gdecor *dc,
+	int shift, int attr, int face, unsigned short link)
+{
+	struct page *p = L->p;
+	int cb = dc->border ? 1 : 0, vpad = cb + dc->padding, i, r, nb = 0, x0 = 0;
+	long *rh, *ra, *cy, *band, y, H, over;
+	unsigned long *bl, *first, nev = 0, e, k, base = 0, j;
+	struct bev *ev;
+	int gw = g->x[g->ncols - 1] + g->w[g->ncols - 1];
+
+	for (i = 0; i < g->ncells; i++)
+		nev += g->cell[i].pg.heights ? g->cell[i].pg.nlines : 0;
+	rh = xmalloc((size_t)g->nrows * sizeof *rh);
+	ra = xmalloc(((size_t)g->nrows + 1) * sizeof *ra);
+	cy = xmalloc((size_t)g->ncells * sizeof *cy);
+	first = xmalloc(((size_t)g->ncells + 1) * sizeof *first);
+	ev = xmalloc((nev + 1) * sizeof *ev);
+	band = xmalloc((nev + 1) * sizeof *band);
+	bl = xmalloc((nev + 1) * sizeof *bl);
+	if (!rh || !ra || !cy || !first || !ev || !band || !bl) {
+		xfree(rh);
+		xfree(ra);
+		xfree(cy);
+		xfree(first);
+		xfree(ev);
+		xfree(band);
+		xfree(bl);
+		return -1;
+	}
+
+	/* the rows' heights: their tallest cells, padded (a cell spanning
+	 * rows lengthens the last of them if it must) */
+	for (r = 0; r < g->nrows; r++)
+		rh[r] = 0;
+	for (i = 0; i < g->ncells; i++) {
+		const struct gcell *gc = &g->cell[i];
+		long need = 2L * vpad, have;
+		nodeid row = L->d->nodes[gc->node].parent;
+		int ha = attr_units(L->d, gc->node, ATTR_HEIGHT, 0);
+
+		if (row && L->d->nodes[row].tag == TAG_TR
+			&& attr_units(L->d, row, ATTR_HEIGHT, 0) > ha)
+			ha = attr_units(L->d, row, ATTR_HEIGHT, 0);
+		if (gc->pg.heights)
+			for (j = 0; j < gc->pg.nlines; j++)
+				need += gc->pg.heights[j].height;
+		if (ha > need && ha < 8192)
+			need = ha;
+		if (gc->rs == 1) {
+			if (need > rh[gc->r])
+				rh[gc->r] = need;
+			continue;
+		}
+		for (have = 0, r = gc->r; r < gc->r + gc->rs; r++)
+			have += rh[r] + (r > gc->r ? dc->spacing : 0);
+		if (need > have)
+			rh[gc->r + gc->rs - 1] += need - have;
+	}
+	y = dc->border + dc->spacing;
+	for (r = 0; r < g->nrows; r++) {
+		ra[r] = y;
+		y += rh[r] + dc->spacing;
+	}
+	ra[g->nrows] = y;
+	H = y + dc->border;
+
+	/* each cell's text: where it starts; then its lines, all in order */
+	for (i = 0, e = 0; i < g->ncells; i++) {
+		const struct gcell *gc = &g->cell[i];
+		int last = gc->r + gc->rs - 1;
+		long box_h = ra[last] + rh[last] - ra[gc->r], ch = 0, room;
+
+		first[i] = e;
+		if (gc->pg.heights)
+			for (j = 0; j < gc->pg.nlines; j++)
+				ch += gc->pg.heights[j].height;
+		room = box_h - 2L * vpad - ch;
+		if (room < 0)
+			room = 0;
+		cy[i] = ra[gc->r] + vpad;
+		switch (cell_valign(L->d, gc->node)) {
+		case 1:
+			cy[i] += room / 2;
+			break;
+		case 2:
+			cy[i] += room;
+			break;
+		}
+		y = cy[i];
+		if (gc->pg.heights)
+			for (j = 0; j < gc->pg.nlines; j++, e++) {
+				ev[e].y = y;
+				ev[e].c = gc->c;
+				ev[e].cell = i;
+				ev[e].ln = j;
+				bl[e] = (unsigned long)-1;
+				y += gc->pg.heights[j].height;
+			}
+	}
+	first[g->ncells] = e;
+	qsort(ev, (size_t)nev, sizeof *ev, bev_cmp);
+	/* the bands: the first from the grid's top; the next wherever a
+	 * line starts that the band before doesn't hold already */
+	for (e = 0; e < nev; e++)
+		if (nb == 0)
+			band[nb++] = 0;
+		else if (ev[e].y != ev[e - 1].y && ev[e].y > band[nb - 1])
+			band[nb++] = ev[e].y;
+	if (nb == 0 && H > 0)
+		band[nb++] = 0;
+
+	for (k = 0, e = 0; k < (unsigned long)nb && !L->stop; k++) {
+		long bt = band[k], bb = k + 1 < (unsigned long)nb ? band[k + 1] : H;
+
+		open_line(L);
+		if (k == 0) {
+			/* the boxes under the grid: the table's, the cells' */
+			base = p->nlines;
+			x0 = L->col + shift + dc->margin;
+			add_box(L, base, 0, x0 - dc->margin, gw + 2 * dc->margin, H,
+				dc->bg, dc->border, dc->border_rgb);
+			for (i = 0; i < g->ncells; i++) {
+				const struct gcell *gc = &g->cell[i];
+				int last = gc->r + gc->rs - 1;
+				int w = g->x[gc->c + gc->cs - 1] + g->w[gc->c + gc->cs - 1]
+					- g->x[gc->c];
+
+				add_box(L, base, ra[gc->r], x0 + g->x[gc->c] - dc->hin,
+					w + 2 * dc->hin, ra[last] + rh[last] - ra[gc->r],
+					gc->bg, cb, dc->border_rgb);
+			}
+		}
+		over = 0;
+		for (; e < nev && (k + 1 >= (unsigned long)nb || ev[e].y < band[k + 1]); e++) {
+			struct gcell *gc = &g->cell[ev[e].cell];
+			unsigned long ln = ev[e].ln;
+			long dy = ev[e].y - bt, ext;
+
+			pad_to(L, x0 + g->x[gc->c] + gc->pg.lines[ln].indent);
+			bl[first[ev[e].cell] + ln] = p->nlines;
+			put_cell_line(L, gc, ln, dy,
+				gc->bg != LBOX_NONE ? dark(gc->bg) : dark(dc->bg));
+			ext = dy + gc->pg.heights[ln].height + gc->pg.heights[ln].over
+				- (bb - bt);
+			if (ext > over)
+				over = ext;
+			/* boxes in the cell (a table in it): into the grid's */
+			for (; gc->box_i < gc->pg.nboxes
+				&& gc->pg.boxes[gc->box_i].line <= ln; gc->box_i++) {
+				const struct lbox *b = &gc->pg.boxes[gc->box_i];
+
+				if (b->line == ln)
+					add_box(L, p->nlines, b->dy + dy,
+						x0 + g->x[gc->c] + b->x, b->w, b->h,
+						b->bg, b->border, b->border_rgb);
+			}
+		}
+		L->attr = attr;
+		L->face = face;
+		L->link = link;
+		L->asc = 0;
+		set_span(L);
+		L->line_a = (int)(bb - bt);
+		L->line_d = 0;
+		end_line(L);
+		if (p->heights && p->nlines) {
+			if (over > 0xFFFF)
+				over = 0xFFFF;
+			p->heights[p->nlines - 1].over = (unsigned short)over;
+			if (over > p->max_over)
+				p->max_over = (int)over;
+		}
+	}
+
+	/* what the cells knew of the page: anchors, where content starts */
+	for (i = 0; i < g->ncells && nb > 0; i++) {
+		const struct page *tp = &g->cell[i].pg;
+		unsigned long n = first[i + 1] - first[i];
+
+		for (j = 0; j < tp->nanchors; j++)
+			if (tp->anchors[j].line < n && bl[first[i] + tp->anchors[j].line]
+				!= (unsigned long)-1
+				&& GROW(L, anchors, anchors_cap, p->nanchors + 1, 64) == 0) {
+				p->anchors[p->nanchors].node = tp->anchors[j].node;
+				p->anchors[p->nanchors].line = bl[first[i] + tp->anchors[j].line];
+				p->nanchors++;
+			}
+		if (p->main_line < 0 && tp->main_line >= 0 && (unsigned long)tp->main_line < n
+			&& bl[first[i] + (unsigned long)tp->main_line] != (unsigned long)-1)
+			p->main_line = (long)bl[first[i] + (unsigned long)tp->main_line];
+		if (p->content_line < 0 && tp->content_line >= 0
+			&& (unsigned long)tp->content_line < n
+			&& bl[first[i] + (unsigned long)tp->content_line] != (unsigned long)-1)
+			p->content_line = (long)bl[first[i] + (unsigned long)tp->content_line];
+	}
+	xfree(rh);
+	xfree(ra);
+	xfree(cy);
+	xfree(first);
+	xfree(ev);
+	xfree(band);
+	xfree(bl);
+	return 0;
 }
 
 /* lay table id out as a grid: 1, or 0 when it is to be laid out as rows */
 static int grid_table(struct lay *L, nodeid id)
 {
 	struct grid g;
+	struct gdecor dc;
 	struct lay *S;
 	int gap = L->m ? L->em : 2, avail, i, c, total, attr = L->attr, face = L->face;
 	int cell = L->cell, was_align = L->align, align = L->align, shift = 0, gw;
@@ -2200,7 +2641,8 @@ static int grid_table(struct lay *L, nodeid id)
 		grid_free(&g);
 		return 0;
 	}
-	if (grid_widths(L, S, &g, avail, gap) < 0) {
+	grid_decor(L, id, &g, gap, &dc);
+	if (grid_widths(L, S, &g, avail - 2 * dc.margin, gap) < 0) {
 		xfree(S);
 		grid_free(&g);
 		return 0;
@@ -2249,7 +2691,7 @@ static int grid_table(struct lay *L, nodeid id)
 	/* the grid is placed as a block - centred or to the right as a whole
 	 * (its align=, or where it stands), not a line at a time - and its
 	 * cells' text keeps the alignment the cells gave it */
-	gw = g.x[g.ncols - 1] + g.w[g.ncols - 1];
+	gw = g.x[g.ncols - 1] + g.w[g.ncols - 1] + 2 * dc.margin;
 	ta = doc_attr(L->d, id, ATTR_ALIGN);
 	if (ta && (ta[0] == 'c' || ta[0] == 'C'))
 		align = CSS_TA_CENTER;
@@ -2276,61 +2718,65 @@ static int grid_table(struct lay *L, nodeid id)
 			L->attr = attr;
 			set_span(L);
 		}
-	for (ln = 0, i = 0; ln < (unsigned long)total && !L->stop; ln++) {
-		int x0, a = 0, h = 0;
+	if (L->m && compose_bands(L, &g, &dc, shift, attr, face, link) == 0)
+		;	/* (in fonts: bands, boxes) */
+	else {
+		for (ln = 0, i = 0; ln < (unsigned long)total && !L->stop; ln++) {
+			int x0, a = 0, h = 0;
 
-		while (i + 1 < g.nrows && (int)ln >= g.row_at[i + 1])
-			i++;
-		open_line(L);
-		if (ln == 0)
-			base = L->p->nlines;
-		x0 = L->col + shift;
-		for (c = 0; c < g.ncols; c++) {
-			int k = g.slot[i * g.ncols + c];
-			struct gcell *gc;
-			unsigned long cl;
+			while (i + 1 < g.nrows && (int)ln >= g.row_at[i + 1])
+				i++;
+			open_line(L);
+			if (ln == 0)
+				base = L->p->nlines;
+			x0 = L->col + shift;
+			for (c = 0; c < g.ncols; c++) {
+				int k = g.slot[i * g.ncols + c];
+				struct gcell *gc;
+				unsigned long cl;
 
-			if (k < 0 || (gc = &g.cell[k])->c != c)
-				continue;	/* (nothing, or a span's continuation) */
-			cl = ln - (unsigned long)g.row_at[gc->r];
-			if (cl >= gc->pg.nlines)
-				continue;
-			pad_to(L, x0 + g.x[c] + gc->pg.lines[cl].indent);
-			put_cell_line(L, gc, cl);
-			if (L->m && gc->pg.heights) {
-				const struct lheight *lh = &gc->pg.heights[cl];
+				if (k < 0 || (gc = &g.cell[k])->c != c)
+					continue;	/* (nothing, or a span's continuation) */
+				cl = ln - (unsigned long)g.row_at[gc->r];
+				if (cl >= gc->pg.nlines)
+					continue;
+				pad_to(L, x0 + g.x[c] + gc->pg.lines[cl].indent);
+				put_cell_line(L, gc, cl, -1, 0);
+				if (L->m && gc->pg.heights) {
+					const struct lheight *lh = &gc->pg.heights[cl];
 
-				if (lh->ascent > a)
-					a = lh->ascent;
-				if (lh->height - lh->ascent > h)
-					h = lh->height - lh->ascent;
+					if (lh->ascent > a)
+						a = lh->ascent;
+					if (lh->height - lh->ascent > h)
+						h = lh->height - lh->ascent;
+				}
 			}
+			if (a > L->line_a)
+				L->line_a = a;
+			if (h > L->line_d)
+				L->line_d = h;
+			L->attr = attr;
+			L->face = face;
+			L->link = link;
+			set_span(L);
+			end_line(L);
 		}
-		if (a > L->line_a)
-			L->line_a = a;
-		if (h > L->line_d)
-			L->line_d = h;
-		L->attr = attr;
-		L->face = face;
-		L->link = link;
-		set_span(L);
-		end_line(L);
-	}
-	/* what the cells knew of the page: anchors, where content starts */
-	for (i = 0; i < g.ncells && !L->stop && total > 0; i++) {
-		const struct page *tp = &g.cell[i].pg;
-		unsigned long at = base + (unsigned long)g.row_at[g.cell[i].r], k;
+		/* what the cells knew of the page: anchors, where content starts */
+		for (i = 0; i < g.ncells && !L->stop && total > 0; i++) {
+			const struct page *tp = &g.cell[i].pg;
+			unsigned long at = base + (unsigned long)g.row_at[g.cell[i].r], k;
 
-		for (k = 0; k < tp->nanchors; k++)
-			if (GROW(L, anchors, anchors_cap, L->p->nanchors + 1, 64) == 0) {
-				L->p->anchors[L->p->nanchors].node = tp->anchors[k].node;
-				L->p->anchors[L->p->nanchors].line = at + tp->anchors[k].line;
-				L->p->nanchors++;
-			}
-		if (L->p->main_line < 0 && tp->main_line >= 0)
-			L->p->main_line = (long)(at + (unsigned long)tp->main_line);
-		if (L->p->content_line < 0 && tp->content_line >= 0)
-			L->p->content_line = (long)(at + (unsigned long)tp->content_line);
+			for (k = 0; k < tp->nanchors; k++)
+				if (GROW(L, anchors, anchors_cap, L->p->nanchors + 1, 64) == 0) {
+					L->p->anchors[L->p->nanchors].node = tp->anchors[k].node;
+					L->p->anchors[L->p->nanchors].line = at + tp->anchors[k].line;
+					L->p->nanchors++;
+				}
+			if (L->p->main_line < 0 && tp->main_line >= 0)
+				L->p->main_line = (long)(at + (unsigned long)tp->main_line);
+			if (L->p->content_line < 0 && tp->content_line >= 0)
+				L->p->content_line = (long)(at + (unsigned long)tp->content_line);
+		}
 	}
 	L->attr = attr;
 	L->face = face;
@@ -2394,8 +2840,24 @@ void layout_free(struct page *p)
 	xfree(p->links);
 	xfree(p->anchors);
 	xfree(p->images);
+	xfree(p->boxes);
+	xfree(p->tops);
 	xfree(p->palette);
 	memset(p, 0, sizeof *p);
+}
+
+const long *layout_tops(struct page *p)
+{
+	unsigned long i;
+
+	if (p->tops || p->heights == NULL)
+		return p->tops;
+	if ((p->tops = xmalloc((p->nlines + 1) * sizeof *p->tops)) == NULL)
+		return NULL;
+	p->tops[0] = 0;
+	for (i = 0; i < p->nlines; i++)
+		p->tops[i + 1] = p->tops[i] + p->heights[i].height;
+	return p->tops;
 }
 
 long layout_image(const struct page *p, const char *s)

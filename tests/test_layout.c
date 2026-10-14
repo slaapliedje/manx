@@ -200,8 +200,86 @@ static void check_grid_pixels(void)
 	doc_free(&d);
 }
 
+/* every <img> 20 x 100 */
+static int fake_img(void *ctx, nodeid node, int *w, int *h)
+{
+	(void)ctx;
+	(void)node;
+	*w = 20;
+	*h = 100;
+	return 1;
+}
+
+static void lay_px(const char *html, struct page *pg, struct doc *d)
+{
+	static struct html_load l;
+	static const struct lmetrics m = { fake_w, fake_h, NULL, 10, fake_img, NULL };
+
+	doc_init(d, 0);
+	html_load_begin(&l, d, "utf-8", 0);
+	html_load_feed(&l, (const unsigned char *)html, strlen(html));
+	html_load_end(&l);
+	layout_run_m(pg, d, 400, TCS_UTF8, 0, 0, NULL, &m);
+}
+
+/* with fonts, a grid's cells stack their own lines: a tall picture beside
+ * text no longer spaces the text out; backgrounds and borders are boxes */
+static void check_grid_bands(void)
+{
+	struct page pg;
+	struct doc d;
+	unsigned long i;
+	int ok;
+
+	lay_px("<table cellspacing=0 cellpadding=0><tr><td valign=top><img src=x>"
+		"<td valign=top>a<br>b<br>c<br>d<br>e</table>", &pg, &d);
+	ok = pg.nlines == 5 && pg.heights[0].over >= 88;
+	for (i = 0; ok && i < 4; i++)
+		ok = pg.heights[i].height == 12;
+	runs++;
+	if (!ok) {
+		fails++;
+		printf("FAIL grid bands: %lu lines, first %d high reaching %d below\n",
+			pg.nlines, pg.nlines ? pg.heights[0].height : -1,
+			pg.nlines ? pg.heights[0].over : -1);
+	}
+	layout_free(&pg);
+	doc_free(&d);
+
+	/* not said: the shorter cell in the row's middle */
+	lay_px("<table cellspacing=0 cellpadding=0><tr><td><img src=x><td>a</table>",
+		&pg, &d);
+	runs++;
+	if (pg.nlines != 2 || pg.heights[0].height
+		!= (pg.heights[0].height + pg.heights[1].height - 12) / 2) {
+		fails++;
+		printf("FAIL grid valign middle: %lu lines\n", pg.nlines);
+	}
+	layout_free(&pg);
+	doc_free(&d);
+
+	lay_px("<table border=1 bgcolor=\"#ffff99\"><tr><td bgcolor=navy>x</table>",
+		&pg, &d);
+	ok = pg.nboxes == 2 && pg.boxes[0].bg == 0xffff99UL && pg.boxes[0].border == 1
+		&& pg.boxes[1].bg == 0x000080UL && pg.boxes[1].border == 1
+		&& pg.boxes[1].x > pg.boxes[0].x
+		&& pg.boxes[1].x + pg.boxes[1].w < pg.boxes[0].x + pg.boxes[0].w
+		&& pg.boxes[1].dy > 0 && pg.boxes[1].h < pg.boxes[0].h;
+	for (i = 0; ok && i < pg.nspans; i++)
+		if (pg.spans[i].off < pg.text_len && pg.text[pg.spans[i].off] == 'x')
+			ok = (pg.spans[i].attr & SA_ONDARK) != 0;
+	runs++;
+	if (!ok) {
+		fails++;
+		printf("FAIL grid boxes: %lu boxes\n", pg.nboxes);
+	}
+	layout_free(&pg);
+	doc_free(&d);
+}
+
 int main(void)
 {
+	check_grid_bands();
 	/* foreign elements close themselves: what follows is the page's */
 	check("svg/ and math/", "<p>before</p><svg/><p>after</p><math/><p>end</p>",
 		40, TCS_ASCII, "before\n\nafter\n\nend\n");
