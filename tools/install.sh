@@ -2,7 +2,8 @@
 # install.sh - put Manx where the system keeps its programs. Run it as
 # root on Atari System V or AMIX, in the directory holding the binaries:
 #
-#	manx manxtrust ufetch	-> /usr/bin
+#	manx manxmail manxtrust	-> /usr/bin
+#	ufetch			-> /usr/bin
 #	t425wipe		-> /usr/bin
 #	xmanx			-> /usr/x11r6/bin (Atari System V's X11R6.3),
 #				   else /usr/X/bin (AMIX's X11R5)
@@ -27,7 +28,7 @@ put() {
 	cp $1 $2/$1 && chmod 755 $2/$1 && echo "$2/$1"
 }
 
-for p in manx manxtrust ufetch t425wipe; do
+for p in manx manxmail manxtrust ufetch t425wipe; do
 	if [ -f $p ]; then
 		put $p $BIN || exit 1
 	fi

@@ -63,7 +63,7 @@ $(error TARGET must be host, sysv4 or no64)
 endif
 
 CRYPT68K := third_party/crypt68k
-INC := -Ios -Inet -Itls -Itext -Ihtml -Istyle -Ilayout -Iimage -Ifrontend -Isrc -I$(BEARSSL)/inc \
+INC := -Ios -Inet -Itls -Itext -Ihtml -Istyle -Ilayout -Iimage -Ifrontend -Isrc -Imail -I$(BEARSSL)/inc \
 	-I$(CRYPT68K)/include
 
 OS_SRC := $(wildcard os/*.c) $(wildcard $(OS)/*.c)
@@ -74,6 +74,8 @@ BR_OBJ := $(BR_SRC:%.c=$(B)/%.o)
 BR_LIB := $(B)/libbearssl.a
 
 NET_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard net/*.c))
+# manxmail's: IMAP, SMTP, MIME
+MAIL_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard mail/*.c))
 # crypt68k's X25519 (the key exchange), as a BearSSL br_ec_impl
 C68K_OBJ := $(B)/$(CRYPT68K)/src/x25519.o $(B)/$(CRYPT68K)/src/fe_m68k.o \
 	$(B)/$(CRYPT68K)/src/bearssl_x25519.o
@@ -85,7 +87,7 @@ HTML_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard text/*.c html/*.c style/*.c layou
 IMG_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard image/*.c))
 
 SPIKES := $(B)/tlsbench
-TOOLS  := $(B)/manx $(B)/ufetch $(B)/manxtrust $(B)/uparse $(B)/t425wipe
+TOOLS  := $(B)/manx $(B)/manxmail $(B)/ufetch $(B)/manxtrust $(B)/uparse $(B)/t425wipe
 FRONT_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard frontend/*.c))
 # xmanx: the same browser in an X11 window (X11=0 to leave it out)
 X11 ?= 1
@@ -110,6 +112,10 @@ $(B)/manx: $(B)/src/manx.o $(B)/src/pagecss.o $(B)/src/pageimg_none.o $(FRONT_OB
 
 $(B)/xmanx: $(B)/src/manx.o $(B)/src/pagecss.o $(B)/src/pageimg.o $(X11_OBJ) $(HTML_OBJ) $(IMG_OBJ) $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
 	$(LD) -o $@ $^ $(X11LIB) $(LDLIBS)
+
+# mail: IMAP on a terminal, each message through the page engine
+$(B)/manxmail: $(B)/src/manxmail.o $(FRONT_OBJ) $(HTML_OBJ) $(MAIL_OBJ) $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
+	$(LD) -o $@ $^ $(TERMLIB) $(LDLIBS)
 
 $(B)/ufetch: $(B)/src/ufetch.o $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
 	$(LD) -o $@ $^ $(LDLIBS)
@@ -163,7 +169,7 @@ $(B)/$(CRYPT68K)/%.o: $(CRYPT68K)/%.c
 # The SVR4 assembler of 1997 dies on one of manx.c's switch jump tables
 # ("Can't extend frag"); its switches are keys, so compare chains are
 # no loss.
-$(B)/src/manx.o: CFLAGS += -fno-jump-tables
+$(B)/src/manx.o $(B)/src/manxmail.o: CFLAGS += -fno-jump-tables
 
 $(B)/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -175,7 +181,7 @@ $(B)/%.o: %.c
 TESTS := $(filter-out build/test/test_snprintf build/test/test_no64,\
 	$(patsubst tests/%.c,build/test/%,$(wildcard tests/test_*.c)))
 
-build/test/%: tests/%.c $(HTML_OBJ) $(IMG_OBJ) $(NET_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
+build/test/%: tests/%.c $(HTML_OBJ) $(IMG_OBJ) $(NET_OBJ) $(MAIL_OBJ) $(TLS_OBJ) $(OS_OBJ) $(BR_LIB)
 	@mkdir -p build/test
 	$(CC) $(CFLAGS) $(INC) -o $@ $^ $(LDLIBS)
 
@@ -224,16 +230,24 @@ build/fuzz/fuzz_image: tests/fuzz_image.c $(wildcard image/*.c) net/inflate.c os
 	cc -std=c99 -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=all \
 		-Ios -Inet -Iimage -o $@ $^
 
-fuzz: build/fuzz/fuzz_html build/fuzz/fuzz_image
+# manxmail's IMAP reader and MIME, a server's mutated transcripts through
+# a stand-in connection
+build/fuzz/fuzz_mail: tests/fuzz_mail.c mail/imap.c mail/mime.c text/utf8.c os/mem.c
+	@mkdir -p build/fuzz
+	cc -std=c99 -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=all \
+		-Ios -Inet -Itls -I$(BEARSSL)/inc -Itext -Imail -o $@ $^
+
+fuzz: build/fuzz/fuzz_html build/fuzz/fuzz_image build/fuzz/fuzz_mail
 	build/fuzz/fuzz_html $(FUZZ_ITERS) $(FUZZ_SEED) build/corpus/*.html
 	@mkdir -p build/test/img
 	python3 tests/gen_images.py build/test/img > build/test/img/manifest
 	build/fuzz/fuzz_image $(FUZZ_ITERS) $(FUZZ_SEED) build/test/img
+	build/fuzz/fuzz_mail $(FUZZ_ITERS) $(FUZZ_SEED)
 
 # before a push: the tests, then both fuzzers a while (c1492af broke
 # wide grids with every test passing; only fuzzing showed it)
 CHECK_ITERS ?= 3000
-check: test build/fuzz/fuzz_html build/fuzz/fuzz_image
+check: test build/fuzz/fuzz_html build/fuzz/fuzz_image build/fuzz/fuzz_mail
 	@if ls build/corpus/*.html > /dev/null 2>&1; then \
 		for s in 1 2 3; do \
 			build/fuzz/fuzz_html $(CHECK_ITERS) $$s build/corpus/*.html || exit 1; \
@@ -244,6 +258,7 @@ check: test build/fuzz/fuzz_html build/fuzz/fuzz_image
 	@mkdir -p build/test/img
 	python3 tests/gen_images.py build/test/img > build/test/img/manifest
 	build/fuzz/fuzz_image $(CHECK_ITERS) 1 build/test/img
+	build/fuzz/fuzz_mail $(CHECK_ITERS)0 1
 
 clean:
 	rm -rf build
