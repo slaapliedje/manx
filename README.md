@@ -172,29 +172,38 @@ Settings go in `~/.manx/config`, one `key = value` a line, or as
 
 ### Mail
 
-`manxmail` reads mail over IMAP on a terminal, a program of its own so
-that the browser stays small. Each message is shown through the
-browser's page engine, HTML or plain text, with nothing it links to
+`manxmail` reads and sends mail on a terminal (IMAP and SMTP), a program
+of its own so that the browser stays small. Each message is shown through
+the browser's page engine, HTML or plain text, with nothing it links to
 fetched (no pictures, no style sheets: they tell the sender it was
-read); a link opens in `manx`, and an attachment can be saved. Its
-settings are in the same `~/.manx/config`:
+read); a link opens in `manx`, and an attachment can be saved. Messages
+are written in `$EDITOR` (`vi` when it isn't set), as plain text, a
+reply quoting what it answers. Its settings are in the same
+`~/.manx/config`:
 
 | key | |
 |---|---|
-| `mail_imap` | the server, `imap.gmail.com` (port 993, TLS; `host:port` for another) |
+| `mail_imap` | the server to read from, `imap.gmail.com` (port 993, TLS; `host:port` for another) |
 | `mail_user` | the login, `name@gmail.com` |
+| `mail_from` | who messages are from, `Ann Lee <ann@gmail.com>` (`mail_user` if not set) |
+| `mail_smtp` | the server to send through (`mail_imap` with `smtp.` for `imap.`; port 465, TLS) |
+| `mail_sent` | a folder each sent message is copied into (none: Gmail files them itself) |
 | `mail_html` | `off`: a message's plain text first, where it has both |
 
-The password is the first line of `~/.manx/mailpass`, which only its
-owner may read (`chmod 600`), or else asked for. Gmail takes an *app
-password* (Google Account, Security, 2-Step Verification, App
+The password, for both, is the first line of `~/.manx/mailpass`, which
+only its owner may read (`chmod 600`), or else asked for. Gmail takes an
+*app password* (Google Account, Security, 2-Step Verification, App
 passwords), as do Yahoo and Fastmail; Outlook and Microsoft 365 take only
-OAuth2 logins now, which `manxmail` can't do.
+OAuth2 logins now, which `manxmail` can't do. A `~/.manx/signature` goes
+under each new message.
 
-In the list, Enter reads a message, `g` picks a folder and `r` reloads;
-in a message, Space and `b` page, Tab moves between links and Enter
+In the list, Enter reads a message, `c` changes folder and `g` gets new
+mail; in a message, Space and `b` page, Tab moves between links and Enter
 opens one, `n` and `p` go to the next and previous message, `s` saves an
-attachment and `u` goes back to the list.
+attachment and `u` goes back to the list. In both, `m` writes a new
+message, `r` replies, `a` replies to all and `f` forwards. Before it goes
+a message is shown to be sent, edited again, or kept: what isn't sent
+stays in `~/.manx/draft` and is offered next time.
 
 ## Status
 

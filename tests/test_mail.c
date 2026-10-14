@@ -8,6 +8,8 @@
 #include "os.h"
 #include "imap.h"
 #include "mime.h"
+#include "smtp.h"
+#include "compose.h"
 
 static int fails, runs;
 
@@ -56,6 +58,8 @@ static void codings(void)
 	same("2047 among words", b, "Re: Gr\xc3\xbc\xc3\x9f" "e from me");
 	mime_header("=?bogus", 7, b, sizeof b);
 	same("2047 broken", b, "=?bogus");
+	mime_header("=?utf-8?q?a=0D=0ABcc:_x@y?=", 27, b, sizeof b);
+	same("2047 no line breaks", b, "a  Bcc: x@y");
 
 	mime_mutf7("&AMk-t&AOk-", b, sizeof b);
 	same("mUTF-7", b, "\xc3\x89t\xc3\xa9");
@@ -152,11 +156,119 @@ static void parts(void)
 	}
 }
 
+/* the value of header name in message msg (unfolded, decoded) */
+static const char *header(const char *msg, const char *name, char *out, size_t n)
+{
+	size_t nl = strlen(name);
+	const char *p = msg;
+
+	out[0] = '\0';
+	while (*p && !(p[0] == '\r' && p[1] == '\n')) {
+		const char *e = p;
+
+		while (*e && !(e[0] == '\r' && e[1] == '\n' && e[2] != ' '))
+			e++;
+		if (strncmp(p, name, nl) == 0 && p[nl] == ':') {
+			mime_header(p + nl + 2, (size_t)(e - p - nl - 2), out, n);
+			return out;
+		}
+		p = *e ? e + 2 : e;
+	}
+	return out;
+}
+
+static void outgoing(void)
+{
+	struct addr a[8];
+	char bad[64], h[300];
+	int n;
+	struct outmsg o;
+	char *msg, *body;
+	size_t len;
+	unsigned char dec[2000];
+
+	n = addr_parse("Ann Lee <ann@x.org>, \"Doe, J\" <j@y.com>,bob@z.net,", a, 8, bad, sizeof bad);
+	ok("three addresses", n == 3);
+	same("name", n == 3 ? a[0].name : "", "Ann Lee");
+	same("quoted name", n == 3 ? a[1].name : "", "Doe, J");
+	same("mailbox", n == 3 ? a[1].mbox : "", "j@y.com");
+	same("bare", n == 3 ? a[2].mbox : "", "bob@z.net");
+	ok("not an address", addr_parse("ann@x.org, bob", a, 8, bad, sizeof bad) < 0
+		&& strcmp(bad, "bob") == 0);
+	ok("none", addr_parse("  ", a, 8, bad, sizeof bad) == 0);
+	ok("angle brackets", addr_parse("x <a@b<c>", a, 8, bad, sizeof bad) < 0);
+	ok("addr ok", smtp_addr_ok("a.b+c@example.com") && !smtp_addr_ok("a b@c")
+		&& !smtp_addr_ok("a@b>\r\nRCPT") && !smtp_addr_ok("@b") && !smtp_addr_ok("a@"));
+
+	memset(&o, 0, sizeof o);
+	o.from = "Test User <test@example.com>";
+	o.to = "Ren\xc3\xa9" "e <renee@example.org>, \"Doe, J\" <j@y.com>";
+	o.cc = "";
+	o.subject = "Re: Gr\xc3\xbc\xc3\x9f" "e from Z\xc3\xbcrich, and a long subject that goes on "
+		"and on past one encoded word's worth";
+	o.date = "Wed, 14 Oct 2026 11:30:00 -0600";
+	o.msgid = "<1.2@example.com>";
+	o.in_reply_to = "<p@x>";
+	o.references = "<o@x> <p@x>";
+	o.body = "Caf\xc3\xa9 = coffee.\n.a line with a dot\ntrailing space \n"
+		"0123456789012345678901234567890123456789012345678901234567890123456789012345678901234\n";
+	msg = mail_build(&o, &len);
+	ok("built", msg != NULL && len == strlen(msg));
+	if (msg == NULL)
+		return;
+	same("To, decoded", header(msg, "To", h, sizeof h),
+		"Ren\xc3\xa9" "e <renee@example.org>, \"Doe, J\" <j@y.com>");
+	same("Subject, decoded", header(msg, "Subject", h, sizeof h), o.subject);
+	ok("no Cc", strstr(msg, "\r\nCc:") == NULL);
+	ok("In-Reply-To", strstr(msg, "\r\nIn-Reply-To: <p@x>\r\n") != NULL);
+	ok("qp", strstr(msg, "Content-Transfer-Encoding: quoted-printable\r\n") != NULL);
+	{
+		const char *l;
+		int longest = 0;
+
+		for (l = msg; *l; ) {
+			const char *e = strstr(l, "\r\n");
+			int w = e ? (int)(e - l) : (int)strlen(l);
+
+			if (w > longest)
+				longest = w;
+			l = e ? e + 2 : l + w;
+		}
+		ok("no line over 76", longest <= 76);
+	}
+	body = strstr(msg, "\r\n\r\n") + 4;
+	n = (int)qp_decode(body, strlen(body), dec, 0);
+	dec[n] = '\0';
+	same("body round trip", (char *)dec, "Caf\xc3\xa9 = coffee.\r\n.a line with a dot\r\n"
+		"trailing space \r\n"
+		"0123456789012345678901234567890123456789012345678901234567890123456789012345678901234\r\n");
+	xfree(msg);
+
+	o.to = "bob@z.net";
+	o.subject = "Plain";
+	o.body = "Just ASCII.\n";
+	o.in_reply_to = o.references = NULL;
+	msg = mail_build(&o, &len);
+	ok("7bit", msg && strstr(msg, "charset=us-ascii") && strstr(msg, "\r\n\r\nJust ASCII.\r\n")
+		&& strstr(msg, "\r\nSubject: Plain\r\n") && !strstr(msg, "References"));
+	xfree(msg);
+	o.to = "bob";
+	ok("bad To", mail_build(&o, &len) == NULL);
+
+	{
+		char d[40];
+
+		mail_date(0, d);
+		ok("date's form", strlen(d) == 31 && d[3] == ',' && (d[26] == '+' || d[26] == '-'));
+	}
+}
+
 int main(void)
 {
 	codings();
 	values();
 	parts();
+	outgoing();
 	printf("mail: %d/%d passed\n", runs - fails, runs);
 	return fails != 0;
 }

@@ -441,6 +441,47 @@ int imap_cmd(struct imap *m, imap_cb cb, void *ctx, const char *fmt, ...)
 	return rc;
 }
 
+int imap_append(struct imap *m, const char *mbox, const char *flags,
+	const char *msg, size_t len)
+{
+	char q[600], line[700], t[12];
+	size_t tl;
+	int k;
+
+	if (m->c == NULL)
+		return fail(m, "not connected", NULL);
+	if (imap_quote(q, sizeof q, mbox) < 0)
+		return fail(m, "a mailbox name IMAP can't send", NULL);
+	sprintf(t, "A%04u", ++m->tag % 10000);
+	k = snprintf(line, sizeof line, "%s APPEND %s (%s) {%lu}\r\n", t, q, flags,
+		(unsigned long)len);
+	if (k < 0 || (size_t)k >= sizeof line)
+		return fail(m, "a command too long", NULL);
+	if (conn_write(m->c, line, (size_t)k) < 0) {
+		drop(m);
+		return fail(m, "can't write to the server", NULL);
+	}
+	/* its "+ go ahead", then the message */
+	tl = strlen(t);
+	for (;;) {
+		if (read_resp(m) < 0)
+			return -1;
+		if (m->buf[0] == '+')
+			break;
+		if (m->buf[0] == '*' && m->buf[1] == ' ')
+			untagged(m, NULL, NULL);
+		else if (strncmp(m->buf, t, tl) == 0 && m->buf[tl] == ' ') {
+			snprintf(m->err, sizeof m->err, "%s", m->buf + tl + 1);
+			return -1;
+		}
+	}
+	if (conn_write(m->c, msg, len) < 0 || conn_write(m->c, "\r\n", 2) < 0) {
+		drop(m);
+		return fail(m, "can't write to the server", NULL);
+	}
+	return wait_tagged(m, t, NULL, NULL);
+}
+
 int imap_quote(char *out, size_t n, const char *s)
 {
 	size_t o = 0;

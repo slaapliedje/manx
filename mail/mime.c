@@ -172,7 +172,12 @@ static const char *ew(const char *in, const char *e, char *out, size_t *o, size_
 	else
 		return NULL;
 	if ((u = mime_utf8(label, raw, k)) != NULL) {
-		size_t ul = strlen(u);
+		size_t ul = strlen(u), i;
+
+		/* (no line breaks or other controls smuggled into a header) */
+		for (i = 0; i < ul; i++)
+			if ((unsigned char)u[i] < ' ' || u[i] == 127)
+				u[i] = ' ';
 
 		if (*o + ul >= n)
 			ul = n - *o - 1;

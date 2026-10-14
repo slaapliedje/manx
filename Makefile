@@ -232,7 +232,7 @@ build/fuzz/fuzz_image: tests/fuzz_image.c $(wildcard image/*.c) net/inflate.c os
 
 # manxmail's IMAP reader and MIME, a server's mutated transcripts through
 # a stand-in connection
-build/fuzz/fuzz_mail: tests/fuzz_mail.c mail/imap.c mail/mime.c text/utf8.c os/mem.c
+build/fuzz/fuzz_mail: tests/fuzz_mail.c $(wildcard mail/*.c) text/utf8.c os/mem.c
 	@mkdir -p build/fuzz
 	cc -std=c99 -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=all \
 		-Ios -Inet -Itls -I$(BEARSSL)/inc -Itext -Imail -o $@ $^

@@ -41,6 +41,8 @@
 #include "utf8.h"
 #include "imap.h"
 #include "mime.h"
+#include "smtp.h"
+#include "compose.h"
 
 #define PAGE_MSGS	50		/* messages fetched at a time */
 #define MAX_PARTS	32
@@ -50,6 +52,15 @@ struct msg {
 	char from[96], subject[200], date[16];
 	int seen, flagged, answered;
 };
+
+/* the message open, for a reply */
+#define ORIG_ADDRS	32
+static struct {
+	struct addr from[4], reply_to[4], to[ORIG_ADDRS], cc[ORIG_ADDRS];
+	int nfrom, nreply_to, nto, ncc;
+	char date[80], subject[300], msgid[200];
+	unsigned long uid;
+} g_orig;
 
 static struct imap g_m;
 static char g_host[256], g_user[256], g_pass[256];
@@ -372,24 +383,58 @@ static void first_addr(struct imap *m, struct ival *list, char *out, size_t n, i
 	copy_to(out, n, t);
 }
 
-/* every address of a list, for the header lines */
-static void all_addrs(struct imap *m, struct ival *list, char *out, size_t n)
+/* an ENVELOPE's address list into out (max): how many */
+static int env_addrs(struct imap *m, struct ival *list, struct addr *out, int max)
 {
 	unsigned long i;
-	size_t o = 0;
+	int n = 0;
 
-	out[0] = '\0';
-	for (i = 0; list && i < list->n && o + 4 < n; i++) {
-		char one[300];
-		struct ival w;
+	for (i = 0; list && list->type == IV_LIST && i < list->n && n < max; i++) {
+		struct ival *a = iv_at(m, list, i);
+		char raw[200], box[120], host[120];
 
-		/* (first_addr of a list holding just this one) */
-		w = *list;
-		w.first = iv_at(m, list, i) - m->iv;
-		w.n = 1;
-		first_addr(m, &w, one, sizeof one, 1);
-		o += (size_t)snprintf(out + o, n - o, "%s%s", i ? ", " : "", one);
+		iv_str(iv_at(m, a, 2), box, sizeof box);
+		iv_str(iv_at(m, a, 3), host, sizeof host);
+		if (!box[0] || !host[0])
+			continue;		/* (a group's start or end) */
+		iv_str(iv_at(m, a, 0), raw, sizeof raw);
+		mime_header(raw, strlen(raw), out[n].name, sizeof out[n].name);
+		snprintf(out[n].mbox, sizeof out[n].mbox, "%s@%s", box, host);
+		n++;
 	}
+	return n;
+}
+
+/* addresses as a header has them: Ann <a@b>, "Doe, J" <c@d>, e@f */
+static void addrs_text(const struct addr *a, int n, char *out, size_t on)
+{
+	struct sbuf b;
+	int i;
+
+	memset(&b, 0, sizeof b);
+	for (i = 0; i < n; i++) {
+		if (i)
+			sb_str(&b, ", ");
+		if (a[i].name[0] && strpbrk(a[i].name, "()<>[]:;@\\,.\"")) {
+			const char *c;
+
+			sb_str(&b, "\"");
+			for (c = a[i].name; *c; c++) {
+				if (*c == '"' || *c == '\\')
+					sb_str(&b, "\\");
+				sb_put(&b, c, 1);
+			}
+			sb_str(&b, "\" <");
+		} else if (a[i].name[0]) {
+			sb_str(&b, a[i].name);
+			sb_str(&b, " <");
+		}
+		sb_str(&b, a[i].mbox);
+		if (a[i].name[0])
+			sb_str(&b, ">");
+	}
+	copy_to(out, on, b.s ? b.s : "");
+	xfree(b.s);
 }
 
 static struct msg *msg_at_seq(unsigned long seq)
@@ -530,22 +575,33 @@ static void on_struct(void *ctx, struct imap *m, struct ival *v, unsigned long n
 		if (iv_is(k, "BODYSTRUCTURE"))
 			g_nparts = mime_parts(m, val, g_parts, MAX_PARTS);
 		else if (iv_is(k, "ENVELOPE")) {
-			char raw[400];
+			char raw[400], *c;
 
+			g_orig.nfrom = env_addrs(m, iv_at(m, val, 2), g_orig.from, 4);
+			g_orig.nreply_to = env_addrs(m, iv_at(m, val, 4), g_orig.reply_to, 4);
+			g_orig.nto = env_addrs(m, iv_at(m, val, 5), g_orig.to, ORIG_ADDRS);
+			g_orig.ncc = env_addrs(m, iv_at(m, val, 6), g_orig.cc, ORIG_ADDRS);
+			iv_str(iv_at(m, val, 0), g_orig.date, sizeof g_orig.date);
+			iv_str(iv_at(m, val, 1), raw, sizeof raw);
+			mime_header(raw, strlen(raw), g_orig.subject, sizeof g_orig.subject);
+			iv_str(iv_at(m, val, 9), g_orig.msgid, sizeof g_orig.msgid);
+			for (c = g_orig.msgid; *c; c++)
+				if ((unsigned char)*c <= ' ' || (unsigned char)*c >= 127)
+					*c = '_';	/* (it goes in a header) */
+			for (c = g_orig.date; *c; c++)
+				if ((unsigned char)*c < ' ')
+					*c = ' ';
 			g_nhdr = 0;
-			all_addrs(m, iv_at(m, val, 2), line, sizeof line);
+			addrs_text(g_orig.from, g_orig.nfrom, line, sizeof line);
 			snprintf(g_hdr[g_nhdr++], sizeof g_hdr[0], "From: %s", line);
-			all_addrs(m, iv_at(m, val, 5), line, sizeof line);
+			addrs_text(g_orig.to, g_orig.nto, line, sizeof line);
 			if (line[0])
 				snprintf(g_hdr[g_nhdr++], sizeof g_hdr[0], "To: %s", line);
-			all_addrs(m, iv_at(m, val, 6), line, sizeof line);
+			addrs_text(g_orig.cc, g_orig.ncc, line, sizeof line);
 			if (line[0])
 				snprintf(g_hdr[g_nhdr++], sizeof g_hdr[0], "Cc: %s", line);
-			iv_str(iv_at(m, val, 0), raw, sizeof raw);
-			snprintf(g_hdr[g_nhdr++], sizeof g_hdr[0], "Date: %s", raw);
-			iv_str(iv_at(m, val, 1), raw, sizeof raw);
-			mime_header(raw, strlen(raw), line, sizeof line);
-			snprintf(g_hdr[g_nhdr++], sizeof g_hdr[0], "Subject: %s", line);
+			snprintf(g_hdr[g_nhdr++], sizeof g_hdr[0], "Date: %s", g_orig.date);
+			snprintf(g_hdr[g_nhdr++], sizeof g_hdr[0], "Subject: %s", g_orig.subject);
 		}
 	}
 }
@@ -591,35 +647,6 @@ static unsigned char *fetch_part(unsigned long uid, const struct mpart *p, size_
 	xfree(g_body);
 	g_body = NULL;
 	return d;
-}
-
-/* growing text */
-struct sbuf {
-	char *s;
-	size_t len, cap;
-};
-
-static void sb_put(struct sbuf *b, const char *s, size_t n)
-{
-	if (b->len + n + 1 > b->cap) {
-		size_t c = b->cap ? b->cap * 2 : 4096;
-		char *q;
-
-		while (c < b->len + n + 1)
-			c *= 2;
-		if ((q = xrealloc(b->s, c)) == NULL)
-			return;
-		b->s = q;
-		b->cap = c;
-	}
-	memcpy(b->s + b->len, s, n);
-	b->len += n;
-	b->s[b->len] = '\0';
-}
-
-static void sb_str(struct sbuf *b, const char *s)
-{
-	sb_put(b, s, strlen(s));
 }
 
 /* plain text as HTML: escaped, its lines kept, its URLs links */
@@ -714,6 +741,8 @@ static void load_message(struct msg *mg)
 	g_nhdr = 0;
 	g_vtop = 0;
 	g_link = -1;
+	memset(&g_orig, 0, sizeof g_orig);
+	g_orig.uid = mg->uid;
 	busy("Fetching the message...");
 	if (cmd(on_struct, NULL, "UID FETCH %lu (BODYSTRUCTURE ENVELOPE)", mg->uid) < 0) {
 		say("%s", g_m.err);
@@ -756,6 +785,556 @@ static void load_message(struct msg *mg)
 		mg->uid) == 0)
 		mg->seen = 1;
 	say("", NULL);
+}
+
+/* --- writing ------------------------------------------------------------ */
+
+enum { W_NEW, W_REPLY, W_REPLY_ALL, W_FORWARD };
+
+static char g_from[300];		/* "Name <a@b>" or a@b: mail_from */
+static char g_from_mbox[ADDR_MAX];	/* its a@b */
+static char g_smtp[256];		/* mail_smtp's host */
+static unsigned g_smtp_port = 465;
+static char g_sent[300];		/* mail_sent: where a copy goes, "" */
+
+static int lower_c(int c)
+{
+	return c >= 'A' && c <= 'Z' ? c + 32 : c;
+}
+
+static int same_mbox(const char *a, const char *b)
+{
+	while (*a && lower_c((unsigned char)*a) == lower_c((unsigned char)*b))
+		a++, b++;
+	return *a == '\0' && *b == '\0';
+}
+
+/* does s begin with w, case aside? */
+static int ci_begins(const char *s, const char *w)
+{
+	while (*w)
+		if (lower_c((unsigned char)*s++) != lower_c((unsigned char)*w++))
+			return 0;
+	return 1;
+}
+
+static int is_me(const char *mbox)
+{
+	return same_mbox(mbox, g_from_mbox) || same_mbox(mbox, g_user);
+}
+
+/* the open message's text as it would be quoted: each line after prefix,
+ * width columns at most, in UTF-8; no blank lines at either end */
+static void page_text(struct sbuf *b, int width, const char *prefix)
+{
+	struct page p;
+	unsigned long i;
+	long first = -1, last = -1;
+	size_t pl = strlen(prefix);
+
+	memset(&p, 0, sizeof p);
+	if (layout_run(&p, &g_doc, width, TCS_UTF8, 0, 0, NULL) < 0)
+		return;
+	for (i = 0; i < p.nlines; i++)
+		if (p.lines[i].len > 0) {
+			if (first < 0)
+				first = (long)i;
+			last = (long)i;
+		}
+	for (i = (unsigned long)(first < 0 ? 0 : first); first >= 0 && (long)i <= last; i++) {
+		const struct lline *l = &p.lines[i];
+		int k;
+
+		if (l->len == 0) {
+			/* (an empty line's prefix without its trailing space) */
+			size_t n = pl;
+
+			while (n > 0 && prefix[n - 1] == ' ')
+				n--;
+			sb_put(b, prefix, n);
+		} else {
+			sb_str(b, prefix);
+			for (k = 0; k < l->indent; k++)
+				sb_str(b, " ");
+			sb_put(b, p.text + l->off, l->len);
+		}
+		sb_str(b, "\n");
+	}
+	layout_free(&p);
+}
+
+/* the open message's References with its own Message-ID after, for a
+ * reply's (the newest kept when there are too many) */
+static void references(char *out, size_t n)
+{
+	char want[] = "BODY[HEADER.FIELDS";
+	struct sbuf b;
+	const char *p;
+
+	memset(&b, 0, sizeof b);
+	g_want = want;
+	xfree(g_body);
+	g_body = NULL;
+	if (cmd(on_body, NULL, "UID FETCH %lu (BODY.PEEK[HEADER.FIELDS (REFERENCES)])",
+		g_orig.uid) == 0 && g_body != NULL && (p = strchr(g_body, ':')) != NULL) {
+		/* unfolded, one space between ids, nothing but printable ASCII */
+		for (p++; *p; p++) {
+			if ((unsigned char)*p > ' ' && (unsigned char)*p < 127)
+				sb_put(&b, p, 1);
+			else if (b.len && b.s[b.len - 1] != ' ')
+				sb_str(&b, " ");
+		}
+	}
+	xfree(g_body);
+	g_body = NULL;
+	if (b.len && b.s[b.len - 1] != ' ')
+		sb_str(&b, " ");
+	sb_str(&b, g_orig.msgid);
+	p = b.s ? b.s : "";
+	while (strlen(p) + 1 > n && strchr(p + 1, '<'))
+		p = strchr(p + 1, '<');
+	copy_to(out, n, p);
+	xfree(b.s);
+}
+
+/* the draft's first text: headers to fill in, what's replied to */
+static void template(int kind, struct sbuf *b)
+{
+	char to[1600] = "", cc[1600] = "", subj[400], path[600], refs[1000];
+	static struct addr list[2 * ORIG_ADDRS];
+	unsigned char *sig;
+	size_t siglen;
+
+	subj[0] = '\0';
+	if (kind == W_REPLY || kind == W_REPLY_ALL) {
+		const struct addr *r = g_orig.nreply_to ? g_orig.reply_to : g_orig.from;
+		int nr = g_orig.nreply_to ? g_orig.nreply_to : g_orig.nfrom, n = 0, i, j;
+
+		addrs_text(r, nr, to, sizeof to);
+		for (i = 0; kind == W_REPLY_ALL && i < g_orig.nto + g_orig.ncc; i++) {
+			const struct addr *a = i < g_orig.nto ? &g_orig.to[i] : &g_orig.cc[i - g_orig.nto];
+
+			if (is_me(a->mbox))
+				continue;
+			for (j = 0; j < nr && !same_mbox(r[j].mbox, a->mbox); j++)
+				;
+			if (j < nr)
+				continue;
+			for (j = 0; j < n && !same_mbox(list[j].mbox, a->mbox); j++)
+				;
+			if (j == n)
+				list[n++] = *a;
+		}
+		addrs_text(list, n, cc, sizeof cc);
+		snprintf(subj, sizeof subj, "%s%s", ci_begins(g_orig.subject, "Re:") ? "" : "Re: ",
+			g_orig.subject);
+	} else if (kind == W_FORWARD)
+		snprintf(subj, sizeof subj, "%s%s", ci_begins(g_orig.subject, "Fwd:") ? "" : "Fwd: ",
+			g_orig.subject);
+	sb_str(b, "To: ");
+	sb_str(b, to);
+	sb_str(b, "\nCc: ");
+	sb_str(b, cc);
+	sb_str(b, "\nBcc: \nSubject: ");
+	sb_str(b, subj);
+	sb_str(b, "\n");
+	if ((kind == W_REPLY || kind == W_REPLY_ALL) && g_orig.msgid[0]) {
+		references(refs, sizeof refs);
+		sb_str(b, "In-Reply-To: ");
+		sb_str(b, g_orig.msgid);
+		sb_str(b, "\nReferences: ");
+		sb_str(b, refs);
+		sb_str(b, "\n");
+	}
+	sb_str(b, "\n");
+	if (kind == W_REPLY || kind == W_REPLY_ALL) {
+		char who[300];
+
+		addrs_text(g_orig.from, g_orig.nfrom > 0 ? 1 : 0, who, sizeof who);
+		sb_str(b, "\n\nOn ");
+		sb_str(b, g_orig.date);
+		sb_str(b, ", ");
+		sb_str(b, g_orig.from[0].name[0] ? g_orig.from[0].name : who);
+		sb_str(b, " wrote:\n");
+		page_text(b, 72, "> ");
+	} else if (kind == W_FORWARD) {
+		char line[1600];
+
+		sb_str(b, "\n\n---------- Forwarded message ----------\nFrom: ");
+		addrs_text(g_orig.from, g_orig.nfrom, line, sizeof line);
+		sb_str(b, line);
+		sb_str(b, "\nDate: ");
+		sb_str(b, g_orig.date);
+		sb_str(b, "\nSubject: ");
+		sb_str(b, g_orig.subject);
+		sb_str(b, "\nTo: ");
+		addrs_text(g_orig.to, g_orig.nto, line, sizeof line);
+		sb_str(b, line);
+		sb_str(b, "\n\n");
+		page_text(b, 72, "");
+	} else
+		sb_str(b, "\n");
+	/* ~/.manx/signature, after "-- " */
+	if ((sig = os_read_file(os_datapath(path, sizeof path, "signature"), &siglen)) != NULL) {
+		sb_str(b, "\n-- \n");
+		sb_put(b, (const char *)sig, siglen);
+		if (siglen && sig[siglen - 1] != '\n')
+			sb_str(b, "\n");
+		xfree(sig);
+	}
+}
+
+/* $VISUAL or $EDITOR (vi) on path, the terminal handed over meanwhile */
+static int edit_file(const char *path)
+{
+	const char *ed = getenv("VISUAL");
+	char line[600];
+	pid_t pid;
+	int st = 0;
+
+	if (ed == NULL || *ed == '\0')
+		ed = getenv("EDITOR");
+	if (ed == NULL || *ed == '\0')
+		ed = "vi";
+	/* (through the shell: an editor with options, "emacs -nw") */
+	snprintf(line, sizeof line, "%s \"$1\"", ed);
+	scr_suspend();
+	if ((pid = fork()) == 0) {
+		execl("/bin/sh", "sh", "-c", line, "sh", path, (char *)NULL);
+		_exit(127);
+	}
+	if (pid > 0)
+		while (waitpid(pid, &st, 0) < 0)
+			;
+	scr_resume();
+	return pid > 0 && WIFEXITED(st) && WEXITSTATUS(st) != 127 ? 0 : -1;
+}
+
+struct draft {
+	char to[2000], cc[2000], bcc[2000], subject[600], irt[300], refs[1000];
+	const char *body;
+};
+
+/* a draft's text (changed in place: CRs out, headers unfolded) into d: 0,
+ * or -1 with why in err */
+static int parse_draft(char *text, struct draft *d, char *err, size_t en)
+{
+	char *p = text, *o = text;
+
+	memset(d, 0, sizeof *d);
+	for (; *p; p++)
+		if (*p != '\r')
+			*o++ = *p;
+	*o = '\0';
+	p = text;
+	while (*p && *p != '\n') {
+		char *e = p, *colon, *v, name[24];
+		size_t k;
+
+		/* the header, its following lines that begin with a space on it */
+		for (;;) {
+			e = strchr(e, '\n');
+			if (e == NULL) {
+				e = p + strlen(p);
+				break;
+			}
+			if (e[1] == ' ' || e[1] == '\t') {
+				*e = ' ';
+				continue;
+			}
+			break;
+		}
+		colon = memchr(p, ':', (size_t)(e - p));
+		if (colon == NULL || colon - p >= (long)sizeof name) {
+			snprintf(err, en, "\"%.40s\" isn't a header: the text goes after an empty line",
+				p);
+			return -1;
+		}
+		for (k = 0; p + k < colon; k++)
+			name[k] = (char)lower_c((unsigned char)p[k]);
+		name[k] = '\0';
+		for (v = colon + 1; v < e && (*v == ' ' || *v == '\t'); v++)
+			;
+		k = (size_t)(e - v);
+		while (k > 0 && (v[k - 1] == ' ' || v[k - 1] == '\t'))
+			k--;
+#define TAKE(f) snprintf(d->f, sizeof d->f, "%.*s", (int)k, v)
+		if (strcmp(name, "to") == 0)
+			TAKE(to);
+		else if (strcmp(name, "cc") == 0)
+			TAKE(cc);
+		else if (strcmp(name, "bcc") == 0)
+			TAKE(bcc);
+		else if (strcmp(name, "subject") == 0)
+			TAKE(subject);
+		else if (strcmp(name, "in-reply-to") == 0)
+			TAKE(irt);
+		else if (strcmp(name, "references") == 0)
+			TAKE(refs);
+		else {
+			snprintf(err, en, "manxmail doesn't send a \"%s:\" header (a typo?)", name);
+			return -1;
+		}
+#undef TAKE
+		p = *e ? e + 1 : e;
+	}
+	d->body = *p == '\n' ? p + 1 : p;
+	return 0;
+}
+
+/* everyone it goes to (To, Cc, Bcc; each once) into out: how many, or -1
+ * with err */
+static int recipients(const struct draft *d, struct addr *out, int max, char *err, size_t en)
+{
+	const char *f[3];
+	struct addr a[64];
+	char bad[120];
+	int n = 0, i, j, k;
+
+	f[0] = d->to;
+	f[1] = d->cc;
+	f[2] = d->bcc;
+	for (i = 0; i < 3; i++) {
+		if ((k = addr_parse(f[i], a, 64, bad, sizeof bad)) < 0) {
+			snprintf(err, en, "\"%s\" isn't an address", bad);
+			return -1;
+		}
+		for (j = 0; j < k; j++) {
+			int x;
+
+			for (x = 0; x < n && !same_mbox(out[x].mbox, a[j].mbox); x++)
+				;
+			if (x == n && n < max)
+				out[n++] = a[j];
+		}
+	}
+	if (n == 0)
+		snprintf(err, en, "it isn't to anyone (To:)");
+	return n;
+}
+
+/* "<random.time@the-from-address's-domain>" */
+static void make_msgid(char *out, size_t n)
+{
+	unsigned char r[32];
+	char hex[25];
+	const char *at = strchr(g_from_mbox, '@');
+	int i;
+
+	if (entropy_extract(r) < 0) {
+		unsigned long x = os_usec() ^ (unsigned long)getpid() << 16;
+
+		for (i = 0; i < 12; i++, x = x * 1103515245UL + 12345)
+			r[i] = (unsigned char)(x >> 16);
+	}
+	for (i = 0; i < 12; i++)
+		sprintf(hex + 2 * i, "%02x", r[i]);
+	snprintf(out, n, "<%s.%lx@%s>", hex, (unsigned long)time(NULL),
+		at ? at + 1 : "manxmail.invalid");
+}
+
+/* send it: 0, or -1 with err */
+static int send_draft(const struct draft *d, char *err, size_t en)
+{
+	static struct addr to[192];
+	static struct smtp s;
+	char *rcpt[192], date[40], msgid[160];
+	struct outmsg o;
+	char *msg;
+	size_t len;
+	int n, i;
+
+	if ((n = recipients(d, to, 192, err, en)) <= 0)
+		return -1;
+	for (i = 0; i < n; i++)
+		rcpt[i] = to[i].mbox;
+	mail_date((long)time(NULL), date);
+	make_msgid(msgid, sizeof msgid);
+	memset(&o, 0, sizeof o);
+	o.from = g_from;
+	o.to = d->to;
+	o.cc = d->cc;
+	o.subject = d->subject;
+	o.date = date;
+	o.msgid = msgid;
+	o.in_reply_to = d->irt;
+	o.references = d->refs;
+	o.body = d->body;
+	if ((msg = mail_build(&o, &len)) == NULL) {
+		snprintf(err, en, "out of memory");
+		return -1;
+	}
+	if (!g_smtp[0]) {
+		snprintf(err, en, "set mail_smtp in ~/.manx/config: the server to send through");
+		xfree(msg);
+		return -1;
+	}
+	snprintf(err, en, "Sending to %s...", g_smtp);
+	busy(err);
+	if (smtp_open(&s, g_smtp, g_smtp_port, g_tls) < 0 || smtp_auth(&s, g_user, g_pass) < 0
+		|| smtp_send(&s, g_from_mbox, rcpt, n, msg, len) < 0) {
+		snprintf(err, en, "%s", s.err);
+		smtp_close(&s);
+		xfree(msg);
+		return -1;
+	}
+	smtp_close(&s);
+	err[0] = '\0';
+	if (g_sent[0]) {
+		char what[400];
+
+		snprintf(what, sizeof what, "Filing a copy in %s...", g_sent);
+		busy(what);
+		if ((g_m.c == NULL && reconnect() < 0)
+			|| imap_append(&g_m, g_sent, "\\Seen", msg, len) < 0)
+			snprintf(err, en, "Sent, but no copy filed in %.40s: %.150s", g_sent, g_m.err);
+	}
+	xfree(msg);
+	return 0;
+}
+
+/* what is about to go: its headers, its first lines; the choice */
+static int confirm(const struct draft *d, const char *err)
+{
+	const char *h[4], *v[4], *p;
+	int i, r = 1;
+
+	scr_erase();
+	bar(0, "Send this message?");
+	h[0] = "To:";
+	v[0] = d->to;
+	h[1] = "Cc:";
+	v[1] = d->cc;
+	h[2] = "Bcc:";
+	v[2] = d->bcc;
+	h[3] = "Subject:";
+	v[3] = d->subject;
+	for (i = 0; i < 4; i++)
+		if (v[i][0] || i == 0 || i == 3) {
+			put_fit(r, 0, h[i], 9, CA_BOLD);
+			put_fit(r++, 9, v[i][0] ? v[i] : "(none)", scr_cols - 9, 0);
+		}
+	r++;
+	for (p = d->body; *p && r < scr_rows - 3; r++) {
+		const char *e = strchr(p, '\n');
+		char line[600];
+		size_t k = e ? (size_t)(e - p) : strlen(p);
+
+		snprintf(line, sizeof line, "%.*s", (int)(k < sizeof line ? k : sizeof line - 1), p);
+		put_fit(r, 0, line, scr_cols, 0);
+		p = e ? e + 1 : p + k;
+	}
+	if (err && err[0])
+		put_fit(scr_rows - 2, 0, err, scr_cols, CA_BOLD);
+	say("", NULL);
+	status("y send   e edit again   n not now (it is kept, for next time)");
+	scr_flush(0);
+	for (;;) {
+		int k = scr_getkey(-1);
+
+		if (k == 'y' || k == 'Y')
+			return 'y';
+		if (k == 'e' || k == 'E')
+			return 'e';
+		if (k == 'n' || k == 'N' || k == 27 || k == 'q' || k == K_CLOSE)
+			return 'n';
+	}
+}
+
+/* write a message (kind: W_*, to the open one) and send it */
+static void compose(int kind)
+{
+	char path[600], err[300], *text = NULL, *first = NULL;
+	struct sbuf t;
+	static struct draft d;
+	unsigned long reply_uid = 0;
+	long sz, mt;
+	size_t len;
+
+	if (!g_from_mbox[0]) {
+		say("Set mail_from in ~/.manx/config: the address to send from.", NULL);
+		return;
+	}
+	os_datapath(path, sizeof path, "draft");
+	if (os_file_info(path, &sz, &mt) == 0) {
+		char yn[4] = "";
+
+		if (!prompt("A message from before wasn't sent. Go on with it (y) or start anew (n)? ",
+			yn, sizeof yn, 0))
+			return;
+		if (yn[0] == 'y' || yn[0] == 'Y')
+			kind = -1;
+	}
+	if (kind >= 0) {
+		memset(&t, 0, sizeof t);
+		if (kind != W_NEW)
+			busy("Getting the message ready...");
+		template(kind, &t);
+		if (t.oom || os_write_file(path, t.s ? t.s : "", t.len, 0600) < 0) {
+			say("Couldn't write the draft, %.300s.", path);
+			xfree(t.s);
+			return;
+		}
+		first = t.s;
+		if (kind == W_REPLY || kind == W_REPLY_ALL)
+			reply_uid = g_orig.uid;
+	}
+	err[0] = '\0';
+	for (;;) {
+		int c, bad;
+
+		if (edit_file(path) < 0) {
+			say("Couldn't run the editor ($EDITOR, else vi).", NULL);
+			break;
+		}
+		xfree(text);
+		if ((text = (char *)os_read_file(path, &len)) == NULL) {
+			say("The draft is gone (%.300s).", path);
+			break;
+		}
+		if (first && strcmp(text, first) == 0) {
+			unlink(path);
+			say("Not sent: nothing was written.", NULL);
+			break;
+		}
+		bad = 1;
+		if (parse_draft(text, &d, err, sizeof err) == 0) {
+			static struct addr a[192];
+
+			if (recipients(&d, a, 192, err, sizeof err) > 0) {
+				err[0] = '\0';
+				bad = 0;
+			}
+		}
+		for (;;) {
+			c = confirm(&d, err);
+			if (c != 'y')
+				break;
+			if (bad || send_draft(&d, err, sizeof err) < 0)
+				continue;	/* (err says why: the choice again) */
+			/* sent */
+			unlink(path);
+			if (reply_uid && cmd(NULL, NULL, "UID STORE %lu +FLAGS.SILENT (\\Answered)",
+				reply_uid) == 0) {
+				int i;
+
+				for (i = 0; i < g_n; i++)
+					if (g_msgs[i].uid == reply_uid)
+						g_msgs[i].answered = 1;
+			}
+			say(err[0] ? "%s" : "Sent.", err);
+			xfree(text);
+			xfree(first);
+			return;
+		}
+		if (c == 'n') {
+			say("Not sent: it is kept in ~/.manx/draft, for next time.", NULL);
+			break;
+		}
+		/* (e: edited again) */
+	}
+	xfree(text);
+	xfree(first);
 }
 
 /* --- drawing a message ------------------------------------------------- */
@@ -822,7 +1401,7 @@ static void draw_message(const struct msg *mg)
 		} else if (v > g_nhdr && g_have_page && v - g_nhdr - 1 < (long)g_page.nlines)
 			draw_page_line(1 + i, (unsigned long)(v - g_nhdr - 1));
 	}
-	status("Space more  u back  n/p next/previous  Tab links  Enter open  s save  q quit");
+	status("Space more  u list  n/p next/prev  r reply  a all  f fwd  m new  Tab link  s save");
 	scr_flush(0);
 }
 
@@ -988,6 +1567,18 @@ static void read_message(void)
 		case 's':
 			save_attachment(&g_msgs[g_sel]);
 			break;
+		case 'm':
+			compose(W_NEW);
+			break;
+		case 'r':
+			compose(W_REPLY);
+			break;
+		case 'a':
+			compose(W_REPLY_ALL);
+			break;
+		case 'f':
+			compose(W_FORWARD);
+			break;
 		case 'n':
 			if (g_sel + 1 < g_n || (fetch_older(), g_sel + 1 < g_n)) {
 				g_sel++;
@@ -1038,7 +1629,8 @@ static void draw_list(void)
 		int r = 1 + i, a = g_top + i == g_sel ? CA_REV : 0;
 
 		scr_fill(r, 0, scr_cols, ' ', a);
-		scr_put(r, 0, mg->flagged ? "!" : mg->seen ? " " : "N", 1, a | CA_BOLD);
+		scr_put(r, 0, mg->flagged ? "!" : !mg->seen ? "N" : mg->answered ? "r" : " ", 1,
+			a | CA_BOLD);
 		put_fit(r, 2, mg->date, 6, a);
 		put_fit(r, 9, mg->from[0] ? mg->from : "?", fw, a | (mg->seen ? 0 : CA_BOLD));
 		put_fit(r, 10 + fw, mg->subject[0] ? mg->subject : "(no subject)",
@@ -1046,7 +1638,7 @@ static void draw_list(void)
 	}
 	if (g_n == 0)
 		put_fit(2, 2, "(no messages)", scr_cols - 2, 0);
-	status("Enter read  g folders  r reload  q quit");
+	status("Enter read  m new  r reply  a all  f forward  c folders  g get mail  q quit");
 	scr_flush(0);
 }
 
@@ -1163,11 +1755,21 @@ static void list_loop(void)
 			if (g_n > 0)
 				read_message();
 			break;
-		case 'g':
+		case 'c':
 			choose_folder();
 			break;
-		case 'r':
+		case 'g':
 			reload();
+			break;
+		case 'm':
+			compose(W_NEW);
+			break;
+		case 'r': case 'a': case 'f':
+			/* (the message is read first: what the reply quotes) */
+			if (g_n > 0) {
+				load_message(&g_msgs[g_sel]);
+				compose(k == 'r' ? W_REPLY : k == 'a' ? W_REPLY_ALL : W_FORWARD);
+			}
 			break;
 		case 'q': case K_CLOSE:
 			g_quit = 1;
@@ -1216,6 +1818,9 @@ static void usage(void)
 		"In ~/.manx/config:\n"
 		"  mail_imap = imap.gmail.com      the server (host or host:port; 993, TLS)\n"
 		"  mail_user = name@gmail.com      the login\n"
+		"  mail_from = Ann Lee <ann@gmail.com>   who it's from (mail_user)\n"
+		"  mail_smtp = smtp.gmail.com      where it's sent (imap. made smtp.; 465, TLS)\n"
+		"  mail_sent = Sent                a folder for a copy of each (Gmail files them)\n"
 		"The password: ~/.manx/mailpass (chmod 600), else asked for.\n"
 		"(Gmail: an app password; it needs 2-Step Verification.)\n");
 }
@@ -1247,6 +1852,23 @@ int main(int argc, char **argv)
 	}
 	g_tls = config_bool("mail_tls", 1);
 	snprintf(g_user, sizeof g_user, "%s", config_str("mail_user", ""));
+	h = config_str("mail_from", NULL);
+	snprintf(g_from, sizeof g_from, "%s", h ? h : strchr(g_user, '@') ? g_user : "");
+	{
+		struct addr a[1];
+
+		if (addr_parse(g_from, a, 1, NULL, 0) == 1)
+			strcpy(g_from_mbox, a[0].mbox);
+	}
+	if ((h = config_str("mail_smtp", NULL)) != NULL)
+		snprintf(g_smtp, sizeof g_smtp, "%s", h);
+	else if (strncmp(g_host, "imap.", 5) == 0)
+		snprintf(g_smtp, sizeof g_smtp, "smtp.%s", g_host + 5);
+	if ((colon = strrchr(g_smtp, ':')) != NULL) {
+		g_smtp_port = (unsigned)atoi(colon + 1);
+		g_smtp[colon - g_smtp] = '\0';
+	}
+	snprintf(g_sent, sizeof g_sent, "%s", config_str("mail_sent", ""));
 	if (argc > 1)
 		snprintf(g_box, sizeof g_box, "%s", argv[1]);
 	if (read_pass() < 0)

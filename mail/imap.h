@@ -61,6 +61,10 @@ typedef void (*imap_cb)(void *ctx, struct imap *m, struct ival *v, unsigned long
 int imap_cmd(struct imap *m, imap_cb cb, void *ctx, const char *fmt, ...);
 int imap_vcmd(struct imap *m, imap_cb cb, void *ctx, const char *fmt, va_list ap);
 
+/* APPEND msg (len bytes, CRLF lines) to mailbox mbox with flags ("\\Seen"). */
+int imap_append(struct imap *m, const char *mbox, const char *flags,
+	const char *msg, size_t len);
+
 /* SELECT (or EXAMINE, readonly) a mailbox: m->exists, uidvalidity, uidnext. */
 int imap_select(struct imap *m, const char *mbox, int readonly);
 

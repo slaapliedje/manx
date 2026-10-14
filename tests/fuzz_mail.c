@@ -5,7 +5,9 @@
  * pieces through a stand-in connection; every value of every response
  * walked as manxmail walks them (iv_*, mime_parts, mime_pick, decoding).
  * Random bytes through the header, quoted-printable, base64 and
- * modified UTF-7 decoders too. Nothing may crash or read or write out of
+ * modified UTF-7 decoders too; an SMTP server's mutated replies through
+ * logging in and sending; typed address lists and texts through
+ * addr_parse and mail_build. Nothing may crash or read or write out of
  * bounds.
  *
  *   fuzz_mail ITERATIONS SEED
@@ -17,6 +19,8 @@
 #include "conn.h"
 #include "imap.h"
 #include "mime.h"
+#include "smtp.h"
+#include "compose.h"
 
 static unsigned long s_rng = 1;
 
@@ -104,6 +108,20 @@ static const char *seeds[] = {
 	"\"BASE64\" 50 2 NIL (\"ATTACHMENT\" (\"FILENAME*\" \"x\")) NIL) "
 	"BODY[1] {8}\r\nAP4AaQ==)\r\n"
 	"* BYE going\r\nA0001 BAD what\r\n",
+};
+
+static const char *smtp_seeds[] = {
+	"220 fake ESMTP ready\r\n250-fake greets you\r\n250-8BITMIME\r\n"
+	"250-AUTH LOGIN PLAIN\r\n250 SIZE 35882577\r\n235 2.7.0 Accepted\r\n"
+	"250 2.1.0 OK\r\n250 2.1.5 OK\r\n250 OK\r\n354 Go ahead\r\n250 2.0.0 OK queued\r\n"
+	"221 bye\r\n",
+
+	"220 hi\r\n250-x\r\n250 AUTH=LOGIN\r\n334 VXNlcm5hbWU6\r\n334 UGFzc3dvcmQ6\r\n"
+	"235 ok\r\n250 ok\r\n550 5.1.1 No such user\r\n",
+
+	"220 hi\r\n250-x\r\n250 AUTH XOAUTH2 OAUTHBEARER\r\n",
+
+	"220 hi\r\n250 x\r\n535-5.7.8 Username and Password not accepted.\r\n535 5.7.8 Try\r\n",
 };
 
 static void mutate(unsigned char **buf, size_t *len)
@@ -255,6 +273,107 @@ static void session(const char *seed)
 	free(b);
 }
 
+static void smtp_session(void)
+{
+	static struct smtp s;
+	const char *seed = smtp_seeds[rnd(sizeof smtp_seeds / sizeof *smtp_seeds)];
+	unsigned char *b;
+	size_t n = strlen(seed);
+	char *rcpt[3] = { "a@b.example", "c@d.example", "e@f.example" };
+	char msg[300];
+	size_t i, ml = rnd(sizeof msg);
+
+	b = malloc(n + 1);
+	memcpy(b, seed, n);
+	if (rnd(8))
+		mutate(&b, &n);
+	g_in = b;
+	g_len = n;
+	for (i = 0; i < ml; i++)
+		msg[i] = ".\r\nab"[rnd(5)];
+	if (smtp_open(&s, "127.0.0.1", 1144, 0) == 0 && smtp_auth(&s, "user", "pass") == 0)
+		smtp_send(&s, "me@x.example", rcpt, 1 + (int)rnd(3), msg, ml);
+	g_sink += strlen(s.err) + strlen(s.said);
+	smtp_close(&s);
+	free(b);
+}
+
+/* a message as mail_build makes it: headers only of its own (no line
+ * typed into one starts another), CRLF lines and nothing else, none
+ * longer than SMTP takes */
+static void check_msg(const char *m, size_t len)
+{
+	static const char *const known[] = { "Date:", "From:", "To:", "Cc:", "Subject:",
+		"Message-ID:", "In-Reply-To:", "References:", "MIME-Version:", "Content-Type:",
+		"Content-Transfer-Encoding:", "User-Agent:" };
+	const char *p = m, *e = m + len;
+	int head = 1;
+
+	while (p < e) {
+		const char *l = p;
+		size_t n, k;
+
+		while (p < e && *p != '\r' && *p != '\n')
+			p++;
+		n = (size_t)(p - l);
+		if (p + 1 >= e || p[0] != '\r' || p[1] != '\n' || n > 998) {
+			fprintf(stderr, "fuzz_mail: a line not ended by CRLF, or too long (%lu)\n",
+				(unsigned long)n);
+			abort();
+		}
+		p += 2;
+		if (!head)
+			continue;
+		if (n == 0) {
+			head = 0;
+			continue;
+		}
+		if (l[0] == ' ' || l[0] == '\t')
+			continue;
+		for (k = 0; k < sizeof known / sizeof *known; k++)
+			if (strncmp(l, known[k], strlen(known[k])) == 0)
+				break;
+		if (k == sizeof known / sizeof *known) {
+			fprintf(stderr, "fuzz_mail: a header mail_build didn't mean: %.*s\n", (int)n, l);
+			abort();
+		}
+	}
+}
+
+/* typed text: addresses, a message put together from it */
+static void typed(void)
+{
+	char t[3][300], bad[64];
+	struct addr a[8];
+	struct outmsg o;
+	size_t len, i, k;
+	char *msg;
+
+	for (k = 0; k < 3; k++) {
+		size_t n = rnd(sizeof t[k]);
+
+		for (i = 0; i < n; i++)
+			t[k][i] = rnd(3) ? "\"<>,@\\ abc.\n\t\r=?"[rnd(16)] : (char)(1 + rnd(255));
+		t[k][n] = '\0';
+	}
+	g_sink += (unsigned long)addr_parse(t[0], a, 1 + (int)rnd(8), bad, 1 + rnd(sizeof bad));
+	memset(&o, 0, sizeof o);
+	o.from = rnd(2) ? "Me <me@x.example>" : t[1];
+	o.to = rnd(2) ? t[0] : "a@b.example, \"C, D\" <c@d.example>";
+	o.cc = rnd(2) ? NULL : t[1];
+	o.subject = t[1];
+	o.date = "Wed, 14 Oct 2026 11:30:00 -0600";
+	o.msgid = "<x@y>";
+	o.in_reply_to = rnd(2) ? "<p@q>" : NULL;
+	o.references = rnd(2) ? NULL : t[0];
+	o.body = t[2];
+	if ((msg = mail_build(&o, &len)) != NULL) {
+		check_msg(msg, len);
+		g_sink += len;
+		xfree(msg);
+	}
+}
+
 static void bytes(void)
 {
 	char in[600], out[700];
@@ -287,6 +406,8 @@ int main(int argc, char **argv)
 	s_rng = argc > 2 ? strtoul(argv[2], NULL, 10) : 1;
 	for (i = 0; i < iters; i++) {
 		session(seeds[rnd(sizeof seeds / sizeof *seeds)]);
+		smtp_session();
+		typed();
 		bytes();
 	}
 	printf("fuzz_mail: %lu sessions, %lu responses, %lu parts: nothing broke\n",
