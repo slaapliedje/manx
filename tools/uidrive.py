@@ -22,7 +22,8 @@ Environment: ROWS, COLS (default 24x80). --tt: ASV_HOST (default
 192.168.3.250), ASV_PORT (default 23; another for ASV in Hatari, behind
 slirp), ASV_TOOLS (where .asvpass lives, default
 ~/dev/OpenUA/data/work/asv; the password never leaves this machine),
-TTCS (the MANX_CHARSET given to the program there, default latin1).
+TTCS (the MANX_CHARSET given to the program there, and what its output is
+read as; default latin1).
 --amix: AMIX_EMU (where .amixpass lives, default sp1's amix/work/emu);
 the emulator forwards 127.0.0.1:2323 to the guest's telnet.
 The cursor-position probe is answered as a UTF-8 xterm would.
@@ -243,6 +244,9 @@ def main():
     conn = Telnet(" ".join(args), amix) if tt else Pty(args)
     screen = Screen(COLS, ROWS)
     stream = pyte.ByteStream(screen)
+    # (the TT's programs write in its MANX_CHARSET; locally, UTF-8)
+    if tt and os.environ.get("TTCS", "latin1").lower().replace("-", "") != "utf8":
+        stream.use_utf8 = False
     t0 = time.time()
 
     def pump(t):
