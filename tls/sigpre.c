@@ -250,6 +250,42 @@ static int parse_cert(const unsigned char *b, size_t len, struct cert *ct)
 	return 1;
 }
 
+int cert_names(const unsigned char *b, size_t len,
+	const unsigned char **issuer, size_t *ilen,
+	const unsigned char **subject, size_t *slen)
+{
+	const unsigned char *p = b, *end = b + len, *c, *t, *tend, *start;
+	size_t clen;
+	int tag;
+
+	if (!der(&p, end, &tag, &c, &clen) || tag != 0x30)
+		return 0;
+	/* tbsCertificate: [0] version, serial, signature, issuer, validity,
+	 * subject */
+	if (!der(&c, c + clen, &tag, &t, &clen) || tag != 0x30)
+		return 0;
+	tend = t + clen;
+	if (!der(&t, tend, &tag, &c, &clen))
+		return 0;
+	if (tag == 0xa0 && !der(&t, tend, &tag, &c, &clen))	/* the serial */
+		return 0;
+	if (!der(&t, tend, &tag, &c, &clen))		/* the signature algorithm */
+		return 0;
+	start = t;
+	if (!der(&t, tend, &tag, &c, &clen) || tag != 0x30)
+		return 0;
+	*issuer = start;
+	*ilen = (size_t)(t - start);
+	if (!der(&t, tend, &tag, &c, &clen) || tag != 0x30)	/* validity */
+		return 0;
+	start = t;
+	if (!der(&t, tend, &tag, &c, &clen) || tag != 0x30)
+		return 0;
+	*subject = start;
+	*slen = (size_t)(t - start);
+	return 1;
+}
+
 static const br_x509_trust_anchor *find_ta(const br_x509_trust_anchor *tas, size_t ntas,
 	const unsigned char *dn, size_t dnlen)
 {

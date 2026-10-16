@@ -25,6 +25,12 @@ void sigpre_chain(const unsigned char *const *certs, const size_t *lens, int nce
 	int ske_rsa, const unsigned char *ske_hv, size_t ske_hvlen,
 	const unsigned char *ske_sig, size_t ske_siglen);
 
+/* A certificate's issuer and subject names, as DER (as BearSSL compares
+ * them): 1, or 0 if it can't be read that far. */
+int cert_names(const unsigned char *b, size_t len,
+	const unsigned char **issuer, size_t *ilen,
+	const unsigned char **subject, size_t *slen);
+
 /* Forget them (after the checks). */
 void sigpre_clear(void);
 

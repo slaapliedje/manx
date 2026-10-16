@@ -61,4 +61,14 @@ void xdefer_install(struct xdefer *xd, br_ssl_client_context *sc);
 int xdefer_verify(struct xdefer *xd, br_ssl_client_context *sc,
 	br_x509_minimal_context *xc, int leaf_known_good, int *anchor_at);
 
+/*
+ * Put the recorded chain in the order the validator needs, each
+ * certificate followed by its issuer (xdefer_verify does this first).
+ * Some servers send theirs otherwise - www.gutenberg.org: leaf, root,
+ * the intermediate's issuer, the intermediate - which TLS 1.2 forbids and
+ * browsers forgive. From the leaf, each one's issuer is taken from among
+ * the rest; what isn't on that path follows, as sent.
+ */
+void xdefer_order(struct xdefer *xd);
+
 #endif /* MANX_XDEFER_H */

@@ -240,11 +240,64 @@ signature:
 	return 0;
 }
 
+static int same(const unsigned char *a, size_t al, const unsigned char *b,
+	size_t bl)
+{
+	return al == bl && memcmp(a, b, al) == 0;
+}
+
+void xdefer_order(struct xdefer *xd)
+{
+	const unsigned char *iss[XDEFER_CERTS_MAX], *sub[XDEFER_CERTS_MAX];
+	size_t il[XDEFER_CERTS_MAX], sl[XDEFER_CERTS_MAX];
+	size_t off[XDEFER_CERTS_MAX], len[XDEFER_CERTS_MAX];
+	int order[XDEFER_CERTS_MAX], used[XDEFER_CERTS_MAX];
+	int n = xd->ncert, k, i, cur;
+
+	if (xd->err || n < 3)
+		return;
+	for (i = 0; i < n; i++) {
+		used[i] = 0;
+		if (!cert_names(xd->chain + xd->cert_off[i], xd->cert_len[i],
+			&iss[i], &il[i], &sub[i], &sl[i]))
+			return;		/* (as sent: the validator says what's wrong) */
+	}
+	/* from the leaf up, each one's issuer next; a root ends it */
+	order[0] = 0;
+	used[0] = 1;
+	k = 1;
+	for (cur = 0; k < n && !same(iss[cur], il[cur], sub[cur], sl[cur]); ) {
+		for (i = 1; i < n; i++)
+			if (!used[i] && same(sub[i], sl[i], iss[cur], il[cur]))
+				break;
+		if (i == n)
+			break;
+		order[k++] = i;
+		used[i] = 1;
+		cur = i;
+	}
+	/* the rest, as sent */
+	for (i = 1; i < n; i++)
+		if (!used[i])
+			order[k++] = i;
+	for (i = 0; i < n; i++) {
+		off[i] = xd->cert_off[order[i]];
+		len[i] = xd->cert_len[order[i]];
+	}
+	for (i = 0; i < n; i++) {
+		xd->cert_off[i] = off[i];
+		xd->cert_len[i] = len[i];
+	}
+}
+
 int xdefer_verify(struct xdefer *xd, br_ssl_client_context *sc,
 	br_x509_minimal_context *xc, int leaf_known_good, int *anchor_at)
 {
 	const unsigned char *certs[XDEFER_CERTS_MAX];
 	int i, r;
+
+	if (!leaf_known_good)
+		xdefer_order(xd);
 
 	/* with the ATW800/2's T425 up, the arithmetic of the checks below is
 	 * done ahead, on it and the 68030 together; the checks find it */
