@@ -12,7 +12,7 @@
  *   g  go to a URL (or search)  G  edit the current URL
  *   /  find  n/N  next/previous match     =    page and link information
  *   r  reload   ^L  redraw   z/Esc  stop loading (or a refresh)
- *   ?  help   q  quit
+ *   F  the page's feed   ?  help   q  quit
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,6 +25,7 @@
 #include "doc.h"
 #include "load.h"
 #include "gophermap.h"
+#include "feed.h"
 #include "layout.h"
 #include "screen.h"
 #include "entropy.h"
@@ -78,6 +79,8 @@ static char g_frag[128];
 /* loading */
 static int g_loading, g_started, g_gopher, g_aborted, g_unsupported;
 static struct gophermap g_gmap;
+static struct feed g_feedc;		/* an RSS or Atom feed, made a page */
+static int g_feed;
 static unsigned long g_bytes, g_last_draw;
 
 /* where the page asked to go on to (a Refresh header, <meta
@@ -107,6 +110,7 @@ static int prompt(const char *label, char *buf, size_t n);
 static int prompt_mask(const char *label, char *buf, size_t n, int flags);
 static int confirm(const char *question);
 static void refresh_plan(const char *content);
+static void feed_hint(int status);
 
 /* a plain line's height, in the screen's units */
 static int plain_h(void)
@@ -650,7 +654,7 @@ static int g_revalidating;
 
 static int cacheable_type(const char *ct)
 {
-	return is_html(ct) || strncmp(ct, "text/", 5) == 0;
+	return is_html(ct) || strncmp(ct, "text/", 5) == 0 || feed_type(ct);
 }
 
 static void on_head(void *ctx, int status, const char *ctype,
@@ -666,15 +670,18 @@ static void on_head(void *ctx, int status, const char *ctype,
 	if (url && *url)
 		snprintf(g_url, sizeof g_url, "%s", url);
 	g_gopher = strcmp(ctype, "text/x-gopher-menu") == 0;
-	g_unsupported = !g_gopher && !is_html(ctype)
+	g_feed = !g_gopher && feed_type(ctype);
+	g_unsupported = !g_gopher && !g_feed && !is_html(ctype)
 		&& strncmp(ctype, "text/", 5) != 0;
 	if (g_unsupported)
 		return;
 	g_doc.img_w = scr_pixels() ? scr_pane_w() : 0;	/* (srcset) */
 	html_load_begin(&g_load, &g_doc, charset,
-		!g_gopher && !is_html(ctype));
+		!g_gopher && !g_feed && !is_html(ctype));
 	if (g_gopher)
 		gophermap_begin(&g_gmap, feed_html, NULL);
+	if (g_feed)
+		feed_begin(&g_feedc, feed_html, NULL);
 	g_started = 1;
 	/* keep it on disk, if it's a page worth keeping */
 	g_caching = g_ckey[0] && status == 200 && cacheable_type(ctype)
@@ -702,6 +709,8 @@ static void feed_body(const unsigned char *d, size_t n)
 {
 	if (g_gopher)
 		gophermap_feed(&g_gmap, d, n);
+	else if (g_feed)
+		feed_feed(&g_feedc, d, n);
 	else
 		html_load_feed(&g_load, d, n);
 }
@@ -810,6 +819,8 @@ static const char help_html[] =
 	"=              page and link information\n"
 	"r              reload           ^L        redraw\n"
 	"a              bookmark this page  v      the bookmarks\n"
+	"F              the page's feed (or the site's, when its pages are\n"
+	"               walled off or need JavaScript)\n"
 	"z, Esc         stop loading, or stay when a page would go on\n"
 	"q              quit\n"
 	"Z              xmanx: the window fills the screen, or back\n"
@@ -902,7 +913,7 @@ static void doc_reset(void)
 	g_refresh_url[0] = '\0';
 	doc_free(&g_doc);
 	doc_init(&g_doc, 0);
-	g_started = g_gopher = g_aborted = g_unsupported = 0;
+	g_started = g_gopher = g_feed = g_aborted = g_unsupported = 0;
 	g_bytes = 0;
 	g_top = 0;
 	g_sel = -1;
@@ -914,6 +925,8 @@ static void finish_doc(const char *frag)
 {
 	if (g_gopher)
 		gophermap_end(&g_gmap);
+	if (g_feed)
+		feed_end(&g_feedc);
 	html_load_end(&g_load);
 	/* a fragment asked for survives redirects */
 	if (frag[0] && !strchr(g_url, '#')
@@ -968,11 +981,14 @@ static int load_cached(const char *key, const struct cache_meta *m,
 	doc_reset();
 	snprintf(g_ctype, sizeof g_ctype, "%s", m->type);
 	g_gopher = strcmp(m->type, "text/x-gopher-menu") == 0;
+	g_feed = !g_gopher && feed_type(m->type);
 	g_doc.img_w = scr_pixels() ? scr_pane_w() : 0;	/* (srcset) */
 	html_load_begin(&g_load, &g_doc, m->charset,
-		!g_gopher && !is_html(m->type));
+		!g_gopher && !g_feed && !is_html(m->type));
 	if (g_gopher)
 		gophermap_begin(&g_gmap, feed_html, NULL);
+	if (g_feed)
+		feed_begin(&g_feedc, feed_html, NULL);
 	g_started = 1;
 	if (cache_read(key, &mm, cached_body, NULL) < 0) {
 		html_load_end(&g_load);
@@ -1143,8 +1159,10 @@ static int load(const char *url_in, const struct fetch_opts *opts, int mode,
 		message("%s", res.error);
 	else if (res.status >= 400)
 		snprintf(g_msg, sizeof g_msg, "HTTP %d", res.status);
-	if (!g_aborted && rc == 0)
+	if (!g_aborted && rc == 0) {
 		refresh_plan(h_refresh[0] ? h_refresh : g_load.tree.meta_refresh);
+		feed_hint(res.status);
+	}
 	return 0;
 }
 
@@ -1429,6 +1447,140 @@ static void do_refresh(void)
 	memset(h, 0, sizeof *h);
 	h->url = xstrdup(g_url);
 	h->sel = -1;
+}
+
+/* --- feeds ------------------------------------------------------------- */
+
+static int ends_with(const char *s, const char *tail)
+{
+	size_t a = strlen(s), b = strlen(tail);
+
+	return a >= b && strcmp(s + a - b, tail) == 0;
+}
+
+/* a space-separated list (rel="alternate") has word */
+static int has_word(const char *s, const char *w)
+{
+	size_t n = strlen(w);
+
+	while (*s) {
+		while (*s == ' ')
+			s++;
+		if (strncmp(s, w, n) == 0 && (s[n] == ' ' || s[n] == '\0'))
+			return 1;
+		while (*s && *s != ' ')
+			s++;
+	}
+	return 0;
+}
+
+/* where sites whose pages are walled off (Cloudflare) or need JavaScript
+ * keep a feed that isn't: into url, 0; or -1 */
+static int known_feed(const struct url *u, char *url, size_t n)
+{
+	const char *h = strncmp(u->host, "www.", 4) == 0 ? u->host + 4 : u->host;
+	const char *p = u->path;
+	unsigned long id;
+	size_t k;
+
+	/* Stack Exchange: a question, with its answers */
+	if ((strcmp(h, "stackoverflow.com") == 0 || strcmp(h, "superuser.com") == 0
+			|| strcmp(h, "serverfault.com") == 0
+			|| strcmp(h, "askubuntu.com") == 0
+			|| strcmp(h, "mathoverflow.net") == 0
+			|| ends_with(h, ".stackexchange.com"))
+		&& (sscanf(p, "/questions/%lu", &id) == 1
+			|| sscanf(p, "/q/%lu", &id) == 1)) {
+		snprintf(url, n, "https://%s/feeds/question/%lu", u->host, id);
+		return 0;
+	}
+	/* Reddit: any listing or thread, with .rss on the end (what its login
+	 * wall was sent to, dest=, if that's where this is) */
+	if (strcmp(h, "reddit.com") == 0 || ends_with(h, ".reddit.com")) {
+		static char dest[URL_MAX];
+		static struct url du;
+		const char *d = strstr(u->query, "dest=");
+
+		if (strncmp(p, "/login", 6) == 0 && d) {
+			size_t i, o = 0;
+			unsigned c;
+
+			for (i = 5; d[i] && d[i] != '&' && o + 1 < sizeof dest; i++)
+				if (d[i] == '%' && sscanf(d + i + 1, "%2x", &c) == 1) {
+					dest[o++] = (char)c;
+					i += 2;
+				} else
+					dest[o++] = d[i];
+			dest[o] = '\0';
+			if (url_parse(dest, &du) == URL_OK)
+				p = du.path;
+		}
+		k = strlen(p);
+		if (k > 1900)
+			return -1;
+		snprintf(url, n, "https://www.reddit.com%.1900s%s.rss", k ? p : "/",
+			k && p[k - 1] == '/' ? "" : "/");
+		return 0;
+	}
+	/* Invision Community (AtariAge): a forum's newest topics, from
+	 * /forum/12-name/ */
+	if (strncmp(p, "/forum/", 7) == 0 && p[7] >= '0' && p[7] <= '9') {
+		k = strcspn(p + 7, "/");
+		if (strchr(p + 7, '-') && strchr(p + 7, '-') < p + 7 + k) {
+			snprintf(url, n, "%s://%s/forum/%.*s.xml/", u->scheme, u->host,
+				(int)k, p + 7);
+			return 0;
+		}
+	}
+	/* Medium: a writer's or a publication's */
+	if (strcmp(h, "medium.com") == 0 && p[0] == '/' && p[1]) {
+		k = strcspn(p + 1, "/");
+		snprintf(url, n, "https://medium.com/feed/%.*s", (int)k, p + 1);
+		return 0;
+	}
+	return -1;
+}
+
+/* This page's feed into url: the one it names (<link rel=alternate
+ * type=application/rss+xml...>), else known_feed's. 0, or -1: none. */
+static int page_feed(char *url, size_t n)
+{
+	static struct url u;
+	unsigned long id;
+
+	if (g_feed)
+		return -1;
+	for (id = 2; id < g_doc.nnodes; id++) {
+		const char *rel, *type, *href;
+
+		if (g_doc.nodes[id].type != NODE_ELEM
+			|| g_doc.nodes[id].tag != TAG_LINK)
+			continue;
+		rel = doc_attr(&g_doc, (nodeid)id, ATTR_REL);
+		type = doc_attr(&g_doc, (nodeid)id, ATTR_TYPE);
+		href = doc_attr(&g_doc, (nodeid)id, ATTR_HREF);
+		if (rel && type && href && *href && has_word(rel, "alternate")
+			&& feed_type(type) && url_resolve(&g_base, href, &u) == URL_OK
+			&& url_format(&u, url, n, 0) == URL_OK)
+			return 0;
+	}
+	if (url_parse(g_url, &u) != URL_OK)
+		return -1;
+	return known_feed(&u, url, n);
+}
+
+/* a page that came walled off or all but empty, with a feed to offer:
+ * say so */
+static void feed_hint(int status)
+{
+	static char url[URL_MAX];
+	size_t k = strlen(g_msg);
+
+	if (g_feed || g_refresh_url[0]
+		|| (status < 400 && g_have_page && g_page.nlines > 12)
+		|| page_feed(url, sizeof url) < 0)
+		return;
+	snprintf(g_msg + k, sizeof g_msg - k, "%sF: its feed", k ? "  " : "");
 }
 
 /* --- form fields -------------------------------------------------------- */
@@ -2602,6 +2754,14 @@ int main(int argc, char **argv)
 			break;
 		case 'a':
 			add_bookmark();
+			break;
+		case 'F':
+			if (g_feed)
+				message("This is a feed.", NULL);
+			else if (page_feed(go, sizeof go) < 0)
+				message("No feed for this page.", NULL);
+			else
+				go_url(go);
 			break;
 		case 'v':
 			show_bookmarks();

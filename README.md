@@ -59,6 +59,13 @@ Aztec C built a good share of the Amiga's and the Atari ST's software.
   without JavaScript, in front of forums such as the English Amiga Board.
   A page that only refreshes itself (news pages, every few minutes) is
   left alone: on a 68030 each load costs seconds and your place.
+- RSS and Atom feeds as pages: each item's title as a link, its date,
+  author, picture, text and enclosures. `F` goes to the page's feed, or,
+  where a site's pages are walled off (Cloudflare) or need JavaScript, to
+  where it keeps one that isn't: a Stack Exchange question with its
+  answers, a subreddit or thread, an Invision forum's newest topics
+  (AtariAge), Medium; Mastodon, Bluesky, YouTube channels and GitHub name
+  theirs. Such a page says so: "F: its feed".
 - Any terminal: its own screen layer on terminfo, not SVR4 curses, which
   can't do UTF-8. UTF-8, Latin-1 or plain ASCII (it asks the terminal which);
   colour where the terminal has it.

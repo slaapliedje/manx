@@ -237,17 +237,24 @@ build/fuzz/fuzz_mail: tests/fuzz_mail.c $(wildcard mail/*.c) text/utf8.c os/mem.
 	cc -std=c99 -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=all \
 		-Ios -Inet -Itls -I$(BEARSSL)/inc -Itext -Imail -o $@ $^
 
-fuzz: build/fuzz/fuzz_html build/fuzz/fuzz_image build/fuzz/fuzz_mail
+# RSS and Atom into HTML (html/feed.c), mutated feeds in random pieces
+build/fuzz/fuzz_feed: tests/fuzz_feed.c $(wildcard text/*.c html/*.c style/*.c layout/*.c) os/mem.c os/host/os_time.c net/url.c
+	@mkdir -p build/fuzz
+	cc -std=c99 -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=all \
+		-Ios -Itext -Ihtml -Istyle -Ilayout -Inet -o $@ $^
+
+fuzz: build/fuzz/fuzz_html build/fuzz/fuzz_image build/fuzz/fuzz_mail build/fuzz/fuzz_feed
 	build/fuzz/fuzz_html $(FUZZ_ITERS) $(FUZZ_SEED) build/corpus/*.html
 	@mkdir -p build/test/img
 	python3 tests/gen_images.py build/test/img > build/test/img/manifest
 	build/fuzz/fuzz_image $(FUZZ_ITERS) $(FUZZ_SEED) build/test/img
 	build/fuzz/fuzz_mail $(FUZZ_ITERS) $(FUZZ_SEED)
+	build/fuzz/fuzz_feed $(FUZZ_ITERS) $(FUZZ_SEED)
 
 # before a push: the tests, then both fuzzers a while (c1492af broke
 # wide grids with every test passing; only fuzzing showed it)
 CHECK_ITERS ?= 3000
-check: test build/fuzz/fuzz_html build/fuzz/fuzz_image build/fuzz/fuzz_mail
+check: test build/fuzz/fuzz_html build/fuzz/fuzz_image build/fuzz/fuzz_mail build/fuzz/fuzz_feed
 	@if ls build/corpus/*.html > /dev/null 2>&1; then \
 		for s in 1 2 3; do \
 			build/fuzz/fuzz_html $(CHECK_ITERS) $$s build/corpus/*.html || exit 1; \
@@ -259,6 +266,7 @@ check: test build/fuzz/fuzz_html build/fuzz/fuzz_image build/fuzz/fuzz_mail
 	python3 tests/gen_images.py build/test/img > build/test/img/manifest
 	build/fuzz/fuzz_image $(CHECK_ITERS) 1 build/test/img
 	build/fuzz/fuzz_mail $(CHECK_ITERS)0 1
+	build/fuzz/fuzz_feed $(CHECK_ITERS) 1
 
 clean:
 	rm -rf build
