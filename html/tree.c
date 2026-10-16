@@ -170,10 +170,30 @@ static nodeid insertion_point(struct tree *b)
 
 /* --- start tags ------------------------------------------------------ */
 
+/* an attribute's value is word, in any case */
+static int value_is(const char *v, const char *word)
+{
+	for (; *word; v++, word++)
+		if ((*v >= 'A' && *v <= 'Z' ? *v + 32 : *v) != *word)
+			return 0;
+	return *v == '\0';
+}
+
 static void record_head_info(struct tree *b, const struct tok_tag *t)
 {
+	const char *equiv = NULL, *content = NULL;
 	int i;
 
+	for (i = 0; i < t->nattr; i++) {
+		if (t->attr[i] == ATTR_HTTP_EQUIV)
+			equiv = t->value[i];
+		if (t->attr[i] == ATTR_CONTENT)
+			content = t->value[i];
+	}
+	if (t->tag == TAG_META && equiv && content && !b->meta_refresh[0]
+		&& value_is(equiv, "refresh")
+		&& strlen(content) < sizeof b->meta_refresh)
+		strcpy(b->meta_refresh, content);
 	for (i = 0; i < t->nattr; i++) {
 		if (t->tag == TAG_BASE && t->attr[i] == ATTR_HREF && !b->base_href[0]
 			&& strlen(t->value[i]) < sizeof b->base_href)

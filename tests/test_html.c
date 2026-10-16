@@ -338,6 +338,39 @@ int main(void)
 		}
 		free(got);
 	}
+	/* <meta http-equiv=refresh>: the first one, in the head, a
+	 * <noscript> or the body; other http-equivs aren't one */
+	{
+		static const struct { const char *html, *want; } mr[] = {
+			{ "<meta http-equiv=Refresh content=\"2; url=/next\"><p>x",
+				"2; url=/next" },
+			{ "<head><noscript><meta content=\"0;url=/nojs\" "
+				"http-equiv=\"refresh\"></noscript></head>", "0;url=/nojs" },
+			{ "<p>body<meta http-equiv=refresh content=5>", "5" },
+			{ "<meta http-equiv=refresh content=1;a><meta "
+				"http-equiv=refresh content=9;b>", "1;a" },
+			{ "<meta http-equiv=content-type content=\"text/html\">"
+				"<meta name=refresh content=3>", "" },
+			{ "<meta http-equiv=refreshed content=3>", "" },
+		};
+		static struct html_load l;
+		struct doc d;
+		size_t i;
+
+		for (i = 0; i < sizeof mr / sizeof mr[0]; i++) {
+			doc_init(&d, 0);
+			html_load_begin(&l, &d, "utf-8", 0);
+			html_load_feed(&l, (const unsigned char *)mr[i].html,
+				strlen(mr[i].html));
+			html_load_end(&l);
+			if (strcmp(l.tree.meta_refresh, mr[i].want)) {
+				printf("FAIL meta refresh %s: [%s]\n", mr[i].html,
+					l.tree.meta_refresh);
+				fails++;
+			}
+			doc_free(&d);
+		}
+	}
 	printf("html: %s\n", fails ? "FAILED" : "ok");
 	return fails != 0;
 }

@@ -352,3 +352,63 @@ int http_request(char *buf, size_t n, const char *method,
 		"\r\n", method, target, host, extra ? extra : "");
 	return len < 0 || (size_t)len >= n ? -1 : len;
 }
+
+/* HTML's ASCII whitespace */
+static int ws(char c)
+{
+	return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\f';
+}
+
+static const char *skip_ws(const char *p)
+{
+	while (ws(*p))
+		p++;
+	return p;
+}
+
+/*
+ * A refresh's content, as HTML's declarative refresh reads it: seconds
+ * (a fraction is ignored), then ';' or ',', then the URL, optionally as
+ * url=..., optionally in quotes (which end it).
+ */
+int http_refresh(const char *s, long *secs, char *url, size_t n)
+{
+	const char *p = skip_ws(s), *u, *e;
+	long t = 0;
+	int digits = 0;
+	char q = 0;
+
+	for (; *p >= '0' && *p <= '9'; p++, digits++)
+		if (t < 86400L)
+			t = t * 10 + (*p - '0');
+	if (t > 86400L)
+		t = 86400L;		/* (a day is as long as it waits) */
+	if (!digits && *p != '.')
+		return -1;
+	while ((*p >= '0' && *p <= '9') || *p == '.')
+		p++;
+	if (*p && *p != ';' && *p != ',' && !ws(*p))
+		return -1;
+	p = skip_ws(p);
+	if (*p == ';' || *p == ',')
+		p = skip_ws(p + 1);
+	/* "url =" before the URL, when it's there */
+	u = p;
+	if ((p[0] == 'u' || p[0] == 'U') && (p[1] == 'r' || p[1] == 'R')
+		&& (p[2] == 'l' || p[2] == 'L')) {
+		p = skip_ws(p + 3);
+		if (*p == '=')
+			u = skip_ws(p + 1);
+	}
+	if (*u == '\'' || *u == '"')
+		q = *u++;
+	e = q && strchr(u, q) ? strchr(u, q) : u + strlen(u);
+	while (e > u && ws(e[-1]))
+		e--;
+	if ((size_t)(e - u) >= n)
+		return -1;
+	memcpy(url, u, (size_t)(e - u));
+	url[e - u] = '\0';
+	*secs = t;
+	return 0;
+}

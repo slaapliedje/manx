@@ -53,6 +53,12 @@ Aztec C built a good share of the Amiga's and the Atari ST's software.
 - Forms (GET and POST, every field type, `$EDITOR` for text areas), a
   cookie jar, a disk cache (Back without the network), bookmarks, gopher,
   `file:`.
+- Pages that send you on (a `Refresh` header, `<meta
+  http-equiv=refresh>`) after the wait they ask for; `z` or Esc stays.
+  That passes [Anubis](https://anubis.techaro.lol)'s check for browsers
+  without JavaScript, in front of forums such as the English Amiga Board.
+  A page that only refreshes itself (news pages, every few minutes) is
+  left alone: on a 68030 each load costs seconds and your place.
 - Any terminal: its own screen layer on terminfo, not SVR4 curses, which
   can't do UTF-8. UTF-8, Latin-1 or plain ASCII (it asks the terminal which);
   colour where the terminal has it.

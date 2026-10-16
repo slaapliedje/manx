@@ -28,6 +28,7 @@ struct tree {
 	int in_pre;
 	char base_href[512];		/* the first <base href> */
 	char meta_charset[40];		/* <meta charset> / http-equiv */
+	char meta_refresh[600];		/* the first <meta http-equiv=refresh>'s content */
 	int in_style;			/* reading a <style> into d->sheet */
 };
 

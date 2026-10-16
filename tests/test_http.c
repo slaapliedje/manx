@@ -134,6 +134,45 @@ int main(void)
 		printf("FAIL request default port:\n%s", req);
 		fails++;
 	}
+	/* refresh contents: seconds, URL */
+	{
+		static const struct { const char *in; int rc; long secs;
+			const char *url; } rt[] = {
+			{ "0; url=/next", 0, 0, "/next" },
+			{ "2; URL = 'x.html' trailing", 0, 2, "x.html" },
+			{ " 5 ,url=\"a b\"", 0, 5, "a b" },
+			{ "3;/plain", 0, 3, "/plain" },
+			{ "10", 0, 10, "" },
+			{ "1.5; url=y", 0, 1, "y" },
+			{ ".5;url=z", 0, 0, "z" },
+			{ "0;urlish", 0, 0, "urlish" },
+			{ "0; url=/a?b=c&d=e  ", 0, 0, "/a?b=c&d=e" },
+			{ "99999999999; url=n", 0, 86400L, "n" },
+			{ "soon; url=x", -1, 0, "" },
+			{ "5x; url=x", -1, 0, "" },
+			{ "", -1, 0, "" },
+		};
+		char url[64];
+		long secs;
+		size_t i;
+		int rc;
+
+		for (i = 0; i < sizeof rt / sizeof rt[0]; i++) {
+			secs = -1;
+			url[0] = '\0';
+			rc = http_refresh(rt[i].in, &secs, url, sizeof url);
+			if (rc != rt[i].rc || (rc == 0 && (secs != rt[i].secs
+					|| strcmp(url, rt[i].url)))) {
+				printf("FAIL refresh [%s]: %d %ld [%s]\n", rt[i].in, rc,
+					secs, url);
+				fails++;
+			}
+		}
+		if (http_refresh("0; url=0123456789", &secs, url, 10) != -1) {
+			printf("FAIL refresh: a URL too long for the buffer\n");
+			fails++;
+		}
+	}
 	printf("http: %s\n", fails ? "FAILED" : "ok");
 	return fails != 0;
 }

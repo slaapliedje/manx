@@ -11,7 +11,8 @@
  *   Home/End, </>  top/bottom             m    the main content
  *   g  go to a URL (or search)  G  edit the current URL
  *   /  find  n/N  next/previous match     =    page and link information
- *   r  reload   ^L  redraw   z/Esc  stop loading   ?  help   q  quit
+ *   r  reload   ^L  redraw   z/Esc  stop loading (or a refresh)
+ *   ?  help   q  quit
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,6 +33,7 @@
 #include "dns.h"
 #include "url.h"
 #include "fetch.h"
+#include "http.h"
 #include "utf8.h"
 #include "forms.h"
 #include "cookie.h"
@@ -78,6 +80,13 @@ static int g_loading, g_started, g_gopher, g_aborted, g_unsupported;
 static struct gophermap g_gmap;
 static unsigned long g_bytes, g_last_draw;
 
+/* where the page asked to go on to (a Refresh header, <meta
+ * http-equiv=refresh>), and when (os_msec) */
+#define REFRESH_HOPS_MAX	5	/* refreshes followed in a row */
+static char g_refresh_url[URL_MAX];
+static unsigned long g_refresh_at;
+static int g_refresh_hops, g_refreshing;
+
 struct hist {
 	char *url;
 	long top, sel;
@@ -97,6 +106,7 @@ static int g_nhist, g_hpos = -1;
 static int prompt(const char *label, char *buf, size_t n);
 static int prompt_mask(const char *label, char *buf, size_t n, int flags);
 static int confirm(const char *question);
+static void refresh_plan(const char *content);
 
 /* a plain line's height, in the screen's units */
 static int plain_h(void)
@@ -603,6 +613,7 @@ static int is_html(const char *ct)
 
 /* the response's cache headers (of the final response) */
 static char h_cc[200], h_expires[64], h_date[64], h_etag[128], h_lastmod[64];
+static char h_refresh[URL_MAX + 40];
 
 static void on_header(void *ctx, const char *name, const char *value)
 {
@@ -625,6 +636,8 @@ static void on_header(void *ctx, const char *name, const char *value)
 		dst = h_etag, n = sizeof h_etag;
 	else if (strcmp(low, "last-modified") == 0)
 		dst = h_lastmod, n = sizeof h_lastmod;
+	else if (strcmp(low, "refresh") == 0)
+		dst = h_refresh, n = sizeof h_refresh;
 	if (dst)
 		snprintf(dst, n, "%s", value);
 }
@@ -763,6 +776,7 @@ static void load_string(const char *html, const char *url)
 	pimg_end();
 	pcss_end();
 	g_img_busy = g_css_busy = 0;
+	g_refresh_url[0] = '\0';
 	doc_free(&g_doc);
 	doc_init(&g_doc, 0);
 	g_doc.img_w = scr_pixels() ? scr_pane_w() : 0;	/* (srcset) */
@@ -796,7 +810,8 @@ static const char help_html[] =
 	"=              page and link information\n"
 	"r              reload           ^L        redraw\n"
 	"a              bookmark this page  v      the bookmarks\n"
-	"z, Esc         stop loading     q         quit\n"
+	"z, Esc         stop loading, or stay when a page would go on\n"
+	"q              quit\n"
 	"Z              xmanx: the window fills the screen, or back\n"
 	"</pre><h1>Forms</h1><p>Select a field (Up/Down, Tab) and press Enter: "
 	"type in a text field (Enter moves to the next; in the last one it "
@@ -884,6 +899,7 @@ static void doc_reset(void)
 	pcss_end();
 	g_img_busy = g_css_busy = 0;
 	g_img_relayout = 0;
+	g_refresh_url[0] = '\0';
 	doc_free(&g_doc);
 	doc_init(&g_doc, 0);
 	g_started = g_gopher = g_aborted = g_unsupported = 0;
@@ -968,6 +984,7 @@ static int load_cached(const char *key, const struct cache_meta *m,
 	snprintf(g_info, sizeof g_info, "from the cache (%ld min old)  %lu KB",
 		age < 0 ? 0L : age, g_bytes / 1024);
 	g_msg[0] = '\0';
+	refresh_plan(g_load.tree.meta_refresh);
 	return 0;
 }
 
@@ -1023,6 +1040,9 @@ static int load(const char *url_in, const struct fetch_opts *opts, int mode,
 	snprintf(url, sizeof url, "%s", url_in);
 	g_msg[0] = '\0';
 	frag[0] = '\0';
+	h_refresh[0] = '\0';
+	if (!g_refreshing)
+		g_refresh_hops = 0;	/* (the user went somewhere) */
 	if ((h = strchr(url, '#')) != NULL)
 		snprintf(frag, sizeof frag, "%.250s", h + 1);
 	if (strcmp(url, "about:help") == 0) {
@@ -1123,6 +1143,8 @@ static int load(const char *url_in, const struct fetch_opts *opts, int mode,
 		message("%s", res.error);
 	else if (res.status >= 400)
 		snprintf(g_msg, sizeof g_msg, "HTTP %d", res.status);
+	if (!g_aborted && rc == 0)
+		refresh_plan(h_refresh[0] ? h_refresh : g_load.tree.meta_refresh);
 	return 0;
 }
 
@@ -1327,6 +1349,86 @@ static void go_url(const char *target)
 		return;
 	}
 	visit(target);
+}
+
+/* --- refresh ----------------------------------------------------------- */
+
+/*
+ * The page asks to go on to another: a Refresh header or <meta
+ * http-equiv=refresh> ("2; url=/next"). Done after the seconds it gives,
+ * from the main loop, unless z or Esc says to stay (Anubis's check for
+ * browsers without JavaScript is one: wait, then go on). A refresh of the
+ * page itself isn't done: news pages ask for one every few minutes, and
+ * on a 68030 each costs seconds and the reader's place.
+ */
+static void refresh_plan(const char *content)
+{
+	static struct url u;
+	static char ref[URL_MAX];
+	long secs;
+
+	g_refresh_url[0] = '\0';
+	if (!content[0] || http_refresh(content, &secs, ref, sizeof ref) < 0
+		|| !ref[0] || url_resolve(&g_base, ref, &u) != URL_OK
+		|| url_format(&u, g_refresh_url, sizeof g_refresh_url, 1) != URL_OK) {
+		g_refresh_url[0] = '\0';
+		return;
+	}
+	if ((strcmp(u.scheme, "http") && strcmp(u.scheme, "https")
+			&& strcmp(u.scheme, "gopher")
+			&& (strcmp(u.scheme, "file") || strncmp(g_url, "file:", 5)))
+		|| same_doc(g_refresh_url, g_url)) {
+		g_refresh_url[0] = '\0';
+		return;
+	}
+	if (g_refresh_hops >= REFRESH_HOPS_MAX) {
+		/* round and round (a check that never passes, say) */
+		snprintf(g_msg, sizeof g_msg, "Not going on again (%d times in a "
+			"row): %s", g_refresh_hops, g_refresh_url);
+		g_refresh_url[0] = '\0';
+		return;
+	}
+	g_refresh_at = os_msec() + (unsigned long)secs * 1000UL;
+	if (secs > 0 && !g_msg[0])
+		snprintf(g_msg, sizeof g_msg, "Going on in %ld s (z: stay here): %s",
+			secs, g_refresh_url);
+}
+
+/* ms until the page's refresh is due (0: now), or -1: there's none */
+static int refresh_left(void)
+{
+	long left;
+
+	if (!g_refresh_url[0])
+		return -1;
+	left = (long)(g_refresh_at - os_msec());
+	return left <= 0 ? 0 : left > 3600000L ? 3600000 : (int)left;
+}
+
+/* go on: the new page takes the place of the one that asked, as a
+ * redirect would (Back doesn't land on it, to be sent on again) */
+static void do_refresh(void)
+{
+	static char url[URL_MAX];
+	struct hist *h;
+
+	snprintf(url, sizeof url, "%s", g_refresh_url);
+	g_refresh_url[0] = '\0';
+	g_refresh_hops++;
+	g_refreshing = 1;
+	load(url, NULL, L_NORMAL, NULL);
+	g_refreshing = 0;
+	if (g_hpos < 0) {
+		hist_push(g_url);
+		return;
+	}
+	h = &g_hist[g_hpos];
+	xfree(h->url);
+	xfree(h->post_body);
+	xfree(h->post_key);
+	memset(h, 0, sizeof *h);
+	h->url = xstrdup(g_url);
+	h->sel = -1;
 }
 
 /* --- form fields -------------------------------------------------------- */
@@ -2423,6 +2525,10 @@ int main(int argc, char **argv)
 	while (!quit) {
 		int k;
 
+		if (refresh_left() == 0) {
+			do_refresh();
+			continue;
+		}
 		if (scr_check_size()) {
 			relayout_same_text();
 			draw(1);
@@ -2435,7 +2541,7 @@ int main(int argc, char **argv)
 				continue;
 			}
 		} else
-			k = next_key(-1);
+			k = next_key(refresh_left());	/* (-1: no refresh, wait) */
 		if (!g_msg_sticky)
 			g_msg[0] = '\0';
 		g_msg_sticky = 0;
@@ -2507,8 +2613,11 @@ int main(int argc, char **argv)
 			if (scr_zoom() < 0)
 				message("Z zooms xmanx's window.", NULL);
 			break;
-		case 'z':
-			if (g_img_busy || g_css_busy) {
+		case 'z': case 27:
+			if (g_refresh_url[0]) {
+				g_refresh_url[0] = '\0';
+				message("Staying on this page.", NULL);
+			} else if (k == 'z' && (g_img_busy || g_css_busy)) {
 				pcss_cancel();
 				pimg_cancel();
 				message("No more images for this page.", NULL);

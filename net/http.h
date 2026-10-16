@@ -68,4 +68,10 @@ int http_resp_eof(struct http_resp *r);
 int http_request(char *buf, size_t n, const char *method,
 	const struct url *u, const char *extra);
 
+/* A Refresh header's or <meta http-equiv=refresh>'s content ("5;
+ * url=/next"): the seconds to wait into *secs, the URL as written into
+ * url (empty: the page itself). 0, or -1 if it isn't one or the URL
+ * doesn't fit in n. */
+int http_refresh(const char *s, long *secs, char *url, size_t n);
+
 #endif /* MANX_HTTP_H */
