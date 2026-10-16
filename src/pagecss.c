@@ -220,10 +220,10 @@ static void read_into_sheet(const struct psheet *p, const unsigned char *b, size
 	if (g_d->sheet == NULL && (g_d->sheet = css_new()) == NULL)
 		return;
 	css_begin(g_d->sheet, p->media, p->node);
-	if (b)
-		css_feed(g_d->sheet, (const char *)b, n);
-	else
+	if (cache_key)
 		cache_read(cache_key, &m, from_cache, NULL);
+	else if (b)		/* (NULL: an empty body) */
+		css_feed(g_d->sheet, (const char *)b, n);
 	css_end(g_d->sheet);
 }
 
@@ -310,7 +310,8 @@ int pcss_step(int (*poll)(void *ctx, int shown), void *ctx)
 		return PCSS_WORKED;
 	}
 	p->state = S_DONE;
-	if (rc < 0 || f.too_big || f.status != 200) {
+	/* (f.status is the head's, which a body-less answer never gives) */
+	if (rc < 0 || f.too_big || f.status != 200 || res->status != 200) {
 		xfree(f.buf);
 		xfree(res);
 		return PCSS_WORKED;
