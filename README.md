@@ -10,6 +10,8 @@ Aztec C built a good share of the Amiga's and the Atari ST's software.
 
 ![xmanx on the Atari TT030's own 24-bit display, showing Wikipedia's article about the TT030](docs/screenshots/11-xmanx-on-the-tt030.png)
 
+![xmanx on the TT030 reading AtariAge's Atari ST/TT/Falcon forum, through the forum's RSS feed](docs/screenshots/12-atariage-on-the-tt030.png)
+
 ![Hacker News in Manx on the TT030](docs/screenshots/03-hackernews.png)
 
 ![A Wikipedia article](docs/screenshots/05-wikipedia-article.png)
