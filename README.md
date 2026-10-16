@@ -183,6 +183,23 @@ Settings go in `~/.manx/config`, one `key = value` a line, or as
 
 `?` in the browser lists the keys.
 
+`~/.manx/sites` holds settings for particular sites, one `HOST SETTING
+VALUE` a line (`.example.com` for the domain and all under it): `agent`,
+the User-Agent sent there in place of Manx's own, and `cookie`, a
+`NAME=VALUE` put in the cookie jar for it. Together they carry another
+browser's pass through a wall such as Cloudflare's "Just a moment...",
+which Manx can't pass itself: open the site in that browser on the same
+network, then copy its `cf_clearance` cookie (the storage inspector,
+Shift+F9 in Firefox) and its User-Agent (about:support):
+
+```
+.atariage.com  agent   Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0
+.atariage.com  cookie  cf_clearance=...
+```
+
+The pass lasts as long as the site lets it, and a cookie is as good as a
+password: keep the file to yourself (`chmod 600`).
+
 ### Mail
 
 `manxmail` reads and sends mail on a terminal (IMAP and SMTP), a program

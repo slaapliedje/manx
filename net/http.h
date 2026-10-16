@@ -64,9 +64,10 @@ int http_resp_feed(struct http_resp *r, const unsigned char *data,
 int http_resp_eof(struct http_resp *r);
 
 /* Build a GET (or HEAD) request for u. Returns its length, or -1 if it
- * doesn't fit. extra: more header lines, each ending in \r\n, or NULL. */
+ * doesn't fit. extra: more header lines, each ending in \r\n, or NULL;
+ * agent: the User-Agent, NULL for Manx's own. */
 int http_request(char *buf, size_t n, const char *method,
-	const struct url *u, const char *extra);
+	const struct url *u, const char *extra, const char *agent);
 
 /* A Refresh header's or <meta http-equiv=refresh>'s content ("5;
  * url=/next"): the seconds to wait into *secs, the URL as written into

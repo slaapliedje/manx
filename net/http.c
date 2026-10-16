@@ -329,7 +329,7 @@ int http_resp_eof(struct http_resp *r)
 }
 
 int http_request(char *buf, size_t n, const char *method,
-	const struct url *u, const char *extra)
+	const struct url *u, const char *extra, const char *agent)
 {
 	char target[URL_MAX], host[URL_HOST_MAX + 12];
 	int len;
@@ -345,11 +345,12 @@ int http_request(char *buf, size_t n, const char *method,
 	len = snprintf(buf, n,
 		"%s %s HTTP/1.1\r\n"
 		"Host: %s\r\n"
-		"User-Agent: " USER_AGENT "\r\n"
+		"User-Agent: %s\r\n"
 		"Accept: text/html, text/plain;q=0.9, */*;q=0.5\r\n"
 		"Accept-Encoding: gzip, deflate\r\n"
 		"%s"
-		"\r\n", method, target, host, extra ? extra : "");
+		"\r\n", method, target, host, agent ? agent : USER_AGENT,
+		extra ? extra : "");
 	return len < 0 || (size_t)len >= n ? -1 : len;
 }
 

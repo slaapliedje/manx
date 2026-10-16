@@ -17,6 +17,7 @@
 #include <time.h>
 #include "fetch.h"
 #include "inflate.h"
+#include "sites.h"
 #include "cookie.h"
 
 int fetch_early_requests = 1;
@@ -213,7 +214,7 @@ static int http_once(const struct url *u, const char *method,
 		res->t_connect = c->t_connect;
 	}
 
-	n = http_request(req, sizeof req, method, u, extra);
+	n = http_request(req, sizeof req, method, u, extra, sites_agent(u->host));
 	if (n < 0) {
 		conn_release(c, 0);
 		return fail(res, "URL too long for a request");

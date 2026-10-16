@@ -38,6 +38,7 @@
 #include "utf8.h"
 #include "forms.h"
 #include "cookie.h"
+#include "sites.h"
 #include "config.h"
 #include "cache.h"
 #include "pageimg.h"
@@ -2647,6 +2648,8 @@ int main(int argc, char **argv)
 	cookie_enabled = config_bool("cookies", 1);
 	if (cookie_enabled)
 		cookie_init(os_datapath(path, sizeof path, "cookies"));
+	/* a site's own User-Agent, cookies (a browser's pass through a wall) */
+	sites_load(os_datapath(path, sizeof path, "sites"));
 	if (config_long("cache_kb", 2048) > 0)
 		cache_init(os_datapath(path, sizeof path, "cache"),
 			config_long("cache_kb", 2048) * 1024L);

@@ -122,14 +122,14 @@ int main(void)
 
 	/* requests */
 	url_parse("http://example.com:8080/a b?q", &u);
-	if (http_request(req, sizeof req, "GET", &u, "Cookie: a=b\r\n") < 0
+	if (http_request(req, sizeof req, "GET", &u, "Cookie: a=b\r\n", NULL) < 0
 		|| strncmp(req, "GET /a%20b?q HTTP/1.1\r\nHost: example.com:8080\r\n", 46)
 		|| !strstr(req, "Cookie: a=b\r\n\r\n")) {
 		printf("FAIL request:\n%s", req);
 		fails++;
 	}
 	url_parse("https://example.com:443", &u);
-	http_request(req, sizeof req, "HEAD", &u, NULL);
+	http_request(req, sizeof req, "HEAD", &u, NULL, NULL);
 	if (strncmp(req, "HEAD / HTTP/1.1\r\nHost: example.com\r\n", 36)) {
 		printf("FAIL request default port:\n%s", req);
 		fails++;
