@@ -7,6 +7,7 @@ HTTP paths:
   /chunked     chunked body with an extension and a trailer
   /close       HTTP/1.0, body delimited by the close
   /redir       302 -> /redir2 (relative) -> 301 -> /len (absolute)
+  /redirlate   302 with a body, its Location after other headers -> /len
   /loop        redirects to itself forever
   /big         300000 bytes, chunked, in odd-sized chunks
   /slowhead    head sent in 1-byte pieces
@@ -63,6 +64,9 @@ def send_http(c, path, n_on_conn, req=b""):
         return False
     elif path == "/redir":
         c.sendall(b"HTTP/1.1 302 Found\r\nLocation: redir2\r\nContent-Length: 3\r\n\r\nxyz")
+    elif path == "/redirlate":
+        c.sendall(b"HTTP/1.1 302 Found\r\nContent-Type: text/html\r\n"
+                  b"Location: /len\r\nContent-Length: 6\r\n\r\nFound.")
     elif path == "/redir2":
         c.sendall(("HTTP/1.1 301 Moved\r\nLocation: http://%s:8081/len\r\nContent-Length: 0\r\n\r\n" % HOST).encode())
     elif path == "/loop":

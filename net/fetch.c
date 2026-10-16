@@ -207,10 +207,10 @@ static int http_once(const struct url *u, const char *method,
 		return fail(res, err);
 	res->reused = c->reused;
 	res->reconnected = c->reconnected;
+	res->tls = is_tls;	/* (the last hop's: what the page came over) */
 	if (!c->reused) {
 		res->t_dns = c->t_dns;
 		res->t_connect = c->t_connect;
-		res->tls = is_tls;
 	}
 
 	n = http_request(req, sizeof req, method, u, extra);
@@ -330,8 +330,10 @@ static int http_once(const struct url *u, const char *method,
 
 /*
  * Which response is the one to deliver? A redirect's headers and body
- * are dropped. The status line is always parsed before any header or
- * body byte reaches the callbacks, so the shim decides at its first call.
+ * are dropped. A header can come before the Location that makes a 3xx a
+ * redirect, so headers go by the status alone (a 3xx without one, which
+ * is then the answer, loses its headers); the body comes after all of
+ * them, so the shim decides at its first byte.
  */
 struct final_shim {
 	struct fetch_cb inner;
@@ -354,8 +356,7 @@ static void shim_header(void *ctx, const char *name, const char *value)
 {
 	struct final_shim *s = ctx;
 
-	decide(s);
-	if (s->final && s->outer->header)
+	if (!is_redirect(s->r->status) && s->outer->header)
 		s->outer->header(s->outer->ctx, name, value);
 }
 
