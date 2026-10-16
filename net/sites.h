@@ -9,9 +9,9 @@
  *   agent   the User-Agent sent to it, in place of Manx's own
  *   cookie  NAME=VALUE, put in the cookie jar for it (for the run)
  *
- * Both together carry a browser's pass through a wall such as
- * Cloudflare's, which ties its cf_clearance cookie to the address it was
- * given to and to that browser's User-Agent. A cookie is as good as a
+ * Both together carry another browser's session to a site that ties it
+ * to no more than that - not Cloudflare's pass (cf_clearance), which is
+ * tied to the browser's TLS handshake too. A cookie is as good as a
  * password: keep the file to yourself.
  */
 #ifndef MANX_SITES_H

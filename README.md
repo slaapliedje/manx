@@ -186,19 +186,19 @@ Settings go in `~/.manx/config`, one `key = value` a line, or as
 `~/.manx/sites` holds settings for particular sites, one `HOST SETTING
 VALUE` a line (`.example.com` for the domain and all under it): `agent`,
 the User-Agent sent there in place of Manx's own, and `cookie`, a
-`NAME=VALUE` put in the cookie jar for it. Together they carry another
-browser's pass through a wall such as Cloudflare's "Just a moment...",
-which Manx can't pass itself: open the site in that browser on the same
-network, then copy its `cf_clearance` cookie (the storage inspector,
-Shift+F9 in Firefox) and its User-Agent (about:support):
+`NAME=VALUE` put in the cookie jar for it (a session copied from
+another browser, say):
 
 ```
-.atariage.com  agent   Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0
-.atariage.com  cookie  cf_clearance=...
+.example.com  agent   Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0
+.example.com  cookie  session=...
 ```
 
-The pass lasts as long as the site lets it, and a cookie is as good as a
-password: keep the file to yourself (`chmod 600`).
+A cookie is as good as a password: keep the file to yourself (`chmod
+600`). It won't carry another browser's pass through Cloudflare's "Just a
+moment...": that is tied to the browser's TLS handshake too (tried with
+AtariAge's forums), which nothing here can match. `F` often gets past
+such a wall to the site's feed.
 
 ### Mail
 
