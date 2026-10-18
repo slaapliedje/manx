@@ -123,7 +123,8 @@ extern int css_boxes;
 #define CSS_B_FLOAT	0x020000UL
 #define CSS_B_CLEAR	0x040000UL
 #define CSS_B_DISP	0x080000UL
-#define CSS_B_NBITS	20
+#define CSS_B_LH	0x100000UL	/* line-height (inherited: the layout's) */
+#define CSS_B_NBITS	21
 
 enum { CSS_FL_NONE = 1, CSS_FL_LEFT, CSS_FL_RIGHT };
 enum { CSS_CL_NONE = 1, CSS_CL_LEFT, CSS_CL_RIGHT, CSS_CL_BOTH };
@@ -138,6 +139,8 @@ struct css_box {
 	unsigned char bstyle;		/* the border is drawn (solid...): 1 */
 	unsigned char fl, clr, disp;	/* CSS_FL_*, CSS_CL_*, CSS_DI_* */
 	struct css_len m[4], p[4], bw[4], w, h;
+	struct css_len lh;		/* line-height: em (a number, an em: of
+					 * the font's size), px, or auto: normal */
 };
 
 /*

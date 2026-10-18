@@ -1487,6 +1487,7 @@ static int box_mentions(const char *d, int n)
 				|| starts(d + i, (size_t)(n - i), "width")
 				|| starts(d + i, (size_t)(n - i), "height")
 				|| starts(d + i, (size_t)(n - i), "float")
+				|| starts(d + i, (size_t)(n - i), "font")
 				|| starts(d + i, (size_t)(n - i), "clear"))
 				return 1;
 			break;
@@ -1656,6 +1657,39 @@ static unsigned long border_short(const char *v, size_t vn, int side,
 	return set;
 }
 
+/* a line-height value into *l: 1, or 0 */
+static int line_height(const char *v, size_t vn, struct css_len *l)
+{
+	const char *e = v + vn, *q;
+	long t;
+	int pct;
+
+	if (vn == 6 && starts(v, vn, "normal")) {
+		l->v = 0;
+		l->u = CSS_U_AUTO;
+		return 1;
+	}
+	if ((q = number(v, e, &t, &pct)) == NULL || t < 0)
+		return 0;
+	while (q > v && ((q[-1] | 32) >= 'a' && (q[-1] | 32) <= 'z'))
+		q--;
+	t /= 100;			/* tenths */
+	if (pct) {
+		l->u = CSS_U_EM;
+		t /= 100;
+	} else if (q == e || starts(q, (size_t)(e - q), "em"))
+		l->u = CSS_U_EM;	/* (a number: times the font's size) */
+	else if (starts(q, (size_t)(e - q), "px"))
+		l->u = CSS_U_PX;
+	else if (starts(q, (size_t)(e - q), "pt")) {
+		l->u = CSS_U_PX;
+		t = t * 4 / 3;
+	} else
+		return 0;
+	l->v = (short)clamp(t, 0, 32000);
+	return 1;
+}
+
 /* one declaration about the box into *b: the CSS_B_* bits it set (0: none) */
 static unsigned long box_decl(const char *p, size_t pn, const char *v,
 	size_t vn, struct css_box *b)
@@ -1751,6 +1785,27 @@ static unsigned long box_decl(const char *p, size_t pn, const char *v,
 			return CSS_B_BG;
 		}
 		return 0;
+	}
+	if (pn == 11 && starts(p, pn, "line-height"))
+		return line_height(v, vn, &b->lh) ? CSS_B_LH : 0;
+	if (pn == 4 && starts(p, pn, "font")) {
+		/* the shorthand's line height ("10px/1.2"), else normal */
+		size_t k;
+
+		for (k = 0; k < vn && v[k] != '/' && v[k] != ','; k++)
+			;
+		if (k < vn && v[k] == '/') {
+			size_t j = ++k;
+
+			while (j < vn && !is_space((unsigned char)v[j]) && v[j] != ',')
+				j++;
+			if (!line_height(v + k, j - k, &b->lh))
+				return 0;
+		} else {
+			b->lh.v = 0;
+			b->lh.u = CSS_U_AUTO;
+		}
+		return CSS_B_LH;
 	}
 	if (pn == 5 && starts(p, pn, "width"))
 		return parse_len(v, vn, &b->w) ? CSS_B_W : 0;
@@ -1886,9 +1941,8 @@ static void end_rule(struct css_sheet *s)
 				set_var(s, hash_bytes(p, pn), &vt);
 			continue;
 		}
-		if (text_decl(s, p, pn, v, vn, imp, &t))
-			continue;
 		if (boxes) {
+			/* (first: the font shorthand is the text's too) */
 			unsigned long bits = box_decl(p, pn, v, vn, &bd.b);
 
 			bd.b.set |= bits;
@@ -1897,6 +1951,8 @@ static void end_rule(struct css_sheet *s)
 			else
 				bd.imp &= ~bits;
 		}
+		if (text_decl(s, p, pn, v, vn, imp, &t))
+			continue;
 		if (pn == 7 && starts(p, pn, "display")) {
 			disp = starts(v, vn, "none") ? CSS_HIDE : CSS_SHOW;
 			disp_imp = imp;
@@ -2591,6 +2647,8 @@ static void box_take(struct css_box *b, const struct css_box *a, int k)
 		b->clr = a->clr;
 	else if (bit == CSS_B_DISP)
 		b->disp = a->disp;
+	else if (bit == CSS_B_LH)
+		b->lh = a->lh;
 	b->set |= bit;
 }
 

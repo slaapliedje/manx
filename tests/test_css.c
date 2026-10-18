@@ -452,6 +452,41 @@ int main(void)
 	box("display and auto", "p{display:block;margin:0 auto;width:auto}", "<p>x", TAG_P,
 		"m0=0.0p m1=0.0a m2=0.0p m3=0.0a w=0.0a di=1 ");
 	box("nothing", "p{color:red}", "<p>x", TAG_P, "");
+	{
+		/* line-height: in the box's declarations (the layout inherits it) */
+		static struct html_load l;
+		static const char page[] = "<html><head><style>html{font:10px/1 Verdana}"
+			"p{line-height:1.9} div{line-height:13px} span{font:bold 1em x}"
+			"</style></head><body><p>a</p><div>b</div><span>c</span></body></html>";
+		static const int tags[3] = { TAG_P, TAG_DIV, TAG_SPAN };
+		static const char *const want[3] = { "19e", "130p", "0a" };
+		struct doc d;
+		int k;
+
+		doc_init(&d, 0);
+		html_load_begin(&l, &d, "utf-8", 0);
+		html_load_feed(&l, (const unsigned char *)page, strlen(page));
+		html_load_end(&l);
+		for (k = 0; k < 3; k++) {
+			struct css_box b;
+			unsigned long id;
+			char got[32];
+
+			memset(&b, 0, sizeof b);
+			for (id = 2; id < d.nnodes; id++)
+				if (d.nodes[id].type == NODE_ELEM && d.nodes[id].tag == tags[k])
+					break;
+			css_style(d.sheet, &d, (nodeid)id, NULL, NULL, 320, NULL);
+			css_box(d.sheet, &d, (nodeid)id, NULL, NULL, 320, &b);
+			sprintf(got, "%d%c", b.lh.v, "-pe%a"[b.lh.u]);
+			runs++;
+			if (!(b.set & CSS_B_LH) || strcmp(got, want[k]) != 0) {
+				fails++;
+				printf("FAIL line-height %d: want %s got %s\n", k, want[k], got);
+			}
+		}
+		doc_free(&d);
+	}
 	/* font sizes */
 	fsize("px", "p{font-size:14px}", "<p>x", TAG_P, "14.0p");
 	fsize("pt", "p{font-size:10pt}", "<p>x", TAG_P, "13.3p");

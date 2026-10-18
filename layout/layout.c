@@ -30,6 +30,7 @@ struct saved {
 	unsigned char display, margin, face, nomarker;
 	unsigned char fg, align;
 	short fsz;
+	struct css_len lh;
 	unsigned long para_mark, para_line;	/* <p>: where it began */
 	unsigned short link;
 	short indent;
@@ -45,6 +46,7 @@ struct saved {
 	int box_in_b, box_m_b;		/* border and padding, margin (-1: the
 					 * block's own blank lines) below */
 	long box_minh;			/* height: at least (0: none) */
+	int box_rin;			/* L->rin before it */
 	int box_cut;			/* the float cut from the width then */
 };
 
@@ -60,6 +62,10 @@ struct lay {
 	const struct lmetrics *m;	/* NULL: terminal columns */
 	int em;				/* an indent column, in units */
 	int base_w;			/* the width it was laid out at */
+	int rin;			/* the open boxes' right sides (padding,
+					 * border, margin) beside the text */
+	struct css_len lh;		/* the line height (with metrics; u
+					 * CSS_U_NONE: the font's own) */
 	int fsz;			/* the font's size, tenths of a unit (with
 					 * metrics): CSS's em */
 	int face;			/* LF_* */
@@ -216,6 +222,18 @@ static void note_height(struct lay *L)
 	if (L->m == NULL)
 		return;
 	h = L->m->height(L->m->ctx, L->attr, L->face, &a);
+	if (L->lh.u == CSS_U_EM || L->lh.u == CSS_U_PX) {
+		/* CSS's line height: the difference half above, half below */
+		long lh = L->lh.u == CSS_U_EM ? (long)L->lh.v * L->fsz / 100
+			: L->lh.v * 3 / 40;
+
+		if (lh < 1)
+			lh = 1;
+		a += (int)(lh - h) / 2;
+		h = (int)lh;
+		if (a < 0)
+			a = 0;
+	}
 	if (a > L->line_a)
 		L->line_a = a;
 	if (h - a > L->line_d)
@@ -429,7 +447,7 @@ static void close_line_at(struct lay *L, unsigned long end)
 	/* (how wide this needs: its text, and the right sides of the boxes
 	 * it is in) */
 	if (L->m && end > L->line_off) {
-		int need = endcol + (L->base_w - L->width - L->fl_cut);
+		int need = endcol + L->rin;
 
 		if (need > p->need_w)
 			p->need_w = need;
@@ -1648,6 +1666,12 @@ static void box_open(struct lay *L, struct saved *sv, const struct css_box *b,
 		w = 1;
 	sv->boxk = draw ? 1 : 2;
 	sv->box = 0;
+	sv->box_rin = L->rin;
+	/* (a box as wide as it says: its page needs that) */
+	if ((b->set & CSS_B_W) && b->w.u != CSS_U_AUTO && L->m
+		&& x + w + m[1] > p->need_w)
+		p->need_w = x + w + m[1];
+	L->rin += m[1] + (draw ? bw[1] + pd[1] : 0);
 	sv->box_width = L->width;
 	sv->box_cut = L->fl_cut;
 	sv->box_m_b = b->set & CSS_B_M(2) ? m[2] : -1;
@@ -1721,6 +1745,7 @@ static void box_close(struct lay *L, const struct saved *sv)
 		float_flush(L);		/* (a float in it stays in it) */
 	if (sv->boxk == 2) {
 		end_line(L);
+		L->rin = sv->box_rin;
 		L->width = sv->box_width + sv->box_cut - L->fl_cut;
 		L->in_box--;
 		if (sv->box_m_b >= 0)
@@ -1760,6 +1785,7 @@ static void box_close(struct lay *L, const struct saved *sv)
 	}
 	/* (a float beside it may have ended meanwhile) */
 	L->width = sv->box_width + sv->box_cut - L->fl_cut;
+	L->rin = sv->box_rin;
 	L->in_box--;
 	if (sv->box_m_b >= 0)
 		margin(L, sv->box_m_b);
@@ -1776,7 +1802,7 @@ static int enter(struct lay *L, nodeid id, int depth)
 	struct css_text ct;
 	struct css_box bx;
 	const char *v;
-	int tag = n->tag, cssf = 0, boxed;
+	int tag = n->tag, cssf = 0, boxed, lh_new;
 
 	if (n->data)
 		scan_attrs(d, id, &ea);
@@ -1795,6 +1821,7 @@ static int enter(struct lay *L, nodeid id, int depth)
 	if (ea.style)
 		css_inline_text(L->d->sheet, ea.style, &ct);
 	boxed = 0;
+	bx.set = 0;
 	if (L->m && !L->small && (tag == TAG_HTML || tag == TAG_BODY)
 		&& el_box(L, id, &ea, &bx) && (bx.set & CSS_B_BG) && bx.bg != CSS_BG_NONE
 		&& (tag == TAG_HTML || L->p->page_bg == LBOX_NONE)) {
@@ -1827,6 +1854,7 @@ static int enter(struct lay *L, nodeid id, int depth)
 		if (boxed && (bx.set & (CSS_B_M(0) | CSS_B_M(2))))
 			s.margin = 0;
 	}
+	lh_new = (bx.set & CSS_B_LH) != 0;
 
 	/* leaves with a rendering of their own */
 	switch (tag) {
@@ -1935,6 +1963,7 @@ static int enter(struct lay *L, nodeid id, int depth)
 	sv->fg = (unsigned char)L->fg;
 	sv->align = (unsigned char)L->align;
 	sv->fsz = (short)L->fsz;
+	sv->lh = L->lh;
 	sv->box = 0;
 	sv->boxk = 0;
 	/* list-style: inherited, the element's own style="" last */
@@ -2022,6 +2051,11 @@ static int enter(struct lay *L, nodeid id, int depth)
 			L->fg = page_color(L->p, rgb);
 	}
 	text_look(L, tag, &s, &ct, ea.align);
+	if (lh_new) {
+		L->lh = bx.lh;
+		if (bx.lh.u == CSS_U_AUTO)
+			L->lh.u = CSS_U_NONE;	/* (normal: the font's) */
+	}
 	if (tag == TAG_A && ea.href
 		&& GROW(L, links, links_cap, L->p->nlinks + 1, 64) == 0) {
 		struct llink *k = &L->p->links[L->p->nlinks++];
@@ -2099,6 +2133,7 @@ static void leave(struct lay *L, nodeid id, int depth)
 	L->pre = sv->pre;
 	L->face = sv->face;
 	L->fsz = sv->fsz;
+	L->lh = sv->lh;
 	L->fg = sv->fg;
 	L->align = sv->align;
 	L->link = sv->link;
@@ -2591,6 +2626,7 @@ static int lay_cell(struct lay *L, struct lay *S, struct gcell *gc, int width,
 	S->m = L->m;
 	S->em = L->em;
 	S->fsz = L->fsz;
+	S->lh = L->lh;
 	S->width = width;
 	S->base_w = width;
 	S->vw = L->vw;
@@ -2599,6 +2635,9 @@ static int lay_cell(struct lay *L, struct lay *S, struct gcell *gc, int width,
 	S->heading_line = -1;
 	style_of(L->d, gc->node, &s);	/* (a <th>: bold) */
 	S->attr = L->attr | s.attr;
+	/* (a float's own look: a heading's face, italics...; in fonts a
+	 * heading is its size, not an underline) */
+	S->face |= s.face & (LF_MONO | LF_ITALIC);
 	/* (quirks-style, as the pages this matters for are: a table doesn't
 	 * take the alignment around it - a cell's is its own, or its row's) */
 	S->align = 0;
@@ -2618,6 +2657,15 @@ static int lay_cell(struct lay *L, struct lay *S, struct gcell *gc, int width,
 		if (st)
 			css_inline_text(L->d->sheet, st, &ct);
 		s.display = D_BLOCK;		/* (its lines are its own) */
+		if (L->m && (s.face & LF_HMASK)) {
+			/* a heading's size, unless the sheet says one (an em
+			 * of its own is of the size around it) */
+			static const short hsz[4] = { 120, 180, 140, 120 };
+
+			S->face = (S->face & ~LF_HMASK) | (s.face & LF_HMASK);
+			if (ct.fsize.u == CSS_U_NONE)
+				S->fsz = hsz[s.face & LF_HMASK];
+		}
 		if (al == NULL && row && L->d->nodes[row].tag == TAG_TR)
 			al = doc_attr(L->d, row, ATTR_ALIGN);
 		text_look(S, L->d->nodes[gc->node].tag, &s, &ct, al);
