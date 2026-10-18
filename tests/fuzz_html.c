@@ -160,7 +160,7 @@ static char *dump_of(const unsigned char *s, size_t n, int chunked, size_t cap)
 					abort();
 				for (o = pg.spans[i].off; o < e; o += LAYOUT_IMG_BYTES)
 					if (layout_image(&pg, pg.text + o) < 0
-						&& layout_spacer_w(pg.text + o) < 0)
+						&& layout_spacer_w(pg.text + o) == LAYOUT_NO_SPACER)
 						abort();
 			}
 			/* each on a line (or the one still open when a line

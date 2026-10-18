@@ -3694,8 +3694,10 @@ static nodeid float_run(struct lay *L, nodeid id)
 			cw = box_units(L, b.w, avail);
 		if (cw < L->em)
 			cw = L->em;
-		if (lay_cell(L, S, &f->gc, cw, 0, 1) < 0)
+		if (lay_cell(L, S, &f->gc, cw, 0, 1) < 0) {
+			layout_free(&f->gc.pg);	/* (out of room: as far as here) */
 			break;
+		}
 		if (!((b.set & CSS_B_W) && b.w.u != CSS_U_AUTO)) {
 			/* (shrunk to fit its widest line) */
 			int w = 0, lw, word;
@@ -3707,8 +3709,10 @@ static nodeid float_run(struct lay *L, nodeid id)
 			}
 			if (w < cw && w > 0) {
 				cw = w;
-				if (lay_cell(L, S, &f->gc, cw, 0, 1) < 0)
+				if (lay_cell(L, S, &f->gc, cw, 0, 1) < 0) {
+					layout_free(&f->gc.pg);
 					break;
+				}
 			}
 		}
 		f->w = cw;
@@ -3823,6 +3827,18 @@ int layout_run_m(struct page *p, const struct doc *d, int width,
 	end_line(L);
 	float_flush(L);
 	fl_end(L);
+	/* (boxes reserved that had nothing to draw in the end: gone) */
+	{
+		unsigned long i, k = 0;
+
+		for (i = 0; i < p->nboxes; i++) {
+			const struct lbox *b = &p->boxes[i];
+
+			if (b->w > 0 && b->h > 0 && (b->bg != LBOX_NONE || b->border))
+				p->boxes[k++] = *b;
+		}
+		p->nboxes = k;
+	}
 	xfree(L);
 	return 0;
 }
