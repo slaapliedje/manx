@@ -29,6 +29,7 @@ struct saved {
 	unsigned char attr, pre, tag, list;
 	unsigned char display, margin, face, nomarker;
 	unsigned char fg, align;
+	short fsz;
 	unsigned long para_mark, para_line;	/* <p>: where it began */
 	unsigned short link;
 	short indent;
@@ -58,7 +59,9 @@ struct lay {
 	const struct forms *fs;
 	const struct lmetrics *m;	/* NULL: terminal columns */
 	int em;				/* an indent column, in units */
-	int cem;			/* CSS's em: the font's size, in units */
+	int base_w;			/* the width it was laid out at */
+	int fsz;			/* the font's size, tenths of a unit (with
+					 * metrics): CSS's em */
 	int face;			/* LF_* */
 	int width;
 	int vw;				/* the window's width for @media: pixels,
@@ -423,6 +426,14 @@ static void close_line_at(struct lay *L, unsigned long end)
 				p->links[k - 1].col = (unsigned short)(p->links[k - 1].col + shift);
 	}
 	push_line(L, L->line_off, end - L->line_off, indent, L->line_span, 1);
+	/* (how wide this needs: its text, and the right sides of the boxes
+	 * it is in) */
+	if (L->m && end > L->line_off) {
+		int need = endcol + (L->base_w - L->width - L->fl_cut);
+
+		if (need > p->need_w)
+			p->need_w = need;
+	}
 	L->line_open = 0;
 	L->blank_run = 0;
 	L->fl_inline = 0;
@@ -1406,6 +1417,25 @@ static int grid_table(struct lay *L, nodeid id);
 /* how an element's text looks, from its style sheet and style="" (ct)
  * over the built-in style s: weight, italics, underline, colour,
  * alignment (also <center> and align=, which the sheet overrides) */
+/* the face's size class nearest a size in tenths of a unit */
+static int size_class(int fsz)
+{
+	static const int px[8] = LF_SIZE_PX;
+	int k, best = 3, d = 1 << 30;
+
+	for (k = 1; k < 8; k++) {
+		int e = px[k] * 10 - fsz;
+
+		if (e < 0)
+			e = -e;
+		if (e < d) {
+			d = e;
+			best = k;
+		}
+	}
+	return LF_SIZE(best);
+}
+
 static void text_look(struct lay *L, int tag, const struct style *s,
 	const struct css_text *ct, const char *align)
 {
@@ -1426,6 +1456,23 @@ static void text_look(struct lay *L, int tag, const struct style *s,
 		L->attr |= SA_UNDER;
 	else if (ct->deco == CSS_TD_NONE)
 		L->attr &= ~SA_UNDER;
+	if (L->m && ct->fsize.u == CSS_U_PX) {
+		/* a size in CSS pixels: the browsers' usual 16 is the
+		 * screen's 12 */
+		L->fsz = ct->fsize.v * 3 / 4;
+		L->face = (L->face & ~LF_SMASK) | size_class(L->fsz);
+	} else if (L->m && ct->fsize.u == CSS_U_EM) {
+		L->fsz = (int)((long)L->fsz * ct->fsize.v / 10);
+		L->face = (L->face & ~LF_SMASK) | size_class(L->fsz);
+	}
+	/* (no smaller than 10 pixels: less can't be read in the screen's
+	 * fonts - browsers have a least size too) */
+	if (L->fsz < 100) {
+		L->fsz = 100;
+		if (L->face & LF_SMASK)
+			L->face = (L->face & ~LF_SMASK) | size_class(L->fsz);
+	} else if (L->fsz > 480)
+		L->fsz = 480;
 	if (ct->fg & CSS_RGB_SET)
 		L->fg = page_color(L->p, ct->fg & 0xFFFFFFUL);
 	else if (ct->fg & CSS_RGB_DEFAULT)
@@ -1488,7 +1535,7 @@ static int box_units(const struct lay *L, struct css_len l, int of)
 		v = l.v / 10;
 		break;
 	case CSS_U_EM:
-		v = (long)l.v * L->cem / 10;
+		v = (long)l.v * L->fsz / 100;
 		break;
 	case CSS_U_PCT:
 		v = (long)l.v * of / 1000;
@@ -1887,6 +1934,7 @@ static int enter(struct lay *L, nodeid id, int depth)
 	sv->nomarker = (unsigned char)L->nomarker;
 	sv->fg = (unsigned char)L->fg;
 	sv->align = (unsigned char)L->align;
+	sv->fsz = (short)L->fsz;
 	sv->box = 0;
 	sv->boxk = 0;
 	/* list-style: inherited, the element's own style="" last */
@@ -1947,8 +1995,19 @@ static int enter(struct lay *L, nodeid id, int depth)
 	if (s.pre)
 		L->pre = 1;
 	/* a heading's level replaces the one outside; the rest add up */
-	if (s.face & LF_HMASK)
-		L->face = (L->face & ~LF_HMASK) | (s.face & LF_HMASK);
+	if (s.face & LF_HMASK) {
+		/* (as tall as the screen's heading fonts: 18, 14, 12) */
+		static const short hsz[4] = { 120, 180, 140, 120 };
+		int h = s.face & LF_HMASK;
+
+		L->face = (L->face & ~LF_HMASK) | h;
+		if (L->m && (L->face & LF_SMASK)) {
+			/* in text the page sized: as much bigger than it */
+			L->fsz = L->fsz * hsz[h] / 120;
+			L->face = (L->face & ~LF_SMASK) | size_class(L->fsz);
+		} else if (L->m)
+			L->fsz = hsz[h];
+	}
 	L->face |= s.face & (LF_MONO | LF_ITALIC);
 	if (tag == TAG_UL || tag == TAG_OL || tag == TAG_MENU || tag == TAG_DIR) {
 		list_begin(L, id, tag);
@@ -2039,6 +2098,7 @@ static void leave(struct lay *L, nodeid id, int depth)
 	L->attr = sv->attr;
 	L->pre = sv->pre;
 	L->face = sv->face;
+	L->fsz = sv->fsz;
 	L->fg = sv->fg;
 	L->align = sv->align;
 	L->link = sv->link;
@@ -2530,8 +2590,9 @@ static int lay_cell(struct lay *L, struct lay *S, struct gcell *gc, int width,
 	S->fs = L->fs;
 	S->m = L->m;
 	S->em = L->em;
-	S->cem = L->cem;
+	S->fsz = L->fsz;
 	S->width = width;
+	S->base_w = width;
 	S->vw = L->vw;
 	S->face = L->face;
 	S->nomarker = L->nomarker;
@@ -2602,6 +2663,8 @@ static int grid_widths(struct lay *L, struct lay *S, struct grid *g, int avail, 
 		for (ln = 0; ln < gc->pg.nspans; ln++)
 			if (gc->pg.spans[ln].attr & SA_RULE)
 				gc->rule = 1;
+		if (gc->pg.need_w > gc->maxw)
+			gc->maxw = gc->pg.need_w;
 		for (ln = 0; ln < gc->pg.nlines; ln++) {
 			int w, word;
 
@@ -3845,7 +3908,7 @@ static nodeid float_run(struct lay *L, nodeid id)
 		}
 		if (!((b.set & CSS_B_W) && b.w.u != CSS_U_AUTO)) {
 			/* (shrunk to fit its widest line) */
-			int w = 0, lw, word;
+			int w = f->gc.pg.need_w, lw, word;
 
 			for (ln = 0; ln < f->gc.pg.nlines; ln++) {
 				line_widths(L, &f->gc.pg, ln, &lw, &word);
@@ -3954,15 +4017,9 @@ int layout_run_m(struct page *p, const struct doc *d, int width,
 	L->fs = fs;
 	L->m = m;
 	L->em = m && m->em > 0 ? m->em : 1;
-	L->cem = L->em;
-	if (m) {
-		int a, h = m->height(m->ctx, 0, 0, &a);
-
-		/* (a line is about a fifth taller than the font's size) */
-		if (h * 4 / 5 > L->cem)
-			L->cem = h * 4 / 5;
-	}
+	L->fsz = 120;			/* (the screen's usual 12 pixels) */
 	L->width = p->width;
+	L->base_w = p->width;
 	L->vw = m ? p->width : p->width * 8;
 	L->max_lines = max_lines;
 	L->heading_line = -1;

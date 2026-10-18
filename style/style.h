@@ -34,6 +34,11 @@ enum display {
 #define LF_MONO		0x04	/* fixed width: pre, code, kbd... */
 #define LF_ITALIC	0x08	/* em, i, cite... */
 #define LF_IMAGE	0x10	/* not text: images (layout.h, LAYOUT_IMG_BYTES) */
+#define LF_SMASK	0xE0	/* a font size from the page's CSS: class 1-7
+				 * (LF_SIZE_PX), over a heading's; 0: none */
+#define LF_SIZE(k)	((k) << 5)
+/* the classes' sizes, in pixels (class 3 is the usual 12) */
+#define LF_SIZE_PX	{ 12, 8, 10, 12, 14, 17, 20, 24 }
 
 struct style {
 	unsigned char display;

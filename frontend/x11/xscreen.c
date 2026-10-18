@@ -880,9 +880,9 @@ static int shown_ok;			/* the window's pane shows that frame */
 static int shown_w, shown_h;		/* at this pane size */
 static int shown_over;			/* with cells over the pane */
 
-/* fonts by look: [bold][face] */
-static XFontStruct *faces[2][16];
-static unsigned char face_tried[2][16];
+/* fonts by look: [bold][face, but LF_IMAGE] */
+static XFontStruct *faces[2][256];
+static unsigned char face_tried[2][256];
 
 static int pane_x(void) { return gx; }
 static int pane_y(void) { return gy + ch; }
@@ -912,23 +912,26 @@ static XFontStruct *find_font(const char *family, int bold, int slant, int px)
 
 static XFontStruct *face_font(int attr, int face)
 {
-	int b = (attr & CA_BOLD) != 0, k = face & 15, h = face & LF_HMASK;
+	int b = (attr & CA_BOLD) != 0, k = face & ~LF_IMAGE & 0xFF, h = face & LF_HMASK;
 	XFontStruct *f;
 
 	if (faces[b][k])
 		return faces[b][k];
 	if (!face_tried[b][k]) {
-		/* headings: bigger and bold; 12 pixels otherwise */
+		/* headings: bigger and bold; 12 pixels otherwise; the page's
+		 * size (a class of LF_SIZE_PX) over both */
 		static const int sizes[4] = { 12, 18, 14, 12 };
+		static const int csize[8] = LF_SIZE_PX;
 		int bold = b || h, slant = (face & LF_ITALIC) != 0;
+		int px = face & LF_SMASK ? csize[(face & LF_SMASK) >> 5] : sizes[h];
 		const char *fam = (face & LF_MONO) ? "courier" : "helvetica";
 
 		face_tried[b][k] = 1;
-		f = find_font(fam, bold, slant, sizes[h]);
+		f = find_font(fam, bold, slant, px);
 		if (f == NULL && slant)
-			f = find_font(fam, bold, 0, sizes[h]);
+			f = find_font(fam, bold, 0, px);
 		if (f == NULL && !(face & LF_MONO))
-			f = find_font("lucida", bold, slant, sizes[h]);
+			f = find_font("lucida", bold, slant, px);
 		faces[b][k] = f;
 	}
 	if (faces[b][k] == NULL)

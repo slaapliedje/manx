@@ -56,6 +56,14 @@ enum { CSS_FS_ITALIC = 1, CSS_FS_NORMAL };	/* font-style */
 enum { CSS_TD_UNDER = 1, CSS_TD_NONE };		/* text-decoration */
 enum { CSS_TA_LEFT = 1, CSS_TA_CENTER, CSS_TA_RIGHT };	/* text-align */
 
+/* a length: px, em (a font size: the parent's), % (of what it's of) */
+enum { CSS_U_NONE, CSS_U_PX, CSS_U_EM, CSS_U_PCT, CSS_U_AUTO };
+
+struct css_len {
+	short v;			/* tenths of the unit */
+	unsigned char u;		/* CSS_U_* */
+};
+
 #define CSS_RGB_SET	0x1000000UL	/* fg: this colour, 0xRRGGBB below */
 #define CSS_RGB_DEFAULT	0x2000000UL	/* fg: back to the screen's own */
 
@@ -64,6 +72,8 @@ struct css_text {
 	unsigned char weight, style, deco, align;
 	unsigned long bg;		/* background (style="" only): 0, or
 					 * CSS_RGB_SET | 0xRRGGBB */
+	struct css_len fsize;		/* font-size (u CSS_U_NONE: not said);
+					 * keywords as px, rem as 16px */
 };
 
 /* Does a media query list (<source media="">) hold on a screen vw units
@@ -100,13 +110,6 @@ int css_inline_list(const char *style);
  * rules about boxes take no memory and no time).
  */
 extern int css_boxes;
-
-enum { CSS_U_NONE, CSS_U_PX, CSS_U_EM, CSS_U_PCT, CSS_U_AUTO };
-
-struct css_len {
-	short v;			/* tenths of the unit */
-	unsigned char u;		/* CSS_U_* */
-};
 
 /* which of struct css_box's fields were said */
 #define CSS_B_BG	0x000001UL

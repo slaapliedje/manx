@@ -130,6 +130,9 @@ struct page {
 	unsigned long *palette;		/* the spans' colours, 0xRRGGBB */
 	int npalette;			/* (LAYOUT_MAX_COLORS at most) */
 	size_t byte_cap;		/* all of the above together */
+	int need_w;			/* (with metrics) as wide as its lines
+					 * need, boxes' right sides (padding,
+					 * border, margin) beside them included */
 	unsigned long page_bg;		/* the page's background (the root's or
 					 * the body's), LBOX_NONE: the screen's */
 	long main_line;			/* where <main> begins, or -1 */

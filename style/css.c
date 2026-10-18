@@ -55,6 +55,7 @@ struct tdecl {
 	unsigned char fg;		/* palette index, FG_VAR or FG_DEFAULT */
 	unsigned char ffb;		/* FG_VAR: the fallback's (0: none) */
 	unsigned char fw, fs, td, ta;	/* CSS_FW_*, CSS_FS_*, CSS_TD_*, CSS_TA_* */
+	unsigned char fz;		/* font-size: s->fsz[fz - 1]; 0: none */
 	unsigned char imp;		/* !important: T_FG, T_FW... bits */
 };
 
@@ -63,6 +64,8 @@ struct tdecl {
 #define T_FS	4
 #define T_TD	8
 #define T_TA	16
+#define T_FZ	32
+#define FSZ_MAX	255			/* distinct font sizes in a sheet */
 
 struct rule {
 	unsigned long spec;		/* ids << 16 | classes << 8 | types */
@@ -118,6 +121,8 @@ struct css_sheet {
 	unsigned long pal[PAL_MAX];	/* the colours: index i is pal[i - 1] */
 	int npal;
 	short pslot[NPSLOT];		/* colour -> index, 0: empty */
+	struct css_len fsz[FSZ_MAX];	/* the font sizes rules say */
+	int nfsz;
 	struct cvar *vars;		/* NVSLOT of them, once there is one */
 	int nvars;
 	struct cmp *cmps;
@@ -1237,6 +1242,102 @@ static int weight(const char *v, size_t vn)
 	return n >= 600 ? CSS_FW_BOLD : CSS_FW_NORMAL;
 }
 
+/* a font-size value (a length, a % or a keyword) into *l: 1, or 0 */
+static int font_size(const char *v, size_t vn, struct css_len *l)
+{
+	static const struct {
+		const char *k;
+		short px;
+	} kw[] = { { "xx-small", 9 }, { "x-small", 10 }, { "small", 13 },
+		{ "medium", 16 }, { "large", 18 }, { "x-large", 24 },
+		{ "xx-large", 32 }, { "xxx-large", 48 } };
+	const char *e = v + vn, *q;
+	long t;
+	int pct;
+	size_t i;
+
+	for (i = 0; i < sizeof kw / sizeof kw[0]; i++)
+		if (vn == strlen(kw[i].k) && starts(v, vn, kw[i].k)) {
+			l->v = (short)(kw[i].px * 10);
+			l->u = CSS_U_PX;
+			return 1;
+		}
+	if (vn == 7 && starts(v, vn, "smaller")) {
+		l->v = 8;		/* 0.8em */
+		l->u = CSS_U_EM;
+		return 1;
+	}
+	if (vn == 6 && starts(v, vn, "larger")) {
+		l->v = 12;
+		l->u = CSS_U_EM;
+		return 1;
+	}
+	if ((q = number(v, e, &t, &pct)) == NULL || t <= 0)
+		return 0;
+	while (q > v && ((q[-1] | 32) >= 'a' && (q[-1] | 32) <= 'z'))
+		q--;
+	t /= 100;			/* tenths */
+	if (pct) {
+		l->u = CSS_U_EM;
+		t /= 100;		/* (120% is 1.2em) */
+		if (t == 0)
+			return 0;
+	} else if (starts(q, (size_t)(e - q), "px"))
+		l->u = CSS_U_PX;
+	else if (starts(q, (size_t)(e - q), "pt")) {
+		l->u = CSS_U_PX;
+		t = t * 4 / 3;
+	} else if (starts(q, (size_t)(e - q), "rem")) {
+		l->u = CSS_U_PX;
+		t *= 16;
+	} else if (starts(q, (size_t)(e - q), "em"))
+		l->u = CSS_U_EM;
+	else if (starts(q, (size_t)(e - q), "ex")) {
+		l->u = CSS_U_EM;
+		t /= 2;
+	} else
+		return 0;
+	l->v = (short)clamp(t, 1, 32000);
+	return 1;
+}
+
+/* the font shorthand's size: the word with one ("bold 1.2em/1.5 x") */
+static int font_short_size(const char *v, size_t vn, struct css_len *l)
+{
+	size_t i = 0;
+
+	while (i < vn) {
+		size_t j, k;
+
+		while (i < vn && is_space((unsigned char)v[i]))
+			i++;
+		for (j = i; j < vn && !is_space((unsigned char)v[j]) && v[j] != ','; j++)
+			;
+		for (k = i; k < j && v[k] != '/'; k++)
+			;
+		if (k > i && font_size(v + i, k - i, l))
+			return 1;
+		if (j < vn && v[j] == ',')
+			return 0;	/* (the families: no size after) */
+		i = j + 1;
+	}
+	return 0;
+}
+
+/* a font size's index in the sheet's table (0: no room) */
+static int fsz_index(struct css_sheet *s, const struct css_len *l)
+{
+	int i;
+
+	for (i = 0; i < s->nfsz; i++)
+		if (s->fsz[i].v == l->v && s->fsz[i].u == l->u)
+			return i + 1;
+	if (s->nfsz == FSZ_MAX)
+		return 0;
+	s->fsz[s->nfsz++] = *l;
+	return s->nfsz;
+}
+
 /*
  * One declaration about the look of text, name p (pn bytes), value v (vn
  * bytes, !important cut, imp says if it was there), into *t: 1 if it was
@@ -1270,10 +1371,18 @@ static int text_decl(struct css_sheet *s, const char *p, size_t pn,
 		else
 			return 0;
 		bit = T_FS;
+	} else if (pn == 9 && starts(p, pn, "font-size")) {
+		struct css_len l;
+
+		if (s == NULL || !font_size(v, vn, &l) || (k = fsz_index(s, &l)) == 0)
+			return 0;
+		t->fz = (unsigned char)k;
+		bit = T_FZ;
 	} else if (pn == 4 && starts(p, pn, "font")) {
 		/* the shorthand: what it doesn't say is normal */
 		size_t i;
 		int b = 0;
+		struct css_len l;
 
 		if (starts(v, vn, "inherit") || starts(v, vn, "unset")
 			|| starts(v, vn, "var(") || starts(v, vn, "revert"))
@@ -1289,6 +1398,11 @@ static int text_decl(struct css_sheet *s, const char *p, size_t pn,
 			CSS_FS_ITALIC : CSS_FS_NORMAL);
 		if (imp)
 			t->imp |= T_FW | T_FS;
+		if (s && font_short_size(v, vn, &l) && (k = fsz_index(s, &l)) != 0) {
+			t->fz = (unsigned char)k;
+			if (imp)
+				t->imp |= T_FZ;
+		}
 		return 1;
 	} else if ((pn == 15 && starts(p, pn, "text-decoration"))
 		|| (pn == 20 && starts(p, pn, "text-decoration-line"))) {
@@ -1822,7 +1936,7 @@ static void end_rule(struct css_sheet *s)
 		}
 	}
 	if (!disp && !vis && !ls && !t.fg && !t.fw && !t.fs && !t.td && !t.ta
-		&& box < 0)
+		&& !t.fz && box < 0)
 		return;
 	if (!disp && !vis && !ls && box < 0 && s->ntext >= MAX_TEXT_RULES)
 		return;
@@ -2239,7 +2353,7 @@ static int beats(int imp_a, const struct rule *a, int imp_b, const struct rule *
 
 /* the rule that wins each property for an element */
 struct winners {
-	const struct rule *disp, *vis, *ls, *fg, *fw, *fs, *td, *ta;
+	const struct rule *disp, *vis, *ls, *fg, *fw, *fs, *td, *ta, *fz;
 	const struct rule *box[CSS_B_NBITS];	/* each box property's */
 	int boxed;			/* some rule said something of the box */
 };
@@ -2275,6 +2389,8 @@ static void try_bucket(const struct css_sheet *s, unsigned b, const struct doc *
 			w->td = r;
 		if (r->t.ta && TBEATS(r, w->ta, T_TA))
 			w->ta = r;
+		if (r->t.fz && TBEATS(r, w->fz, T_FZ))
+			w->fz = r;
 		if (r->box >= 0) {
 			const struct bdecl *bd = &s->boxes[r->box];
 			int k;
@@ -2323,6 +2439,7 @@ static int set_path(struct css_sheet *s, const struct doc *d, nodeid node)
 #define M_TA(m)		((int)((m) >> 10 & 3))
 #define M_FG(m)		((int)((m) >> 16 & 255))	/* palette index, FG_DEFAULT */
 #define M_BOXED		0x1000UL	/* rules about its box hold */
+#define M_FZ(m)		((int)((m) >> 24 & 255))	/* font size: fsz[k - 1] */
 
 /* a memo as the caller wants it */
 static int memo_out(const struct css_sheet *s, unsigned long m, struct css_text *t)
@@ -2336,6 +2453,8 @@ static int memo_out(const struct css_sheet *s, unsigned long m, struct css_text 
 		t->align = (unsigned char)M_TA(m);
 		t->fg = fg == FG_DEFAULT ? CSS_RGB_DEFAULT
 			: fg ? CSS_RGB_SET | s->pal[fg - 1] : 0;
+		if (M_FZ(m))
+			t->fsize = s->fsz[M_FZ(m) - 1];
 	}
 	return M_DISP(m);
 }
@@ -2429,7 +2548,8 @@ int css_style(struct css_sheet *s, const struct doc *d, nodeid node,
 		| (unsigned long)(w.td ? w.td->t.td : 0) << 8
 		| (unsigned long)(w.ta ? w.ta->t.ta : 0) << 10
 		| (unsigned long)(w.boxed ? M_BOXED : 0)
-		| (unsigned long)fg << 16;
+		| (unsigned long)fg << 16
+		| (unsigned long)(w.fz ? w.fz->t.fz : 0) << 24;
 	if (s->memo && node < s->memo_n)
 		s->memo[node] = m;
 	/* its children's turn next: it is their parent */
@@ -2658,8 +2778,19 @@ void css_inline_text(struct css_sheet *s, const char *style, struct css_text *t)
 
 				if (bg_color(v, vn, &rgb))
 					t->bg = CSS_RGB_SET | rgb;
-			} else if (text_decl(s, p, pn, v, vn, imp, &td)) {
+			} else if (pn == 9 && starts(p, pn, "font-size")) {
+				struct css_len l;
+
+				if (font_size(v, vn, &l))
+					t->fsize = l;
+			} else if (text_decl(NULL, p, pn, v, vn, imp, &td)) {
 				/* (s is only looked at for a colour) */
+				if (pn == 4 && starts(p, pn, "font")) {
+					struct css_len l;
+
+					if (font_short_size(v, vn, &l))
+						t->fsize = l;
+				}
 				if (td.fw)
 					t->weight = td.fw;
 				if (td.fs)

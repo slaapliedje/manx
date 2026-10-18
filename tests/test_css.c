@@ -248,6 +248,41 @@ static void box(const char *name, const char *css, const char *body, int tag,
 	doc_free(&d);
 }
 
+/* the font size the sheet (and style="") give the first <tag> */
+static void fsize(const char *name, const char *css, const char *body, int tag,
+	const char *want)
+{
+	static struct html_load l;
+	char page[2048], got[64];
+	struct doc d;
+	struct css_text t;
+	unsigned long id;
+
+	snprintf(page, sizeof page, "<html><head><style>%s</style></head><body>%s</body></html>",
+		css, body);
+	doc_init(&d, 0);
+	html_load_begin(&l, &d, "utf-8", 0);
+	html_load_feed(&l, (const unsigned char *)page, strlen(page));
+	html_load_end(&l);
+	memset(&t, 0, sizeof t);
+	for (id = 2; id < d.nnodes; id++)
+		if (d.nodes[id].type == NODE_ELEM && d.nodes[id].tag == tag)
+			break;
+	if (id < d.nnodes) {
+		css_style(d.sheet, &d, (nodeid)id, doc_attr(&d, (nodeid)id, ATTR_ID),
+			doc_attr(&d, (nodeid)id, ATTR_CLASS), 320, &t);
+		if (doc_attr(&d, (nodeid)id, ATTR_STYLE))
+			css_inline_text(d.sheet, doc_attr(&d, (nodeid)id, ATTR_STYLE), &t);
+	}
+	sprintf(got, "%d.%d%c", t.fsize.v / 10, t.fsize.v % 10, "-pe%a"[t.fsize.u]);
+	runs++;
+	if (strcmp(got, want) != 0) {
+		fails++;
+		printf("FAIL %s\n  want %s\n  got  %s\n", name, want, got);
+	}
+	doc_free(&d);
+}
+
 int main(void)
 {
 	/* the look of text */
@@ -417,6 +452,19 @@ int main(void)
 	box("display and auto", "p{display:block;margin:0 auto;width:auto}", "<p>x", TAG_P,
 		"m0=0.0p m1=0.0a m2=0.0p m3=0.0a w=0.0a di=1 ");
 	box("nothing", "p{color:red}", "<p>x", TAG_P, "");
+	/* font sizes */
+	fsize("px", "p{font-size:14px}", "<p>x", TAG_P, "14.0p");
+	fsize("pt", "p{font-size:10pt}", "<p>x", TAG_P, "13.3p");
+	fsize("em", "p{font-size:1.5em}", "<p>x", TAG_P, "1.5e");
+	fsize("percent", "p{font-size:120%}", "<p>x", TAG_P, "1.2e");
+	fsize("keyword", "p{font-size:x-large}", "<p>x", TAG_P, "24.0p");
+	fsize("rem", "p{font-size:2rem}", "<p>x", TAG_P, "32.0p");
+	fsize("shorthand", "html{font:10px/1 Verdana, sans-serif}", "<p>x", TAG_HTML, "10.0p");
+	fsize("shorthand bold", "p{font:bold 1.2em Georgia}", "<p>x", TAG_P, "1.2e");
+	fsize("shorthand no size", "p{font:inherit}", "<p>x", TAG_P, "0.0-");
+	fsize("inline beats", "p{font-size:10px}", "<p style='font-size:20px'>x", TAG_P, "20.0p");
+	fsize("cascade", "p{font-size:10px} .a{font-size:30px}", "<p class=a>x", TAG_P, "30.0p");
+	fsize("not a size", "p{font-size:big}", "<p>x", TAG_P, "0.0-");
 	printf("css: %d/%d passed\n", runs - fails, runs);
 	return fails ? 1 : 0;
 }
