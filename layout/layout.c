@@ -38,6 +38,7 @@ struct saved {
 	/* a CSS box (with metrics): its reserved lboxes (index + 1; 0: not
 	 * a box), its first line, the width it narrowed, what's owed below */
 	unsigned long box;
+	unsigned char boxk;		/* 0: no box; 1: one drawn; 2: margins only */
 	unsigned long box_line;
 	int box_width;
 	int box_in_b, box_m_b;		/* border and padding, margin (-1: the
@@ -123,6 +124,15 @@ struct lay {
 	unsigned long fl_box;		/* its boxes: p->boxes[fl_box...] */
 	long fl_top;			/* its content's top, below its own */
 	int html_bg;			/* the root had a background */
+	struct saved *top_pend[8];	/* boxes open with nothing above their
+					 * content (no border, no padding) and
+					 * nothing in them yet: a margin next
+					 * moves their top down (it collapses
+					 * through) */
+	int ntop_pend;
+	long gap;			/* (with metrics) the margins' height just
+					 * above: blank lines and margin spacers
+					 * since the last line of anything else */
 	struct saved st[MAX_DEPTH];	/* (last: written before read, never
 					 * cleared) */
 };
@@ -360,6 +370,12 @@ static void push_line(struct lay *L, unsigned long off, unsigned long len,
 				p->max_over = (int)o;
 		}
 		L->fl_over = 0;
+		/* (margins next to each other collapse: see margin()) */
+		if (content) {
+			L->gap = 0;
+			L->ntop_pend = 0;
+		} else
+			L->gap += h;
 	}
 	ln = &p->lines[p->nlines++];
 	ln->off = off;
@@ -423,12 +439,95 @@ static void end_line(struct lay *L)
 static int fl_place(struct lay *L, int *ind);
 static void go_to(struct lay *L, int x);
 
+/* a spacer line h units high (with metrics) */
+static void push_spacer(struct lay *L, long h)
+{
+	struct page *p = L->p;
+
+	push_line(L, p->text_len, 0, 0, cur_span(L), 0);
+	if (p->heights && p->nlines) {
+		p->heights[p->nlines - 1].height = (unsigned short)(h > 0xFFFF ? 0xFFFF : h);
+		p->heights[p->nlines - 1].ascent = 0;
+	}
+}
+
+/*
+ * The blank lines owed (never at the top). With metrics they collapse
+ * with the margin just above, as CSS's margins do: only as much as they
+ * add to it.
+ */
+static void blank_lines(struct lay *L)
+{
+	if (L->p->nlines == 0 || L->blank_run >= L->pend_lines)
+		return;
+	if (L->m && L->gap > 0) {
+		int a;
+		long want = (long)L->pend_lines * L->m->height(L->m->ctx, 0, 0, &a);
+		long gap = L->gap;
+
+		if (want > gap) {
+			push_spacer(L, want - gap);
+			L->gap = want;
+		}
+		L->blank_run = L->pend_lines;
+		return;
+	}
+	while (L->blank_run < L->pend_lines) {
+		push_line(L, L->p->text_len, 0, 0, cur_span(L), 0);
+		L->blank_run++;
+	}
+}
+
+/* the boxes waiting for their content: their top is below this line */
+static void move_tops(struct lay *L)
+{
+	struct page *p = L->p;
+	int i, k;
+
+	for (i = 0; i < L->ntop_pend; i++) {
+		struct saved *sv = L->top_pend[i];
+
+		sv->box_line = p->nlines;
+		for (k = 0; k < 5 && sv->box && sv->box - 1 + k < p->nboxes; k++)
+			p->boxes[sv->box - 1 + k].line = p->nlines;
+	}
+}
+
+/* a margin h units high: as CSS's, collapsing with those next to it (and
+ * the blank lines owed) - the gap is the tallest of them, not their sum */
+static void margin(struct lay *L, long h)
+{
+	long want, gap;
+
+	if (L->m == NULL)
+		return;
+	end_line(L);
+	want = h > 0 ? h : 0;
+	if (L->p->nlines && L->pend_lines > L->blank_run) {
+		int a;
+		long b = (long)(L->pend_lines - L->blank_run)
+			* L->m->height(L->m->ctx, 0, 0, &a) + L->gap;
+
+		if (b > want)
+			want = b;
+	}
+	L->pend_lines = 0;
+	gap = L->gap;
+	if (want > gap) {
+		push_spacer(L, want - gap);
+		L->gap = want;
+		move_tops(L);
+	}
+}
+
 static void open_line(struct lay *L)
 {
 	int ind = L->indent;
 
 	/* the blank lines a block's margin asked for (never at the top);
 	 * beside a float, each with its line */
+	if (L->p->nlines && !L->fl)
+		blank_lines(L);
 	if (L->p->nlines) {
 		while (L->blank_run < L->pend_lines) {
 			if (L->fl) {
@@ -1441,11 +1540,7 @@ static int box_shows(const struct css_box *b)
 static void flush_blank(struct lay *L)
 {
 	end_line(L);
-	if (L->p->nlines)
-		while (L->blank_run < L->pend_lines) {
-			push_line(L, L->p->text_len, 0, 0, cur_span(L), 0);
-			L->blank_run++;
-		}
+	blank_lines(L);
 	L->pend_lines = 0;
 }
 
@@ -1455,11 +1550,10 @@ static void vspace(struct lay *L, int h)
 	if (h <= 0 || L->m == NULL)
 		return;
 	flush_blank(L);
-	push_line(L, L->p->text_len, 0, 0, cur_span(L), 0);
-	if (L->p->heights && L->p->nlines) {
-		L->p->heights[L->p->nlines - 1].height = (unsigned short)(h > 0xFFFF ? 0xFFFF : h);
-		L->p->heights[L->p->nlines - 1].ascent = 0;
-	}
+	push_spacer(L, h);
+	L->gap = 0;			/* (a border, padding: margins don't
+					 * collapse through it) */
+	L->ntop_pend = 0;
 }
 
 /* how tall lines from..nlines are, in units */
@@ -1478,25 +1572,50 @@ static long lines_h(const struct lay *L, unsigned long from)
 /* a block with a CSS box starts: its margin above, its box (reserved now,
  * filled at the end: drawn before what's in it), its border and padding;
  * the lines inside go in by its left side, no wider than it */
-static void box_open(struct lay *L, struct saved *sv, const struct css_box *b)
+static void box_open(struct lay *L, struct saved *sv, const struct css_box *b,
+	int draw)
 {
 	struct page *p = L->p;
 	int m[4], bw[4], pd[4], of = L->width - L->indent, x, w, i;
 	unsigned long first;
 
 	box_sides(L, b, of, m, bw, pd);
+	for (i = 0; i < 4; i++)
+		if (m[i] < 0)
+			m[i] = 0;	/* (negative margins: not here) */
 	if (b->set & CSS_B_M(0))
-		vspace(L, m[0]);
+		margin(L, m[0]);
 	flush_blank(L);
 	x = L->indent + m[3];
-	if ((b->set & CSS_B_W) && b->w.u != CSS_U_AUTO)
+	if ((b->set & CSS_B_W) && b->w.u != CSS_U_AUTO) {
 		w = box_units(L, b->w, of) + pd[1] + pd[3] + bw[1] + bw[3];
-	else
+		/* margin: auto either side: in the middle */
+		if ((b->set & CSS_B_M(1)) && (b->set & CSS_B_M(3))
+			&& b->m[1].u == CSS_U_AUTO && b->m[3].u == CSS_U_AUTO && w < of)
+			x = L->indent + (of - w) / 2;
+	} else
 		w = L->width - x - m[1];
 	if (w > L->width - x)
 		w = L->width - x;
 	if (w < 1)
 		w = 1;
+	sv->boxk = draw ? 1 : 2;
+	sv->box = 0;
+	sv->box_width = L->width;
+	sv->box_cut = L->fl_cut;
+	sv->box_m_b = b->set & CSS_B_M(2) ? m[2] : -1;
+	if (!draw) {
+		/* margins only: the lines go in by them */
+		sv->box_line = p->nlines;
+		sv->box_in_b = 0;
+		sv->box_minh = 0;
+		L->indent = x;
+		L->width = x + w;
+		if (L->width < L->indent + L->em)
+			L->width = L->indent + L->em;
+		L->in_box++;
+		return;
+	}
 	/* the background, then each side's border: filled in at the end */
 	first = p->nboxes;
 	if (GROW(L, boxes, boxes_cap, p->nboxes + 5, 16) < 0)
@@ -1529,14 +1648,13 @@ static void box_open(struct lay *L, struct saved *sv, const struct css_box *b)
 	}
 	sv->box = first + 1;
 	sv->box_line = p->nlines;
-	sv->box_width = L->width;
-	sv->box_cut = L->fl_cut;
 	sv->box_in_b = bw[2] + pd[2];
-	sv->box_m_b = b->set & CSS_B_M(2) ? m[2] : -1;
 	sv->box_minh = (b->set & CSS_B_H) && b->h.u != CSS_U_AUTO
 		? box_units(L, b->h, 0) : 0;
 	vspace(L, bw[0] + pd[0]);
 	sv->box_minh += bw[0] + pd[0];
+	if (bw[0] + pd[0] == 0 && L->ntop_pend < 8)
+		L->top_pend[L->ntop_pend++] = sv;
 	L->indent = x + bw[3] + pd[3];
 	L->width = x + w - bw[1] - pd[1];
 	if (L->width < L->indent + L->em)
@@ -1554,12 +1672,33 @@ static void box_close(struct lay *L, const struct saved *sv)
 
 	if (L->fl && L->fl_level >= L->in_box)
 		float_flush(L);		/* (a float in it stays in it) */
+	if (sv->boxk == 2) {
+		end_line(L);
+		L->width = sv->box_width + sv->box_cut - L->fl_cut;
+		L->in_box--;
+		if (sv->box_m_b >= 0)
+			margin(L, sv->box_m_b);
+		return;
+	}
+	for (i = 0; i < L->ntop_pend; i++)
+		if (L->top_pend[i] == sv) {
+			L->ntop_pend = i;	/* (it and those inside it) */
+			break;
+		}
 	flush_blank(L);
 	h = lines_h(L, sv->box_line);
-	if (h < sv->box_minh)
+	/* (margins at its end, no border or padding below them: they
+	 * collapse through its bottom, outside it) */
+	if (sv->box_in_b == 0 && L->gap > 0 && L->gap <= h)
+		h -= L->gap;
+	if (h < sv->box_minh) {
 		vspace(L, (int)(sv->box_minh - h));
-	vspace(L, sv->box_in_b);
-	h = lines_h(L, sv->box_line);
+		h = sv->box_minh;
+	}
+	if (sv->box_in_b) {
+		vspace(L, sv->box_in_b);
+		h = lines_h(L, sv->box_line);
+	}
 	lb = &p->boxes[sv->box - 1];
 	lb->h = h;
 	for (i = 0; i < 4; i++) {
@@ -1576,7 +1715,7 @@ static void box_close(struct lay *L, const struct saved *sv)
 	L->width = sv->box_width + sv->box_cut - L->fl_cut;
 	L->in_box--;
 	if (sv->box_m_b >= 0)
-		vspace(L, sv->box_m_b);
+		margin(L, sv->box_m_b);
 }
 
 /* enter element id at depth: 1 when its children are to be laid out */
@@ -1630,6 +1769,11 @@ static int enter(struct lay *L, nodeid id, int depth)
 				: bx.disp == CSS_DI_LIST_ITEM ? D_LIST_ITEM : D_INLINE;
 		boxed = (s.display == D_BLOCK || s.display == D_LIST_ITEM)
 			&& !L->cell && !L->pre && box_shows(&bx);
+		/* a block that only has margins: they say where it is */
+		if (!boxed && (s.display == D_BLOCK || s.display == D_LIST_ITEM)
+			&& !L->cell && !L->pre && tag != TAG_BODY
+			&& (bx.set & (CSS_B_M(0) | CSS_B_M(1) | CSS_B_M(2) | CSS_B_M(3))))
+			boxed = 2;
 		if ((bx.set & CSS_B_CLEAR) && bx.clr != CSS_CL_NONE)
 			float_flush(L);
 		/* (its margins say where it is: no blank lines of its own) */
@@ -1744,6 +1888,7 @@ static int enter(struct lay *L, nodeid id, int depth)
 	sv->fg = (unsigned char)L->fg;
 	sv->align = (unsigned char)L->align;
 	sv->box = 0;
+	sv->boxk = 0;
 	/* list-style: inherited, the element's own style="" last */
 	if (ea.style && css_inline_list(ea.style))
 		cssf = (cssf & ~(CSS_NO_MARKER | CSS_MARKER)) | css_inline_list(ea.style);
@@ -1786,7 +1931,7 @@ static int enter(struct lay *L, nodeid id, int depth)
 	if (s.display == D_BLOCK && tag == TAG_TABLE)
 		L->cell = 0;		/* a table in a cell: its own rows */
 	if (boxed)
-		box_open(L, sv, &bx);
+		box_open(L, sv, &bx, boxed == 1);
 	/* (after the break: where the element's content will start) */
 	if (ea.id || (tag == TAG_A && ea.name))
 		add_anchor(L, id);
@@ -1906,7 +2051,7 @@ static void leave(struct lay *L, nodeid id, int depth)
 		L->cell_break = 0;
 	if (sv->list && L->nlists)
 		L->nlists--;
-	if (sv->box)
+	if (sv->boxk)
 		box_close(L, sv);
 	switch (s.display) {
 	case D_BLOCK:
