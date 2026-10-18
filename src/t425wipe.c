@@ -12,6 +12,7 @@
  */
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include "os.h"
@@ -48,8 +49,29 @@ int main(int argc, char **argv)
 	rc = only_own ? tpwipe(fd, own, 2) : tpwipe(fd, all, 3);
 	close(fd);
 	if (rc < 0) {
-		fprintf(stderr, "t425wipe: %s: the T425 didn't answer, or its "
-			"memory didn't come back zeroed\n", dev);
+		fprintf(stderr, "t425wipe: %s: ", dev);
+		switch (tpw_fail) {
+		case TPW_F_RESET:
+			fprintf(stderr, "the link's reset failed: %s\n", strerror(errno));
+			break;
+		case TPW_F_LOAD:
+			fprintf(stderr, "the T425 took nothing over the link: "
+				"not there, or not out of reset yet\n");
+			break;
+		case TPW_F_SILENT:
+			fprintf(stderr, "no answer for %08lx-%08lx: the transputer "
+				"there stopped (a T425 with 5 MB?)\n",
+				tpw_fail_start, tpw_fail_end);
+			break;
+		case TPW_F_DIRTY:
+			fprintf(stderr, "%08lx-%08lx read back nonzero (OR %08lx) "
+				"after zeroing: that memory isn't working\n",
+				tpw_fail_start, tpw_fail_end, tpw_fail_or);
+			break;
+		default:
+			fprintf(stderr, "bad range %08lx-%08lx\n",
+				tpw_fail_start, tpw_fail_end);
+		}
 		return 1;
 	}
 	printf("t425wipe: the T425's memory zeroed (%s), %lu ms\n",

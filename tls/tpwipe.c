@@ -126,36 +126,51 @@ static void le32(unsigned char *b, unsigned long v)
 	b[3] = (unsigned char)(v >> 24 & 0xff);
 }
 
+int tpw_fail;
+unsigned long tpw_fail_start, tpw_fail_end, tpw_fail_or;
+
 int tpwipe(int fd, const unsigned long (*ranges)[2], int n)
 {
 	unsigned char b[8];
 	int i, bad = 0;
 
-	if (ioctl(fd, TLK_RESET, 0) < 0)
+	tpw_fail = 0;
+	tpw_fail_start = tpw_fail_end = tpw_fail_or = 0;
+	if (ioctl(fd, TLK_RESET, 0) < 0) {
+		tpw_fail = TPW_F_RESET;
 		return -1;
+	}
 	ioctl(fd, TLK_TIMEOUT, 2000);
 	b[0] = sizeof wiper;
 	if (xfer(fd, b, 1, 1) < 0 || xfer(fd, (unsigned char *)wiper, sizeof wiper, 1) < 0)
-		bad = 1;
+		bad = TPW_F_LOAD;
 	for (i = 0; i < n && !bad; i++) {
 		unsigned long s = ranges[i][0], e = ranges[i][1];
 
+		tpw_fail_start = s;
+		tpw_fail_end = e;
 		if (s < TPW_CHIP_FREE || e <= s || (s | e) & 31) {
-			bad = 1;
+			bad = TPW_F_RANGE;
 			break;
 		}
 		le32(b, s);
 		le32(b + 4, e);
 		ioctl(fd, TLK_TIMEOUT, 2000);
 		if (xfer(fd, b, 8, 1) < 0) {
-			bad = 1;
+			bad = TPW_F_SILENT;
 			break;
 		}
 		/* about 0.1 s a megabyte; 10 s a megabyte means it's gone */
 		ioctl(fd, TLK_TIMEOUT, (int)(2000 + (e - s) / 100));
-		if (xfer(fd, b, 4, 0) < 0 || (b[0] | b[1] | b[2] | b[3]))
-			bad = 1;
+		if (xfer(fd, b, 4, 0) < 0)
+			bad = TPW_F_SILENT;
+		else if (b[0] | b[1] | b[2] | b[3]) {
+			tpw_fail_or = (unsigned long)b[0] | (unsigned long)b[1] << 8 |
+				(unsigned long)b[2] << 16 | (unsigned long)b[3] << 24;
+			bad = TPW_F_DIRTY;
+		}
 	}
 	ioctl(fd, TLK_RESET, 0);
+	tpw_fail = bad;
 	return bad ? -1 : 0;
 }

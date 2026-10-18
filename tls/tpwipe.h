@@ -29,4 +29,14 @@
  */
 int tpwipe(int fd, const unsigned long (*ranges)[2], int n);
 
+/* why the last tpwipe failed, for a message: which step, and the range
+ * and the OR of its words that came back when a range didn't clear */
+#define TPW_F_RESET	1	/* the link's reset ioctl failed (errno) */
+#define TPW_F_LOAD	2	/* the wiper didn't go in: the link took nothing */
+#define TPW_F_RANGE	3	/* a range given isn't a 32-byte multiple past the wiper */
+#define TPW_F_SILENT	4	/* a range was sent and no OR came back in time */
+#define TPW_F_DIRTY	5	/* a range came back with a nonzero OR */
+extern int tpw_fail;
+extern unsigned long tpw_fail_start, tpw_fail_end, tpw_fail_or;
+
 #endif /* MANX_TPWIPE_H */
