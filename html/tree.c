@@ -111,6 +111,56 @@ static void close_p(struct tree *b)
 	close_to(b, in_scope(b, TAG_P, TF_SCOPE, button));
 }
 
+/* --- tables --------------------------------------------------------- */
+
+/* where rows and cells go: what's not a cell's content is fostered */
+static int table_ctx(int tag)
+{
+	return tag == TAG_TABLE || tag == TAG_TBODY || tag == TAG_THEAD
+		|| tag == TAG_TFOOT || tag == TAG_TR;
+}
+
+static int table_part(int tag)
+{
+	return tag == TAG_CAPTION || tag == TAG_COLGROUP || tag == TAG_COL
+		|| tag == TAG_TBODY || tag == TAG_THEAD || tag == TAG_TFOOT
+		|| tag == TAG_TR || tag == TAG_TD || tag == TAG_TH;
+}
+
+/* a part of the table: what was fostered out of it and is still open
+ * closes (unless this is in a cell or caption: their rules then) */
+static void clear_to_table(struct tree *b)
+{
+	int i;
+
+	for (i = b->depth - 1; i >= 1; i--) {
+		int t = b->stag[i];
+
+		if (t == TAG_TD || t == TAG_TH || t == TAG_CAPTION
+			|| t == TAG_BODY || t == TAG_HTML)
+			return;
+		if (table_ctx(t)) {
+			close_to(b, i + 1);
+			return;
+		}
+	}
+}
+
+/* foster parenting: content in a table but in no cell goes just before
+ * the table (returned in *before), in the table's parent */
+static nodeid foster_parent(struct tree *b, nodeid *before)
+{
+	int i;
+
+	for (i = b->depth - 1; i >= 2; i--)
+		if (b->stag[i] == TAG_TABLE) {
+			*before = b->stack[i];
+			return b->stack[i - 1];
+		}
+	*before = 0;
+	return current(b);
+}
+
 /* --- structure ------------------------------------------------------- */
 
 static nodeid add_elem(struct tree *b, nodeid parent, int tag,
@@ -126,6 +176,14 @@ static nodeid add_elem(struct tree *b, nodeid parent, int tag,
 			doc_attr_add(b->d, t->attr[i], t->value[i]);
 	doc_attr_end(b->d);
 	return id;
+}
+
+static void push_new(struct tree *b, int tag)
+{
+	nodeid id = add_elem(b, current(b), tag, NULL);
+
+	if (id)
+		push(b, id, tag);
 }
 
 static void ensure_html(struct tree *b)
@@ -344,6 +402,16 @@ static void start_tag(struct tree *b, const struct tok_tag *t)
 	if (ends_frameset_ok(t))
 		b->no_frameset = 1;
 
+	/* tables: their parts in order, a table in a table's rows ends it */
+	if (table_part(tag) && b->nopen[TAG_TABLE])
+		clear_to_table(b);
+	if (tag == TAG_TABLE && table_ctx(cur_tag(b)))
+		close_to(b, in_scope(b, TAG_TABLE, 0, NULL));
+	if ((tag == TAG_CAPTION || tag == TAG_COLGROUP) && table_ctx(cur_tag(b)))
+		close_to(b, in_scope(b, TAG_TABLE, 0, NULL) + 1);
+	if (tag == TAG_COL && cur_tag(b) == TAG_TABLE)
+		push_new(b, TAG_COLGROUP);
+
 	/* implied end tags */
 	if (f & TF_BLOCK)
 		close_p(b);
@@ -397,6 +465,8 @@ static void start_tag(struct tree *b, const struct tok_tag *t)
 
 		if (tr >= 1)
 			close_to(b, tr);
+		if (cur_tag(b) == TAG_TABLE)
+			push_new(b, TAG_TBODY);
 		break;
 	}
 	case TAG_TD:
@@ -405,13 +475,12 @@ static void start_tag(struct tree *b, const struct tok_tag *t)
 		int c1 = in_scope(b, TAG_TD, 0, row), c2 = in_scope(b, TAG_TH, 0, row);
 
 		close_to(b, c1 > c2 ? c1 : c2);
-		/* a cell straight in a table: an implied row */
-		if (cur_tag(b) == TAG_TABLE || cur_tag(b) == TAG_TBODY
-			|| cur_tag(b) == TAG_THEAD || cur_tag(b) == TAG_TFOOT) {
-			id = add_elem(b, current(b), TAG_TR, NULL);
-			if (id)
-				push(b, id, TAG_TR);
-		}
+		/* a cell straight in a table: an implied body and row */
+		if (cur_tag(b) == TAG_TABLE)
+			push_new(b, TAG_TBODY);
+		if (cur_tag(b) == TAG_TBODY || cur_tag(b) == TAG_THEAD
+			|| cur_tag(b) == TAG_TFOOT)
+			push_new(b, TAG_TR);
 		break;
 	}
 	case TAG_TBODY:
@@ -429,7 +498,17 @@ static void start_tag(struct tree *b, const struct tok_tag *t)
 	}
 
 	parent = insertion_point(b);
-	id = add_elem(b, parent, tag, t);
+	if (table_ctx(cur_tag(b)) && !table_part(tag) && tag != TAG_TABLE
+		&& tag != TAG_SCRIPT && tag != TAG_STYLE && tag != TAG_TEMPLATE
+		&& tag != TAG_FORM && !(tag == TAG_INPUT && !ends_frameset_ok(t))) {
+		nodeid before;
+
+		parent = foster_parent(b, &before);
+		id = add_elem(b, parent, tag, t);
+		if (id && before)
+			doc_move_before(b->d, id, before);
+	} else
+		id = add_elem(b, parent, tag, t);
 	if (id == 0)
 		return;
 	if (f & TF_DROP) {
@@ -439,6 +518,7 @@ static void start_tag(struct tree *b, const struct tok_tag *t)
 		if (t->self_closing && tag != TAG_TEMPLATE)
 			return;
 		b->skip_tag = tag;
+		b->skip_html = 0;
 		b->skip_nest = 1;
 		return;
 	}
@@ -558,14 +638,57 @@ void tree_style(void *ctx, const char *s, size_t n)
 		css_feed(b->d->sheet, s, n);
 }
 
+/* Inside <svg> or <math>, HTML that ends them (HTML5's breakout from
+ * foreign content): an end tag of an element open outside, or one of the
+ * start tags no SVG or MathML has. */
+/* SVG's and MathML's elements whose content is HTML (HTML5's
+ * integration points; not annotation-xml, whose encoding isn't kept) */
+static int html_inside(const struct tok_tag *t)
+{
+	static const char *const names[] = { "foreignobject", "desc", "title",
+		"mi", "mo", "mn", "ms", "mtext", NULL };
+	int i;
+
+	for (i = 0; names[i]; i++)
+		if (t->name && strcmp(t->name, names[i]) == 0)
+			return 1;
+	return 0;
+}
+
+static int breaks_out(struct tree *b, const struct tok_tag *t)
+{
+	int i;
+
+	if ((b->skip_tag != TAG_SVG && b->skip_tag != TAG_MATH) || b->skip_html)
+		return 0;
+	if (t->end)
+		return t->tag != TAG_UNKNOWN && (b->nopen[t->tag] || t->tag == TAG_P
+			|| t->tag == TAG_BR);
+	switch (t->tag) {
+	case TAG_B: case TAG_BIG: case TAG_BLOCKQUOTE: case TAG_BODY:
+	case TAG_BR: case TAG_CENTER: case TAG_CODE: case TAG_DD: case TAG_DIV:
+	case TAG_DL: case TAG_DT: case TAG_EM: case TAG_EMBED: case TAG_H1:
+	case TAG_H2: case TAG_H3: case TAG_H4: case TAG_H5: case TAG_H6:
+	case TAG_HEAD: case TAG_HR: case TAG_I: case TAG_IMG: case TAG_LI:
+	case TAG_LISTING: case TAG_MENU: case TAG_META: case TAG_NOBR:
+	case TAG_OL: case TAG_P: case TAG_PRE: case TAG_RUBY: case TAG_S:
+	case TAG_SMALL: case TAG_SPAN: case TAG_STRONG: case TAG_STRIKE:
+	case TAG_SUB: case TAG_SUP: case TAG_TABLE: case TAG_TT: case TAG_U:
+	case TAG_UL: case TAG_VAR:
+		return 1;
+	case TAG_FONT:
+		for (i = 0; i < t->nattr; i++)
+			if (t->attr[i] == ATTR_COLOR || t->attr[i] == ATTR_FACE
+				|| t->attr[i] == ATTR_SIZE)
+				return 1;
+		return 0;
+	}
+	return 0;
+}
+
 void tree_tag(void *ctx, const struct tok_tag *t)
 {
 	struct tree *b = ctx;
-
-	if (!b->skip_tag && breaks_line(t->tag))
-		b->line_start = 1;
-	else if (!b->skip_tag && shows_content(t->tag))
-		b->line_start = 0;	/* like text: a space after it counts */
 
 	if (b->skip_tag) {
 		if (t->tag == b->skip_tag) {
@@ -574,9 +697,24 @@ void tree_tag(void *ctx, const struct tok_tag *t)
 					b->skip_tag = 0;
 			} else if (!t->self_closing)
 				b->skip_nest++;
+			return;
 		}
-		return;
+		if (html_inside(t) && !t->self_closing) {
+			if (!t->end)
+				b->skip_html++;
+			else if (b->skip_html)
+				b->skip_html--;
+			return;
+		}
+		if (!breaks_out(b, t))
+			return;
+		b->skip_tag = 0;	/* an <svg> or <math> left open ends */
+		b->skip_html = 0;
 	}
+	if (breaks_line(t->tag))
+		b->line_start = 1;
+	else if (shows_content(t->tag))
+		b->line_start = 0;	/* like text: a space after it counts */
 	b->pre_newline = 0;
 	if (t->tag == TAG_STYLE)
 		style_tag(b, t);
@@ -632,7 +770,7 @@ static int shows_content(int tag)
 void tree_text(void *ctx, const char *s, size_t n)
 {
 	struct tree *b = ctx;
-	nodeid where;
+	nodeid where, before = 0;
 	size_t i;
 
 	if (b->skip_tag || n == 0 || b->frameset)
@@ -658,6 +796,8 @@ void tree_text(void *ctx, const char *s, size_t n)
 	where = insertion_point(b);
 	if (!b->no_frameset && !all_space(s, n))
 		b->no_frameset = 1;
+	if (table_ctx(cur_tag(b)) && !all_space(s, n))
+		where = foster_parent(b, &before);
 	if (b->in_pre) {
 		doc_add_text(b->d, where, s, n);
 		return;
@@ -696,6 +836,8 @@ void tree_text(void *ctx, const char *s, size_t n)
 		}
 		b->line_start = ls;
 		doc_text_commit(b->d, (size_t)(o - out));
+		if (before && b->d->nodes[where].last != before)
+			doc_move_before(b->d, b->d->nodes[where].last, before);
 	}
 }
 

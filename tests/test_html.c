@@ -260,10 +260,15 @@ int main(void)
 		"    \"a bcdefg\"\n");
 	check_body("table",
 		"<table><tr><td>1<td>2<tr><td>3</table>",
-		"    <table>\n      <tr>\n        <td>\n          \"1\"\n        <td>\n"
-		"          \"2\"\n      <tr>\n        <td>\n          \"3\"\n");
+		"    <table>\n      <tbody>\n        <tr>\n          <td>\n            \"1\"\n"
+		"          <td>\n            \"2\"\n        <tr>\n          <td>\n"
+		"            \"3\"\n");
 	check_body("cell without row", "<table><td>x</table>y",
-		"    <table>\n      <tr>\n        <td>\n          \"x\"\n    \"y\"\n");
+		"    <table>\n      <tbody>\n        <tr>\n          <td>\n"
+		"            \"x\"\n    \"y\"\n");
+	check_body("fostered", "<table>a<b>b</b><tr><td>c</td>d</table>",
+		"    \"a\"\n    <b>\n      \"b\"\n    \"d\"\n    <table>\n      <tbody>\n"
+		"        <tr>\n          <td>\n            \"c\"\n");
 	check("head", "<title>T  &amp; x</title><meta charset=utf-8><p>b",
 		"<html>\n  <head>\n    <title>\n      \"T  & x\"\n    <meta charset=\"utf-8\">\n"
 		"  <body>\n    <p>\n      \"b\"\n");
@@ -271,6 +276,9 @@ int main(void)
 		"    <pre>\n      \"  a\\n b\"\n    \"c\"\n");
 	check_body("svg dropped", "x<svg><text>hide</text><svg></svg></svg>y<math><mi>z</mi></math>",
 		"    \"x\"\n    <svg>\n    \"y\"\n    <math>\n");
+	check_body("svg left open", "<table><tr><td>a<svg><g>b</td><td>c</table><p>d",
+		"    <table>\n      <tbody>\n        <tr>\n          <td>\n            \"a\"\n"
+		"            <svg>\n          <td>\n            \"c\"\n    <p>\n      \"d\"\n");
 	check_body("stray end tags", "<div>a</span>b</div></div>c",
 		"    <div>\n      \"ab\"\n    \"c\"\n");
 	check_body("nested links", "<a href=1>one<a href=2>two</a>",

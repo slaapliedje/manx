@@ -23,6 +23,8 @@ struct tree {
 	unsigned short nopen[TAG_COUNT_MAX];	/* open elements per tag */
 	int overflow;			/* elements past TREE_MAX_DEPTH */
 	int skip_tag, skip_nest;	/* inside a dropped subtree */
+	int skip_html;			/* ... in HTML in it (<foreignObject>,
+					 * <mtext>...): that ends nothing */
 	int pre_newline;		/* just opened <pre>/<textarea>/<listing> */
 	int line_start;			/* last text ended a line or with a space */
 	int in_pre;

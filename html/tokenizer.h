@@ -17,6 +17,7 @@
 
 struct tok_tag {
 	int tag;			/* enum tag */
+	const char *name;		/* its name, lowercase ("" if too long) */
 	int end;			/* end tag */
 	int self_closing;
 	int nattr;

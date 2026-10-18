@@ -140,6 +140,26 @@ void doc_unlink(struct doc *d, nodeid id)
 	d->last_text = 0;		/* text may not join what's gone */
 }
 
+void doc_move_before(struct doc *d, nodeid id, nodeid ref)
+{
+	nodeid parent = d->nodes[ref].parent, k, prev = 0;
+	nodeid keep = d->last_text;
+
+	if (d->nodes[id].parent != parent || id == ref)
+		return;
+	doc_unlink(d, id);
+	d->last_text = keep;
+	for (k = d->nodes[parent].first; k && k != ref; k = d->nodes[k].next)
+		prev = k;
+	if (k == 0)
+		return;
+	d->nodes[id].next = ref;
+	if (prev)
+		d->nodes[prev].next = id;
+	else
+		d->nodes[parent].first = id;
+}
+
 static int is_ws(char c)
 {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f';
