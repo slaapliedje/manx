@@ -4,12 +4,16 @@
 #   make TARGET=sysv4     static AMIX binary; runs on AMIX and, through
 #                         atari-sysv-sp1's amx module, on Atari System V
 #   make TARGET=irix      IRIX 6.5 (MIPS), built on the machine with SGUG
-#                         RSE's gcc and gmake
+#                         RSE's gcc and gmake; or on Linux with IRIX_SYSROOT
+#                         set (toolchain/irix-cc)
 #   make TARGET=no64      host build as if the compiler had no 64-bit
 #                         integer type (Helios C): `make TARGET=no64 test-no64`
 #
 # TARGET=sysv4 needs AMIX_SYSROOT (atari-sysv-sp1 amix/mksysroot.sh), the
 # mint GCC and the SVR4 binutils of gcc-cross-amix (see toolchain/sysv4-cc).
+# TARGET=irix on Linux needs IRIX_SYSROOT (an IRIX machine's /usr/include,
+# /usr/lib32, and SGUG RSE's /usr/sgug/lib/gcc), clang, and the binutils of
+# toolchain/build-irix-binutils.sh (see toolchain/irix-cc).
 
 TARGET ?= host
 B      := build/$(TARGET)
@@ -47,19 +51,36 @@ LDLIBS  := -lsocket
 TERMLIB := -ltermlib
 X11LIB  := -lX11
 else ifeq ($(TARGET),irix)
-# IRIX 6.5 on MIPS, built natively with SGUG RSE's gcc 9 (n32). Its own
-# <stdint.h> (IRIX has only <inttypes.h>) and clock (no CLOCK_MONOTONIC);
-# BearSSL's X25519 in place of crypt68k's 68030 code.
+# IRIX 6.5 on MIPS, built natively with SGUG RSE's gcc 9 (n32); or, with
+# IRIX_SYSROOT set, on Linux with toolchain/irix-cc (clang, and binutils
+# from toolchain/build-irix-binutils.sh in IRIX_CROSS): then the programs
+# need only IRIX's own libraries. Its own <stdint.h> (IRIX has only
+# <inttypes.h>) and clock (no CLOCK_MONOTONIC); BearSSL's X25519 in place
+# of crypt68k's 68030 code.
+ifneq ($(IRIX_SYSROOT),)
+export IRIX_SYSROOT
+IRIX_CROSS ?= $(HOME)/opt/irix-cross
+export IRIX_CROSS
+CC      := toolchain/irix-cc
+LD      := $(CC)
+AR      := $(IRIX_CROSS)/bin/mips-sgi-irix6.5-ar
+else
 CC      := gcc
 LD      := $(CC)
 AR      := ar
+endif
 OS      := os/irix
 IRIXINC := -Ios/irix/include
 CFLAGS  := -DMANX_NO_C68K=1 $(IRIXINC) -std=gnu99 -O2 -g -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers
 BRFLAGS := $(IRIXINC) -O2 -g -DBR_USE_URANDOM=1 -DBR_USE_UNIX_TIME=1
 LDLIBS  :=
+ifneq ($(IRIX_SYSROOT),)
+TERMLIB := -lcurses
+X11LIB  := -lX11
+else
 TERMLIB := -ltinfo
 X11LIB  := -L/usr/lib32 -lX11
+endif
 else ifeq ($(TARGET),no64)
 # the host, compiling as Helios C does for the transputer: no 64-bit
 # integer type (tests/no_u64.h), so BearSSL's 32-bit code (BR_NO_U64)

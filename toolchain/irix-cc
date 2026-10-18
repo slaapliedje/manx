@@ -1,0 +1,80 @@
+#!/bin/bash
+# irix-cc - a C compiler for IRIX 6.5 (n32, MIPS III) on Linux: clang for
+# the code (any recent one with the MIPS target), binutils for the IRIX
+# target (toolchain/build-irix-binutils.sh: 2.41's as, and 2.23.2's ld with
+# SGUG's IRIX fixes - stock ld's GOT crashes IRIX's rld), and from a
+# sysroot copied off an IRIX machine: IRIX's headers, startup files and
+# libraries, and SGUG gcc's fixed headers, crt objects and libgcc.a. What
+# comes out needs only IRIX's own libraries (libc, libX11, libcurses).
+#
+# Like cc: -c (and -S, -E, -M...) compile; anything else links, objects and
+# -l/-L passed to ld. As IRIX's compilers: char is unsigned, code is PIC
+# (abicalls), the SGI predefines (__sgi, _SGI_SOURCE, _MIPS_SIM...).
+#
+#   IRIX_SYSROOT   the sysroot: usr/include, usr/lib32 (and its mips3/), and
+#                  usr/sgug/lib/gcc/mips-sgi-irix6.5/<version>/ from SGUG RSE
+#   IRIX_CROSS     where build-irix-binutils.sh installed (~/opt/irix-cross)
+set -e
+here=$(cd "$(dirname "$0")" && pwd)
+: "${IRIX_SYSROOT:?set IRIX_SYSROOT}"
+: "${IRIX_CROSS:=$HOME/opt/irix-cross}"
+LD="$IRIX_CROSS/bin/mips-sgi-irix6.5-ld-sgug"
+S="$IRIX_SYSROOT"
+# SGUG gcc's: its fixed IRIX headers, crt objects and libgcc.a
+G=$(ls -d "$S"/usr/sgug/lib/gcc/mips-sgi-irix6.5/* | head -1)
+
+cflags=(--target=mips64-unknown-linux-gnuabin32 -mabi=n32 -march=mips3
+	-fPIC -mabicalls -funsigned-char -fno-integrated-as
+	-fno-stack-protector -fno-builtin-stpcpy -fno-builtin-stpncpy
+	-nostdinc -isystem "$G/include"
+	-isystem "$G/include-fixed" -isystem "$S/usr/include"
+	-include "$here/irix-prelude.h"
+	-U__linux__ -U__linux -Ulinux -U__gnu_linux__ -U__unix__ -U__unix
+	-D__sgi -D__sgi__ -Dsgi -D_SGI_SOURCE -D_SVR4_SOURCE -D__SYSTYPE_SVR4
+	-D__unix -Dunix -D_LANGUAGE_C -D__LANGUAGE_C -D__host_mips -Dhost_mips
+	-D_MIPSEB -D__MIPSEB -D_MIPS_FPSET=32
+	-U_MIPS_ISA -D_MIPS_ISA=_MIPS_ISA_MIPS3 -D_MIPS_TUNE_MIPS3
+	-D_LONGLONG -D__EXTENSIONS__ -D_COMPILER_VERSION=601 -D_MODERN_C
+	-DLANGUAGE_C -D__LANGUAGE_C__ -D__DSO__ -D__c99
+	-D__SYSTYPE_SVR4__ -DSYSTYPE_SVR4 -D__host_mips__
+	-D_R4000 -D__R4000 -D__R4000__ -DR4000
+	-B "$IRIX_CROSS/bin/mips-sgi-irix6.5-")
+
+compile=0
+for a in "$@"; do
+	case "$a" in
+	-c|-S|-E|-M|-MM) compile=1 ;;
+	esac
+done
+if [ $compile = 1 ]; then
+	exec clang "${cflags[@]}" "$@"
+fi
+
+# link: compile any C given, then ld with IRIX's startup files
+objs=() ldargs=() out=a.out tmp=()
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-o) out="$2"; shift ;;
+	-l*|-L*) ldargs+=("$1") ;;
+	*.c)
+		o=$(mktemp --suffix=.o)
+		tmp+=("$o")
+		clang "${cflags[@]}" -c "$1" -o "$o"
+		objs+=("$o") ;;
+	*.o|*.a) objs+=("$1") ;;
+	-*) ;;			# (compile flags at link time: ignored)
+	*) objs+=("$1") ;;
+	esac
+	shift
+done
+# (as SGUG's gcc links: its crti/crtbegin/crtend/crtn around the objects
+# - without them the data segment starts read-only and ld makes one
+# segment of everything, which rld won't run - and libgcc, all static)
+"$LD" -call_shared -init __gcc_init -fini __gcc_fini -melf32bmipn32 \
+	-o "$out" "$S/usr/lib32/mips3/crt1.o" "$G/irix-crti.o" "$G/crtbegin.o" \
+	"${objs[@]}" -L"$G" -L"$S/usr/lib32/mips3" -L"$S/usr/lib32" \
+	"${ldargs[@]}" -lgcc -lc -lgcc \
+	"$G/crtend.o" "$G/irix-crtn.o" "$S/usr/lib32/mips3/crtn.o"
+rc=$?
+rm -f "${tmp[@]}"
+exit $rc
