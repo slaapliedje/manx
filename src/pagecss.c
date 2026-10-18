@@ -272,7 +272,7 @@ int pcss_step(int (*poll)(void *ctx, int shown), void *ctx)
 	if (url_resolve(&g_base, p->href, &u) < 0
 		|| url_format(&u, url, sizeof url, 0) < 0
 		|| (strncmp(url, "http://", 7) && strncmp(url, "https://", 8)
-		&& (strncmp(url, "file://", 7) || !g_local))) {
+		&& (strncmp(url, "file:", 5) || !g_local))) {
 		p->state = S_DONE;
 		return PCSS_WORKED;
 	}

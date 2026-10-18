@@ -1348,6 +1348,12 @@ static int enter(struct lay *L, nodeid id, int depth)
 
 	switch (s.display) {
 	case D_BLOCK:
+		/* a list item's first block (<li><p>): on the marker's line,
+		 * no margin above; a list in it puts the marker alone */
+		if (L->marker_w && !L->line_open && !L->cell
+			&& tag != TAG_UL && tag != TAG_OL && tag != TAG_DL
+			&& tag != TAG_MENU && tag != TAG_DIR)
+			break;
 		block_break(L, s.margin > 0 && L->nlists
 			&& (tag == TAG_UL || tag == TAG_OL) ? 0 : s.margin);
 		break;

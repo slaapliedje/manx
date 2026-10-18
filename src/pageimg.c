@@ -474,7 +474,7 @@ static int fetch_one(struct pent *e, int (*poll)(void *ctx, int shown), void *ct
 		if (url_resolve(&g_base, e->src, &u) < 0
 			|| url_format(&u, url, sizeof url, 0) < 0
 			|| (strncmp(url, "http://", 7) && strncmp(url, "https://", 8)
-			&& (strncmp(url, "file://", 7) || !g_local))) {
+			&& (strncmp(url, "file:", 5) || !g_local))) {
 			e->state = P_FAILED;
 			return PIMG_WORKED;
 		}
