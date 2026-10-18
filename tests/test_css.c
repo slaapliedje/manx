@@ -11,6 +11,7 @@
 #include "load.h"
 #include "layout.h"
 #include "css.h"
+#include "tags.h"
 
 static int fails, runs;
 
@@ -181,6 +182,72 @@ static void look(const char *name, const char *css, const char *body, const char
 	}
 }
 
+/* what the sheet and style="" say of the box of the first <tag> */
+static void box(const char *name, const char *css, const char *body, int tag,
+	const char *want)
+{
+	static struct html_load l;
+	char page[2048], got[512];
+	struct doc d;
+	struct css_box b;
+	unsigned long id;
+	int i;
+
+	snprintf(page, sizeof page, "<html><head><style>%s</style></head><body>%s</body></html>",
+		css, body);
+	doc_init(&d, 0);
+	html_load_begin(&l, &d, "utf-8", 0);
+	html_load_feed(&l, (const unsigned char *)page, strlen(page));
+	html_load_end(&l);
+	memset(&b, 0, sizeof b);
+	for (id = 2; id < d.nnodes; id++)
+		if (d.nodes[id].type == NODE_ELEM && d.nodes[id].tag == tag)
+			break;
+	if (id < d.nnodes) {
+		css_style(d.sheet, &d, (nodeid)id, doc_attr(&d, (nodeid)id, ATTR_ID),
+			doc_attr(&d, (nodeid)id, ATTR_CLASS), 320, NULL);
+		css_box(d.sheet, &d, (nodeid)id, doc_attr(&d, (nodeid)id, ATTR_ID),
+			doc_attr(&d, (nodeid)id, ATTR_CLASS), 320, &b);
+		if (doc_attr(&d, (nodeid)id, ATTR_STYLE))
+			css_inline_box(doc_attr(&d, (nodeid)id, ATTR_STYLE), &b);
+	}
+	got[0] = '\0';
+	if (b.set & CSS_B_BG)
+		sprintf(got + strlen(got), "bg=%06lx ", b.bg);
+	for (i = 0; i < 4; i++)
+		if (b.set & CSS_B_M(i))
+			sprintf(got + strlen(got), "m%d=%d.%d%c ", i, b.m[i].v / 10, b.m[i].v % 10,
+				"-pe%a"[b.m[i].u]);
+	for (i = 0; i < 4; i++)
+		if (b.set & CSS_B_P(i))
+			sprintf(got + strlen(got), "p%d=%d.%d%c ", i, b.p[i].v / 10, b.p[i].v % 10,
+				"-pe%a"[b.p[i].u]);
+	for (i = 0; i < 4; i++)
+		if (b.set & CSS_B_BW(i))
+			sprintf(got + strlen(got), "bw%d=%d.%d%c ", i, b.bw[i].v / 10, b.bw[i].v % 10,
+				"-pe%a"[b.bw[i].u]);
+	if (b.set & CSS_B_BSTYLE)
+		sprintf(got + strlen(got), "bs=%d ", b.bstyle);
+	if (b.set & CSS_B_BCOLOR)
+		sprintf(got + strlen(got), "bc=%06lx ", b.bcolor);
+	if (b.set & CSS_B_W)
+		sprintf(got + strlen(got), "w=%d.%d%c ", b.w.v / 10, b.w.v % 10, "-pe%a"[b.w.u]);
+	if (b.set & CSS_B_H)
+		sprintf(got + strlen(got), "h=%d.%d%c ", b.h.v / 10, b.h.v % 10, "-pe%a"[b.h.u]);
+	if (b.set & CSS_B_FLOAT)
+		sprintf(got + strlen(got), "fl=%d ", b.fl);
+	if (b.set & CSS_B_CLEAR)
+		sprintf(got + strlen(got), "cl=%d ", b.clr);
+	if (b.set & CSS_B_DISP)
+		sprintf(got + strlen(got), "di=%d ", b.disp);
+	runs++;
+	if (strcmp(got, want) != 0) {
+		fails++;
+		printf("FAIL %s\n  want %s\n  got  %s\n", name, want, got);
+	}
+	doc_free(&d);
+}
+
 int main(void)
 {
 	/* the look of text */
@@ -332,6 +399,24 @@ int main(void)
 		"<ul><li class=k>a<li>b</ul>", "    a|  * b|");
 	check("list-style inline", "", "<ul style='list-style: none inside'><li>a</ul>"
 		"<ul style='list-style:square'><li>b</ul>", "    a||  * b|");
+	/* boxes */
+	box("acid1 dt", "dt{background-color:rgb(204,0,0);margin:0;padding:1em;"
+		"width:10.638%;height:28em;border:.5em solid black;float:left}",
+		"<dl><dt>x</dl>", TAG_DT, "bg=cc0000 m0=0.0p m1=0.0p m2=0.0p m3=0.0p "
+		"p0=1.0e p1=1.0e p2=1.0e p3=1.0e bw0=0.5e bw1=0.5e bw2=0.5e bw3=0.5e "
+		"bs=1 bc=000000 w=10.6% h=28.0e fl=2 ");
+	box("cascade by side", "li{margin:0;border:.5em solid black} #bar{margin:0 1em;border:0}",
+		"<ul><li id=bar>x</ul>", TAG_LI, "m0=0.0p m1=1.0e m2=0.0p m3=1.0e "
+		"bw0=0.0p bw1=0.0p bw2=0.0p bw3=0.0p bs=0 bc=000000 ");
+	box("border-width four", "blockquote{border-width:1em 1.5em 2em .5em;border-style:solid}",
+		"<blockquote>x</blockquote>", TAG_BLOCKQUOTE,
+		"bw0=1.0e bw1=1.5e bw2=2.0e bw3=0.5e bs=1 ");
+	box("inline beats sheet", "p{width:10em;clear:left}", "<p style='width:50%;clear:both;"
+		"background:url(x.png) #fc0 no-repeat'>x", TAG_P, "bg=ffcc00 w=50.0% cl=4 ");
+	box("important", "p{float:left!important} p.a{float:right}", "<p class=a>x", TAG_P, "fl=2 ");
+	box("display and auto", "p{display:block;margin:0 auto;width:auto}", "<p>x", TAG_P,
+		"m0=0.0p m1=0.0a m2=0.0p m3=0.0a w=0.0a di=1 ");
+	box("nothing", "p{color:red}", "<p>x", TAG_P, "");
 	printf("css: %d/%d passed\n", runs - fails, runs);
 	return fails ? 1 : 0;
 }

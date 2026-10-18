@@ -44,6 +44,7 @@
 #include "pageimg.h"
 #include "pagecss.h"
 #include "frames.h"
+#include "css.h"
 #include <time.h>
 
 #define HIST_MAX	64
@@ -2880,6 +2881,9 @@ int main(int argc, char **argv)
 		fprintf(stderr, "manx: needs %s\n", scr_needs);
 		return 1;
 	}
+	/* (boxes - backgrounds, borders, floats - only where they're drawn:
+	 * a terminal's sheets keep none of that) */
+	css_boxes = scr_metrics() != NULL;
 	if (a < argc && !strstr(start, "://") && strncmp(start, "about:", 6)) {
 		/* (a file here: file:// with its full path) */
 		typed(start, go, sizeof go);

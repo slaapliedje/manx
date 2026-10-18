@@ -93,6 +93,60 @@ int css_inline_shows(const char *style);
  * or 0. */
 int css_inline_list(const char *style);
 
+/*
+ * Boxes: margin, border, padding, width, height, float, clear, display
+ * and background-color, for a screen that draws them (css_boxes: 1, the
+ * default; a terminal sets it 0 before reading sheets, and then their
+ * rules about boxes take no memory and no time).
+ */
+extern int css_boxes;
+
+enum { CSS_U_NONE, CSS_U_PX, CSS_U_EM, CSS_U_PCT, CSS_U_AUTO };
+
+struct css_len {
+	short v;			/* tenths of the unit */
+	unsigned char u;		/* CSS_U_* */
+};
+
+/* which of struct css_box's fields were said */
+#define CSS_B_BG	0x000001UL
+#define CSS_B_BCOLOR	0x000002UL
+#define CSS_B_BSTYLE	0x000004UL
+#define CSS_B_M(i)	(0x000008UL << (i))	/* margin: top right bottom left */
+#define CSS_B_P(i)	(0x000080UL << (i))	/* padding */
+#define CSS_B_BW(i)	(0x000800UL << (i))	/* border width */
+#define CSS_B_W		0x008000UL
+#define CSS_B_H		0x010000UL
+#define CSS_B_FLOAT	0x020000UL
+#define CSS_B_CLEAR	0x040000UL
+#define CSS_B_DISP	0x080000UL
+#define CSS_B_NBITS	20
+
+enum { CSS_FL_NONE = 1, CSS_FL_LEFT, CSS_FL_RIGHT };
+enum { CSS_CL_NONE = 1, CSS_CL_LEFT, CSS_CL_RIGHT, CSS_CL_BOTH };
+enum { CSS_DI_BLOCK = 1, CSS_DI_INLINE, CSS_DI_LIST_ITEM, CSS_DI_INLINE_BLOCK };
+
+#define CSS_BG_NONE	0xFFFFFFFFUL	/* transparent */
+
+struct css_box {
+	unsigned long set;		/* CSS_B_* */
+	unsigned long bg;		/* 0xRRGGBB, or CSS_BG_NONE */
+	unsigned long bcolor;		/* the border's colour, 0xRRGGBB */
+	unsigned char bstyle;		/* the border is drawn (solid...): 1 */
+	unsigned char fl, clr, disp;	/* CSS_FL_*, CSS_CL_*, CSS_DI_* */
+	struct css_len m[4], p[4], bw[4], w, h;
+};
+
+/*
+ * What the sheet says of element node's box (asked after css_style, for
+ * the same element), over *b: 1 if anything.
+ */
+int css_box(struct css_sheet *s, const struct doc *d, nodeid node,
+	const char *id, const char *cls, int vw, struct css_box *b);
+
+/* What an inline style="" says of the box, over *b. */
+void css_inline_box(const char *style, struct css_box *b);
+
 /* How many rules the sheet kept (tests, the = page). */
 unsigned long css_rules(const struct css_sheet *s);
 
