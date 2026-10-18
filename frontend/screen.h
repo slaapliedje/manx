@@ -18,7 +18,10 @@ enum {
 	K_MOUSE,		/* button 1 at scr_mouse_row/col */
 	K_WHEELUP, K_WHEELDN,	/* the scroll wheel */
 	K_CLOSE,		/* the window is being closed; repeats */
-	K_SCROLL		/* the scrollbar: show from line scr_scroll_target */
+	K_SCROLL,		/* the scrollbar: show from line scr_scroll_target */
+	K_FIELD,		/* xmanx: button 1 in the URL field being edited,
+				 * at scr_field_pos; scr_field_clicks 2: double */
+	K_PASTE			/* xmanx: text to insert, scr_paste */
 };
 
 /* cell attributes */
@@ -39,6 +42,8 @@ extern int scr_mouse_row, scr_mouse_col;	/* where K_MOUSE was */
 extern int scr_mouse_x, scr_mouse_y;	/* ... in the page's pane, in units */
 extern int scr_proportional;		/* X11: draw the page in fonts (1) */
 extern long scr_scroll_target;		/* where K_SCROLL goes */
+extern int scr_field_pos, scr_field_clicks;	/* where K_FIELD was */
+extern const char *scr_paste;		/* what K_PASTE inserts */
 extern const char *scr_font;		/* X11: the font (NULL: "fixed") */
 extern const char *scr_geometry;	/* X11: "COLSxROWS[+X+Y]" (NULL: 80x25) */
 extern const char *scr_needs;		/* what scr_open needs, for errors */
@@ -101,6 +106,9 @@ void scr_state(int can_back, int can_forward, int loading);
  * the editing.
  */
 int scr_url_edit(const char *text, int pos);
+/* xmanx: highlight bytes from..to of the text being edited (none when
+ * from == to), and offer them as the X PRIMARY selection. */
+void scr_url_sel(int from, int to);
 
 /*
  * The page in proportional fonts (X11): the layout measures with

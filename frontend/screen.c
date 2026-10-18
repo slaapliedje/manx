@@ -47,6 +47,8 @@ int scr_mouse_row, scr_mouse_col;
 int scr_mouse_x, scr_mouse_y;
 int scr_proportional;
 long scr_scroll_target;
+int scr_field_pos, scr_field_clicks;
+const char *scr_paste = "";
 const char *scr_font;
 const char *scr_geometry;
 const char *scr_needs = "a terminal";
@@ -862,6 +864,12 @@ int scr_url_edit(const char *text, int pos)
 	(void)text;
 	(void)pos;
 	return 0;
+}
+
+void scr_url_sel(int from, int to)
+{
+	(void)from;
+	(void)to;
 }
 
 /* (a terminal is all cells) */

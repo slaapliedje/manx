@@ -852,7 +852,7 @@ static const char help_html[] =
 	"</pre><p>Start pages: <a href=\"about:start\">about:start</a>";
 
 static const char start_html[] =
-	"<title>Manx</title><h1>Manx - a web browser for 68030 Unix</h1>"
+	"<title>Manx</title><h1>Manx - a web browser for %s Unix</h1>"
 	"<p>Press <b>g</b> and type a URL, or words to search for. "
 	"<b>?</b> lists the keys.</p><ul>"
 	"<li><a href=\"https://lite.duckduckgo.com/lite/\">DuckDuckGo Lite</a>"
@@ -1068,7 +1068,11 @@ static int load(const char *url_in, const struct fetch_opts *opts, int mode,
 	}
 	if (strcmp(url, "about:start") == 0 || strcmp(url, "about:") == 0
 		|| strcmp(url, "about:blank") == 0) {
-		load_string(start_html, url);
+		/* (the heading names the processor it runs on) */
+		static char start[sizeof start_html + 64];
+
+		snprintf(start, sizeof start, start_html, os_cpu());
+		load_string(start, url);
 		return 0;
 	}
 
@@ -2161,6 +2165,7 @@ static int ch_cols(const char *b, size_t n)
 static int prompt_mask(const char *label, char *buf, size_t n, int flags)
 {
 	size_t len = strlen(buf), pos = len;
+	size_t sa = 0, sb = 0;		/* xmanx: a selection, sa < sb */
 	int r = scr_rows - 1, lw = (int)strlen(label), skip = 0;
 	static char stars[1024];
 
@@ -2176,8 +2181,10 @@ static int prompt_mask(const char *label, char *buf, size_t n, int flags)
 			start = (int)st;
 		}
 		draw_status();
-		if ((flags & PM_URL) && scr_url_edit(buf, (int)pos))
+		if ((flags & PM_URL) && scr_url_edit(buf, (int)pos)) {
+			scr_url_sel((int)sa, (int)sb);
 			scr_cursor(-1, -1);
+		}
 		else {
 			scr_fill(r, 0, scr_cols, ' ', 0);
 			scr_put(r, 0, label, lw, CA_BOLD);
@@ -2191,7 +2198,49 @@ static int prompt_mask(const char *label, char *buf, size_t n, int flags)
 		}
 		scr_flush(0);
 		k = scr_getkey(-1);
+		/* a selection: typing, pasting or deleting replaces it; any
+		 * other key lets it go */
+		if (sa < sb && k >= 0) {
+			int del = k == 8 || k == 127 || k == K_DEL || k == 4;
+
+			if (del || k == K_PASTE || (k >= 32 && k < 256)) {
+				memmove(buf + sa, buf + sb, len - sb + 1);
+				len -= sb - sa;
+				pos = sa;
+			}
+			sa = sb = 0;
+			if (del)
+				continue;
+		}
 		switch (k) {
+		case K_FIELD:			/* xmanx: a click in the field */
+			if (scr_field_clicks >= 2) {
+				sa = 0;
+				sb = pos = len;
+			} else {
+				size_t p = 0;
+
+				while (p < len && p < (size_t)scr_field_pos)
+					p = ch_next(buf, p, len);
+				pos = p;
+			}
+			break;
+		case K_PASTE: {			/* xmanx: a middle click */
+			const unsigned char *s = (const unsigned char *)scr_paste;
+
+			for (; *s && len + 1 < n; s++) {
+				if (*s < 32 || *s == 127)
+					continue;	/* (a newline, a tab) */
+				/* (a UTF-8 character that won't fit whole stops it) */
+				if (*s >= 0xC0 && len + 1 + (*s >= 0xF0 ? 3
+					: *s >= 0xE0 ? 2 : 1) >= n)
+					break;
+				memmove(buf + pos + 1, buf + pos, len - pos + 1);
+				buf[pos++] = (char)*s;
+				len++;
+			}
+			break;
+		}
 		case '\r':
 			scr_cursor(-1, -1);
 			if (flags & PM_URL)
@@ -2264,6 +2313,33 @@ static int prompt_mask(const char *label, char *buf, size_t n, int flags)
 	}
 }
 
+/* a path on this machine as a file: URL in out: 1, or 0 when in isn't
+ * one (~ is $HOME; a relative path must exist, being otherwise a host) */
+static int local_url(const char *in, char *out, size_t n)
+{
+	char cwd[URL_MAX / 2];
+	const char *home;
+	long sz, mt;
+
+	if ((in[0] == '~' && (in[1] == '/' || in[1] == '\0'))
+		&& (home = getenv("HOME")) != NULL) {
+		snprintf(out, n, "file://%s%s", strcmp(home, "/") ? home : "", in + 1);
+		return 1;
+	}
+	if (in[0] == '/') {
+		snprintf(out, n, "file://%s", in);
+		return 1;
+	}
+	if (strncmp(in, "./", 2) != 0 && os_file_info(in, &sz, &mt) != 0)
+		return 0;
+	if (getcwd(cwd, sizeof cwd) == NULL)
+		return 0;
+	if (strncmp(in, "./", 2) == 0)
+		in += 2;
+	snprintf(out, n, "file://%s/%s", strcmp(cwd, "/") ? cwd : "", in);
+	return 1;
+}
+
 /* what was typed at g: a URL, a file, or words to search for */
 static void typed(const char *in, char *out, size_t n)
 {
@@ -2271,10 +2347,11 @@ static void typed(const char *in, char *out, size_t n)
 
 	while (*in == ' ')
 		in++;
-	if (strstr(in, "://") || strncmp(in, "about:", 6) == 0)
+	if (strstr(in, "://") || strncmp(in, "about:", 6) == 0
+		|| strncmp(in, "file:", 5) == 0)
 		snprintf(out, n, "%s", in);
-	else if (in[0] == '/' || strncmp(in, "./", 2) == 0)
-		snprintf(out, n, "file://%s", in);
+	else if (local_url(in, out, n))
+		;
 	else if (!strchr(in, ' ') && strchr(in, '.'))
 		snprintf(out, n, "https://%s", in);
 	else {
@@ -2662,18 +2739,8 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	if (a < argc && !strstr(start, "://") && strncmp(start, "about:", 6)) {
-		long sz, mt;
-
-		if (os_file_info(start, &sz, &mt) == 0) {
-			/* a file here: file:// with its full path */
-			char cwd[URL_MAX / 2];
-
-			if (start[0] == '/' || getcwd(cwd, sizeof cwd) == NULL)
-				snprintf(go, sizeof go, "file://%s", start);
-			else
-				snprintf(go, sizeof go, "file://%s/%s", cwd, start);
-		} else
-			typed(start, go, sizeof go);
+		/* (a file here: file:// with its full path) */
+		typed(start, go, sizeof go);
 		start = go;
 	}
 	visit(start);

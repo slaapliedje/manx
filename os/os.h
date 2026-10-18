@@ -24,6 +24,10 @@ unsigned long os_usec(void);
 /* Milliseconds since the first call (wraps after 49 days). */
 unsigned long os_msec(void);
 
+/* The processor this runs on, for the start page: "68030", "MIPS R10000",
+ * "x86_64" (os/os_files.c). */
+const char *os_cpu(void);
+
 /* --- files (os/os_files.c, all targets) --- */
 
 /* The browser's own directory: $MANX_HOME, else $HOME/.manx (created, mode
