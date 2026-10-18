@@ -265,9 +265,9 @@ static void draw_images(int x, int base, const char *s, int n, int attr)
 		long k = layout_image(p, s);
 
 		if (k < 0) {
-			int sw = layout_spacer_w(s);	/* (a grid's gap) */
+			int sw = layout_spacer_w(s);	/* (a grid's gap, a float's) */
 
-			if (sw > 0)
+			if (sw != LAYOUT_NO_SPACER)
 				x += sw;
 			continue;
 		}
@@ -468,8 +468,10 @@ static void draw(int full)
 			long y0 = tops[g_top];
 			unsigned long b;
 
-			/* the boxes under the text: tables' and cells' backgrounds
-			 * and borders */
+			/* the page's background, then the boxes under the text:
+			 * blocks', tables' and cells' backgrounds and borders */
+			if (g_page.page_bg != LBOX_NONE)
+				scr_rect(0, 0, scr_pane_w(), h, g_page.page_bg, 0, 0);
 			for (b = 0; b < g_page.nboxes; b++) {
 				const struct lbox *bx = &g_page.boxes[b];
 				long by;

@@ -130,6 +130,8 @@ struct page {
 	unsigned long *palette;		/* the spans' colours, 0xRRGGBB */
 	int npalette;			/* (LAYOUT_MAX_COLORS at most) */
 	size_t byte_cap;		/* all of the above together */
+	unsigned long page_bg;		/* the page's background (the root's or
+					 * the body's), LBOX_NONE: the screen's */
 	long main_line;			/* where <main> begins, or -1 */
 	long content_line;		/* the first real paragraph (or its
 					 * heading), or -1 */
@@ -170,9 +172,11 @@ unsigned long layout_span_at(const struct page *p, unsigned long s,
 long layout_image(const struct page *p, const char *s);
 
 /* With metrics, a gap of an exact width (between a grid's columns) is
- * LAYOUT_IMG_BYTES bytes in the same kind of run, a spacer: its width,
- * or -1 if the bytes at s aren't one. */
+ * LAYOUT_IMG_BYTES bytes in the same kind of run, a spacer: its width
+ * (negative: it goes back, from a float's line to the text beside it),
+ * or LAYOUT_NO_SPACER if the bytes at s aren't one. */
 int layout_spacer_w(const char *s);
+#define LAYOUT_NO_SPACER	(-32768)	/* layout_spacer_w: not one */
 
 /* How wide n bytes of a run of face LF_IMAGE are: its images' and
  * spacers' widths. */
