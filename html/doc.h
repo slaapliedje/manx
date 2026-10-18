@@ -65,6 +65,10 @@ void doc_attr_end(struct doc *d);
  */
 const char *doc_srcset_pick(const char *ss, int target, size_t *len);
 
+/* Take a node (and what's inside) out of its parent's children; its
+ * space stays used until the document is freed. */
+void doc_unlink(struct doc *d, nodeid id);
+
 /* Append text to parent: joined to its last child if that is text and
  * still ends the pool. */
 void doc_add_text(struct doc *d, nodeid parent, const char *s, size_t n);

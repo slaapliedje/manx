@@ -292,6 +292,20 @@ int main(void)
 	check_body("noscript shown", "<noscript><p>no js</p></noscript>",
 		"    <noscript>\n      <p>\n        \"no js\"\n");
 	check_body("CRLF", "a\r\nb\rc", "    \"a b c\"\n");
+	check("frameset", "<html><frameset rows=\"100,*\"><frame src=menu.html name=menu>"
+		"<frameset cols=\"1,2\"><frame src=a><frame src=b></frameset>"
+		"<noframes><p>none</noframes>x<p>y</frameset><p>z",
+		"<html>\n  <head>\n  <frameset rows=\"100,*\">\n"
+		"    <frame src=\"menu.html\" name=\"menu\">\n    <frameset cols=\"1,2\">\n"
+		"      <frame src=\"a\">\n      <frame src=\"b\">\n    <noframes>\n");
+	check("frameset after head and empty body",
+		"<title>t</title><body>\n<div><frameset><frame src=a>",
+		"<html>\n  <head>\n    <title>\n      \"t\"\n  <frameset>\n"
+		"    <frame src=\"a\">\n");
+	check_body("frameset too late", "x<frameset><frame src=a>y",
+		"    \"xy\"\n");
+	check_body("frameset after an image", "<img src=i><frameset>",
+		"    <img src=\"i\">\n");
 	check("plain text", "", "<html>\n  <head>\n  <body>\n");
 	{
 		char *got = parse("a <b>\n&amp;", 11, 3, "", 1);

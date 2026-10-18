@@ -120,6 +120,26 @@ nodeid doc_add_elem(struct doc *d, nodeid parent, int tag)
 	return id;
 }
 
+void doc_unlink(struct doc *d, nodeid id)
+{
+	struct node *n = &d->nodes[id];
+	struct node *p = &d->nodes[n->parent];
+	nodeid k, prev = 0;
+
+	for (k = p->first; k && k != id; k = d->nodes[k].next)
+		prev = k;
+	if (k == 0)
+		return;
+	if (prev)
+		d->nodes[prev].next = n->next;
+	else
+		p->first = n->next;
+	if (p->last == id)
+		p->last = prev;
+	n->next = 0;
+	d->last_text = 0;		/* text may not join what's gone */
+}
+
 static int is_ws(char c)
 {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f';

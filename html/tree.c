@@ -213,6 +213,57 @@ static void record_head_info(struct tree *b, const struct tok_tag *t)
 	}
 }
 
+/* In a page of frames only frames count: <frameset>, <frame>, and
+ * <noframes> (its text is dropped); the rest is ignored. */
+static void frames_tag(struct tree *b, const struct tok_tag *t)
+{
+	nodeid id;
+
+	if (t->end) {
+		if (t->tag == TAG_FRAMESET && !b->frameset_done
+			&& cur_tag(b) == TAG_FRAMESET) {
+			pop_n(b, 1);
+			if (cur_tag(b) != TAG_FRAMESET)
+				b->frameset_done = 1;
+		} else if (t->tag == TAG_NOFRAMES && cur_tag(b) == TAG_NOFRAMES)
+			pop_n(b, 1);
+		return;
+	}
+	if (cur_tag(b) == TAG_NOFRAMES
+		|| (b->frameset_done && t->tag != TAG_NOFRAMES))
+		return;
+	switch (t->tag) {
+	case TAG_FRAMESET:
+	case TAG_FRAME:
+	case TAG_NOFRAMES:
+		id = add_elem(b, current(b), t->tag, t);
+		if (id && t->tag != TAG_FRAME)
+			push(b, id, t->tag);
+		break;
+	}
+}
+
+/* content in the body that makes it too late for a <frameset> */
+static int ends_frameset_ok(const struct tok_tag *t)
+{
+	int i;
+
+	switch (t->tag) {
+	case TAG_PRE: case TAG_LISTING: case TAG_LI: case TAG_DD: case TAG_DT:
+	case TAG_BUTTON: case TAG_APPLET: case TAG_MARQUEE: case TAG_OBJECT:
+	case TAG_TABLE: case TAG_AREA: case TAG_BR: case TAG_EMBED:
+	case TAG_IMG: case TAG_IMAGE: case TAG_WBR: case TAG_HR:
+	case TAG_TEXTAREA: case TAG_XMP: case TAG_IFRAME: case TAG_SELECT:
+		return 1;
+	case TAG_INPUT:
+		for (i = 0; i < t->nattr; i++)
+			if (t->attr[i] == ATTR_TYPE && value_is(t->value[i], "hidden"))
+				return 0;
+		return 1;
+	}
+	return 0;
+}
+
 static void start_tag(struct tree *b, const struct tok_tag *t)
 {
 	int tag = t->tag, idx;
@@ -231,7 +282,31 @@ static void start_tag(struct tree *b, const struct tok_tag *t)
 		}
 		return;
 	}
-	if (tag == TAG_BODY || tag == TAG_FRAMESET) {
+	if (b->frameset) {
+		frames_tag(b, t);
+		return;
+	}
+	if (tag == TAG_FRAMESET) {
+		/* a page of frames: the <frameset> takes the body's place,
+		 * even an empty body's */
+		if (b->body && (b->no_frameset || b->depth < 3
+			|| b->stack[2] != b->body))
+			return;
+		ensure_head(b);
+		b->head_done = 1;
+		close_to(b, in_scope(b, TAG_HTML, 0, NULL) + 1);
+		if (b->body) {
+			doc_unlink(b->d, b->body);
+			b->body = 0;
+		}
+		b->frameset = add_elem(b, b->html, TAG_FRAMESET, t);
+		if (b->frameset)
+			push(b, b->frameset, TAG_FRAMESET);
+		return;
+	}
+	if (tag == TAG_FRAME)
+		return;			/* only in a <frameset> */
+	if (tag == TAG_BODY) {
 		if (!b->body) {
 			ensure_head(b);
 			b->head_done = 1;
@@ -265,6 +340,9 @@ static void start_tag(struct tree *b, const struct tok_tag *t)
 			close_to(b, idx);
 		ensure_body(b);
 	}
+
+	if (ends_frameset_ok(t))
+		b->no_frameset = 1;
 
 	/* implied end tags */
 	if (f & TF_BLOCK)
@@ -378,6 +456,10 @@ static void end_tag(struct tree *b, const struct tok_tag *t)
 	int tag = t->tag, idx, i;
 	unsigned f = tag_flags(tag);
 
+	if (b->frameset) {
+		frames_tag(b, t);
+		return;
+	}
 	switch (tag) {
 	case TAG_HEAD:
 		idx = in_scope(b, TAG_HEAD, 0, NULL);
@@ -553,7 +635,7 @@ void tree_text(void *ctx, const char *s, size_t n)
 	nodeid where;
 	size_t i;
 
-	if (b->skip_tag || n == 0)
+	if (b->skip_tag || n == 0 || b->frameset)
 		return;
 	if (b->pre_newline) {
 		/* a newline right after <pre> is not content */
@@ -574,6 +656,8 @@ void tree_text(void *ctx, const char *s, size_t n)
 		}
 	}
 	where = insertion_point(b);
+	if (!b->no_frameset && !all_space(s, n))
+		b->no_frameset = 1;
 	if (b->in_pre) {
 		doc_add_text(b->d, where, s, n);
 		return;
@@ -621,5 +705,6 @@ void tree_end(struct tree *b)
 		css_end(b->d->sheet);
 		b->in_style = 0;
 	}
-	ensure_body(b);
+	if (!b->frameset)
+		ensure_body(b);
 }

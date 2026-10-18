@@ -30,6 +30,10 @@ struct tree {
 	char meta_charset[40];		/* <meta charset> / http-equiv */
 	char meta_refresh[600];		/* the first <meta http-equiv=refresh>'s content */
 	int in_style;			/* reading a <style> into d->sheet */
+	nodeid frameset;		/* the page is frames: its outer <frameset> */
+	int frameset_done;		/* ... and that has ended */
+	int no_frameset;		/* the body has content: a <frameset>
+					 * is too late (HTML5's frameset-ok) */
 };
 
 void tree_init(struct tree *b, struct doc *d);

@@ -287,8 +287,15 @@ check: test build/fuzz/fuzz_html build/fuzz/fuzz_image build/fuzz/fuzz_mail buil
 	build/fuzz/fuzz_mail $(CHECK_ITERS)0 1
 	build/fuzz/fuzz_feed $(CHECK_ITERS) 1
 
+# the HTML5 tree-construction tests (tests/fetch_html5lib.sh first): a
+# score per test file, not pass/fail (our tree builder leaves out parts of
+# HTML5 on purpose; see html/tree.h). H5V=N shows N failures.
+H5V ?= 0
+html5lib: $(B)/uparse
+	python3 tests/html5lib_tree.py $(B)/uparse build/wpt/html/syntax/parsing -v $(H5V)
+
 clean:
 	rm -rf build
 
-.PHONY: all clean test fuzz check
+.PHONY: all clean test fuzz check html5lib
 -include $(shell find build -name '*.d' 2>/dev/null)
