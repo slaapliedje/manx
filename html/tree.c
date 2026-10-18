@@ -2,6 +2,7 @@
  * tree.c - see tree.h.
  */
 #include <string.h>
+#include "os.h"
 #include "tags.h"
 #include "css.h"
 #include "tree.h"
@@ -53,6 +54,85 @@ static void push(struct tree *b, nodeid id, int tag)
 		b->in_pre = 1;
 }
 
+/* --- formatting elements --------------------------------------------- */
+
+static int is_fmt(int tag)
+{
+	switch (tag) {
+	case TAG_A: case TAG_B: case TAG_BIG: case TAG_CODE: case TAG_EM:
+	case TAG_FONT: case TAG_I: case TAG_NOBR: case TAG_S: case TAG_SMALL:
+	case TAG_STRIKE: case TAG_STRONG: case TAG_TT: case TAG_U:
+		return 1;
+	}
+	return 0;
+}
+
+/* elements whose content formatting from outside doesn't reach */
+static int is_fmt_marker(int tag)
+{
+	return tag == TAG_TD || tag == TAG_TH || tag == TAG_CAPTION
+		|| tag == TAG_APPLET || tag == TAG_OBJECT || tag == TAG_MARQUEE
+		|| tag == TAG_TEMPLATE;
+}
+
+static void fmt_remove(struct tree *b, int i)
+{
+	if (b->fmt[i].tag && !b->fmt[i].open)
+		b->fmt_closed--;
+	memmove(&b->fmt[i], &b->fmt[i + 1], (b->nfmt - i - 1) * sizeof b->fmt[0]);
+	b->nfmt--;
+}
+
+static void fmt_add(struct tree *b, nodeid id, int tag)
+{
+	if (b->nfmt == TREE_FMT_MAX) {
+		int i;
+
+		for (i = 0; i < b->nfmt && b->fmt[i].tag == 0; i++)
+			;
+		if (i == b->nfmt)
+			return;
+		fmt_remove(b, i);	/* the oldest is forgotten */
+	}
+	b->fmt[b->nfmt].node = id;
+	b->fmt[b->nfmt].tag = (unsigned char)tag;
+	b->fmt[b->nfmt].open = 1;
+	b->nfmt++;
+}
+
+/* the entry of tag after the last marker (-1: none) */
+static int fmt_find(struct tree *b, int tag)
+{
+	int i;
+
+	for (i = b->nfmt - 1; i >= 0 && b->fmt[i].tag; i--)
+		if (b->fmt[i].tag == tag)
+			return i;
+	return -1;
+}
+
+/* element id leaves the stack */
+static void fmt_popped(struct tree *b, nodeid id, int tag)
+{
+	int i;
+
+	if (is_fmt(tag)) {
+		for (i = b->nfmt - 1; i >= 0; i--)
+			if (b->fmt[i].node == id && b->fmt[i].open) {
+				b->fmt[i].open = 0;
+				b->fmt_closed++;
+				break;
+			}
+	} else if (is_fmt_marker(tag)) {
+		for (i = b->nfmt - 1; i >= 0; i--)
+			if (b->fmt[i].tag == 0 && b->fmt[i].node == id) {
+				while (b->nfmt > i)
+					fmt_remove(b, b->nfmt - 1);
+				break;
+			}
+	}
+}
+
 /* pop the top n entries */
 static void pop_n(struct tree *b, int n)
 {
@@ -65,6 +145,8 @@ static void pop_n(struct tree *b, int n)
 
 		b->nopen[t]--;
 		pre |= tag_flags(t) & TF_PRE;
+		if (b->nfmt)
+			fmt_popped(b, b->stack[b->depth], t);
 	}
 	if (pre)
 		recompute_pre(b);
@@ -271,6 +353,191 @@ static void record_head_info(struct tree *b, const struct tok_tag *t)
 	}
 }
 
+/* a copy of element old (its attributes too) as parent's last child */
+static nodeid copy_elem(struct tree *b, nodeid parent, nodeid old)
+{
+	struct doc *d = b->d;
+	nodeid id = doc_add_elem(d, parent, d->nodes[old].tag);
+	unsigned long off = d->nodes[old].data;
+
+	if (id == 0)
+		return 0;
+	d->nodes[id].flags = NF_COPY;
+	while (off < d->attr_len && d->attr[off]) {
+		int a = d->attr[off];
+		size_t n = strlen((const char *)d->attr + off + 1);
+		char *v = xmalloc(n + 1);
+
+		/* (copied out: adding may move the pool) */
+		if (v) {
+			memcpy(v, d->attr + off + 1, n + 1);
+			doc_attr_add(d, a, v);
+			xfree(v);
+		}
+		off += n + 2;
+	}
+	doc_attr_end(d);
+	return id;
+}
+
+/* HTML5's reconstruction of the active formatting elements: those a
+ * block closed open again, in order, where content goes next */
+static void fmt_reopen(struct tree *b)
+{
+	int i, k;
+
+	if (!b->fmt_closed || table_ctx(cur_tag(b)))
+		return;
+	for (k = b->nfmt - 1; k >= 0 && b->fmt[k].tag && !b->fmt[k].open; k--)
+		;
+	for (i = k + 1; i < b->nfmt; i++) {
+		nodeid id = copy_elem(b, insertion_point(b), b->fmt[i].node);
+
+		if (id == 0)
+			return;
+		push(b, id, b->fmt[i].tag);
+		b->fmt[i].node = id;
+		b->fmt[i].open = 1;
+		b->fmt_closed--;
+	}
+}
+
+/* --- the adoption agency (HTML5): a formatting element's end tag after
+ * a block began in it (<a>1<p>2</a>3</p>: the block moves out, and gets
+ * a copy of the element around what it had) ------------------------ */
+
+static void stack_remove(struct tree *b, int i)
+{
+	int t = b->stag[i];
+
+	memmove(&b->stack[i], &b->stack[i + 1], (b->depth - i - 1) * sizeof b->stack[0]);
+	memmove(&b->stag[i], &b->stag[i + 1], (size_t)(b->depth - i - 1));
+	b->depth--;
+	b->nopen[t]--;
+	if (tag_flags(t) & TF_PRE)
+		recompute_pre(b);
+}
+
+static void stack_insert(struct tree *b, int i, nodeid id, int tag)
+{
+	if (b->depth == TREE_MAX_DEPTH)
+		return;
+	memmove(&b->stack[i + 1], &b->stack[i], (b->depth - i) * sizeof b->stack[0]);
+	memmove(&b->stag[i + 1], &b->stag[i], (size_t)(b->depth - i));
+	b->stack[i] = id;
+	b->stag[i] = (unsigned char)tag;
+	b->depth++;
+	b->nopen[tag]++;
+	if (tag_flags(tag) & TF_PRE)
+		b->in_pre = 1;
+}
+
+static int fmt_index(struct tree *b, nodeid id)
+{
+	int i;
+
+	for (i = b->nfmt - 1; i >= 0; i--)
+		if (b->fmt[i].tag && b->fmt[i].node == id)
+			return i;
+	return -1;
+}
+
+/* 1 if the end tag was dealt with, 0: by the usual rules */
+static int adopt(struct tree *b, int tag)
+{
+	int outer;
+
+	for (outer = 0; outer < 8; outer++) {
+		int fe = fmt_find(b, tag), fi, fbi, i, bm, inner = 0;
+		nodeid f, fb, ca, last, nf;
+
+		if (fe < 0)
+			return outer > 0;
+		f = b->fmt[fe].node;
+		for (fi = b->depth - 1; fi >= 1 && b->stack[fi] != f; fi--)
+			;
+		if (fi < 1) {
+			fmt_remove(b, fe);	/* not open: forgotten */
+			return 1;
+		}
+		for (i = fi + 1; i < b->depth; i++)
+			if (tag_flags(b->stag[i]) & TF_SCOPE)
+				return 1;	/* not in scope: ignored */
+		for (fbi = fi + 1; fbi < b->depth
+			&& !(tag_flags(b->stag[fbi]) & TF_SPECIAL); fbi++)
+			;
+		if (fbi == b->depth) {
+			/* no block in it: it simply closes */
+			close_to(b, fi);
+			if ((i = fmt_index(b, f)) >= 0)
+				fmt_remove(b, i);
+			return 1;
+		}
+		fb = b->stack[fbi];
+		ca = b->stack[fi - 1];
+		bm = fe;
+		last = fb;
+		/* the formatting elements between it and the block: copied
+		 * around the block (others leave the stack) */
+		for (i = fbi; ; ) {
+			int ne;
+
+			inner++;
+			i--;
+			if (b->stack[i] == f)
+				break;
+			ne = fmt_index(b, b->stack[i]);
+			if (inner > 3 && ne >= 0) {
+				fmt_remove(b, ne);
+				if (ne < bm)
+					bm--;
+				ne = -1;
+			}
+			if (ne < 0) {
+				stack_remove(b, i);
+				fbi--;
+				continue;
+			}
+			if ((nf = copy_elem(b, ca, b->stack[i])) == 0)
+				return 1;
+			b->fmt[ne].node = nf;
+			b->stack[i] = nf;
+			if (last == fb)
+				bm = ne + 1;
+			doc_reparent(b->d, last, nf);
+			last = nf;
+		}
+		doc_reparent(b->d, last, ca);
+		/* a copy of the element takes the block's content */
+		if ((nf = copy_elem(b, ca, f)) == 0)
+			return 1;
+		doc_move_children(b->d, fb, nf);
+		doc_reparent(b->d, nf, fb);
+		if ((fe = fmt_index(b, f)) >= 0) {
+			fmt_remove(b, fe);
+			if (fe < bm)
+				bm--;
+		}
+		if (b->nfmt < TREE_FMT_MAX) {
+			memmove(&b->fmt[bm + 1], &b->fmt[bm], (b->nfmt - bm) * sizeof b->fmt[0]);
+			b->fmt[bm].node = nf;
+			b->fmt[bm].tag = (unsigned char)tag;
+			b->fmt[bm].open = 1;
+			b->nfmt++;
+		}
+		for (fi = b->depth - 1; fi >= 1 && b->stack[fi] != f; fi--)
+			;
+		if (fi >= 1) {
+			stack_remove(b, fi);
+			if (fi < fbi)
+				fbi--;
+		}
+		/* (just above the block: the spec's stack is upside down) */
+		stack_insert(b, fbi + 1, nf, tag);
+	}
+	return 1;
+}
+
 /* In a page of frames only frames count: <frameset>, <frame>, and
  * <noframes> (its text is dropped); the rest is ignored. */
 static void frames_tag(struct tree *b, const struct tok_tag *t)
@@ -445,11 +712,11 @@ static void start_tag(struct tree *b, const struct tok_tag *t)
 			pop_n(b, 1);
 		break;
 	case TAG_A:
-		/* no nested links: close the open one (simplified adoption) */
-		close_to(b, in_scope(b, TAG_A, TF_SCOPE, NULL));
-		break;
 	case TAG_NOBR:
-		close_to(b, in_scope(b, TAG_NOBR, TF_SCOPE, NULL));
+		/* no nested links: close the open one (simplified adoption) */
+		close_to(b, in_scope(b, tag, TF_SCOPE, NULL));
+		if ((idx = fmt_find(b, tag)) >= 0)
+			fmt_remove(b, idx);
 		break;
 	case TAG_BUTTON:
 		close_to(b, in_scope(b, TAG_BUTTON, TF_SCOPE, NULL));
@@ -497,6 +764,10 @@ static void start_tag(struct tree *b, const struct tok_tag *t)
 	}
 	}
 
+	if (!(f & (TF_BLOCK | TF_HEAD)) && !table_part(tag) && tag != TAG_LI
+		&& tag != TAG_DD && tag != TAG_DT && tag != TAG_OPTION
+		&& tag != TAG_OPTGROUP && tag != TAG_BASEFONT)
+		fmt_reopen(b);
 	parent = insertion_point(b);
 	if (table_ctx(cur_tag(b)) && !table_part(tag) && tag != TAG_TABLE
 		&& tag != TAG_SCRIPT && tag != TAG_STYLE && tag != TAG_TEMPLATE
@@ -525,6 +796,12 @@ static void start_tag(struct tree *b, const struct tok_tag *t)
 	if (f & TF_VOID)
 		return;
 	push(b, id, tag);
+	if (b->depth > 0 && b->stack[b->depth - 1] == id) {
+		if (is_fmt(tag))
+			fmt_add(b, id, tag);
+		else if (is_fmt_marker(tag))
+			fmt_add(b, id, 0);
+	}
 	if (tag == TAG_PRE || tag == TAG_LISTING || tag == TAG_TEXTAREA)
 		b->pre_newline = 1;
 }
@@ -595,17 +872,33 @@ static void end_tag(struct tree *b, const struct tok_tag *t)
 			close_to(b, idx);
 		return;
 	}
+	if (is_fmt(tag) && b->nopen[TAG_SELECT])
+		return;			/* (a list's options have no formatting) */
+	if (is_fmt(tag) && b->nfmt && adopt(b, tag))
+		return;
 	/* formatting and phrasing elements: the innermost one of that name,
 	 * unless a special element is in the way (then the end tag is
 	 * ignored, as in HTML5's "any other end tag") */
 	for (i = b->depth - 1; i >= 1; i--) {
 		if (b->stag[i] == tag) {
+			/* (formatting closed with it stays active: <b>1<i>2</b>3
+			 * has 3 in an <i> again) */
+			nodeid id = b->stack[i];
+
 			close_to(b, i);
+			for (i = b->nfmt - 1; i >= 0; i--)
+				if (b->fmt[i].node == id) {
+					fmt_remove(b, i);
+					break;
+				}
 			return;
 		}
 		if (tag_flags(b->stag[i]) & TF_SPECIAL)
-			return;
+			break;
 	}
+	/* not open here: its entry goes (<p><b>x</p>y</b>: y isn't bold) */
+	if (is_fmt(tag) && (i = fmt_find(b, tag)) >= 0 && !b->fmt[i].open)
+		fmt_remove(b, i);
 }
 
 /* <style> and </style>: its text goes to the page's style sheet */
@@ -793,6 +1086,8 @@ void tree_text(void *ctx, const char *s, size_t n)
 			return;
 		}
 	}
+	if (b->fmt_closed && !all_space(s, n))
+		fmt_reopen(b);
 	where = insertion_point(b);
 	if (!b->no_frameset && !all_space(s, n))
 		b->no_frameset = 1;

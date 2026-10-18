@@ -1464,8 +1464,13 @@ static void leave(struct lay *L, nodeid id, int depth)
 		L->p->content_line = ln;
 	}
 	if (tag == TAG_A && L->link && L->link != sv->link) {
-		/* the link had no text: show something to select */
-		if (L->p->text_len == L->link_mark) {
+		/* the link had no text: show something to select (not for
+		 * the parser's empty copy of a link left open) */
+		if (L->p->text_len == L->link_mark && (d->nodes[id].flags & NF_COPY)) {
+			/* nothing to select either */
+			if (L->p->nlinks == L->link)
+				L->p->nlinks--;
+		} else if (L->p->text_len == L->link_mark) {
 			char name[40], buf[48];
 			const char *h = doc_attr(d, id, ATTR_HREF);
 

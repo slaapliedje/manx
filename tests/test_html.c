@@ -279,6 +279,18 @@ int main(void)
 	check_body("svg left open", "<table><tr><td>a<svg><g>b</td><td>c</table><p>d",
 		"    <table>\n      <tbody>\n        <tr>\n          <td>\n            \"a\"\n"
 		"            <svg>\n          <td>\n            \"c\"\n    <p>\n      \"d\"\n");
+	check_body("formatting past a block", "<p><b class=x>bold<p>still</b> not",
+		"    <p>\n      <b class=\"x\">\n        \"bold\"\n    <p>\n"
+		"      <b class=\"x\">\n        \"still\"\n      \" not\"\n");
+	check_body("misnested formatting", "<b>1<i>2</b>3</i>4",
+		"    <b>\n      \"1\"\n      <i>\n        \"2\"\n    <i>\n"
+		"      \"3\"\n    \"4\"\n");
+	check_body("adoption", "<a href=u>1<p>2</a>3</p>",
+		"    <a href=\"u\">\n      \"1\"\n    <p>\n      <a href=\"u\">\n"
+		"        \"2\"\n      \"3\"\n");
+	check_body("formatting stays out of cells", "<b><table><tr><td>x</table>y",
+		"    <b>\n      <table>\n        <tbody>\n          <tr>\n            <td>\n"
+		"              \"x\"\n      \"y\"\n");
 	check_body("stray end tags", "<div>a</span>b</div></div>c",
 		"    <div>\n      \"ab\"\n    \"c\"\n");
 	check_body("nested links", "<a href=1>one<a href=2>two</a>",

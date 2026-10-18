@@ -11,6 +11,7 @@
 #include "tokenizer.h"
 
 #define TREE_MAX_DEPTH	160
+#define TREE_FMT_MAX	16		/* formatting elements remembered */
 #define TAG_COUNT_MAX	256		/* tags are unsigned char */
 
 struct tree {
@@ -32,6 +33,15 @@ struct tree {
 	char meta_charset[40];		/* <meta charset> / http-equiv */
 	char meta_refresh[600];		/* the first <meta http-equiv=refresh>'s content */
 	int in_style;			/* reading a <style> into d->sheet */
+	/* HTML5's active formatting elements (<b>, <a>, <font>...): one a
+	 * block closed is opened again for the text after it. A marker
+	 * (tag 0) is a cell's or caption's start: they don't reach in. */
+	struct {
+		nodeid node;
+		unsigned char tag, open;
+	} fmt[TREE_FMT_MAX];
+	int nfmt;
+	int fmt_closed;			/* entries whose element was closed */
 	nodeid frameset;		/* the page is frames: its outer <frameset> */
 	int frameset_done;		/* ... and that has ended */
 	int no_frameset;		/* the body has content: a <frameset>
