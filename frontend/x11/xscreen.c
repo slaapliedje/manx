@@ -922,7 +922,9 @@ static XFontStruct *face_font(int attr, int face)
 		 * size (a class of LF_SIZE_PX) over both */
 		static const int sizes[4] = { 12, 18, 14, 12 };
 		static const int csize[8] = LF_SIZE_PX;
-		int bold = b || h, slant = (face & LF_ITALIC) != 0;
+		/* (a heading's bold is its style's, which the page's
+		 * font-weight: normal takes away) */
+		int bold = b, slant = (face & LF_ITALIC) != 0;
 		int px = face & LF_SMASK ? csize[(face & LF_SMASK) >> 5] : sizes[h];
 		const char *fam = (face & LF_MONO) ? "courier" : "helvetica";
 
