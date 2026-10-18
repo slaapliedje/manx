@@ -43,6 +43,7 @@
 #include "cache.h"
 #include "pageimg.h"
 #include "pagecss.h"
+#include "frames.h"
 #include <time.h>
 
 #define HIST_MAX	64
@@ -91,6 +92,11 @@ static char g_refresh_url[URL_MAX];
 static unsigned long g_refresh_at;
 static int g_refresh_hops, g_refreshing;
 
+/* a page of frames (html/frames.h): which document each frame shows,
+ * "name\turl" lines; and what the next load is to show in them */
+static char *g_frames;
+static const char *g_fchosen;
+
 struct hist {
 	char *url;
 	long top, sel;
@@ -99,6 +105,7 @@ struct hist {
 	size_t post_len;
 	char post_type[80];
 	char *post_key;			/* its answer in the cache */
+	char *frames;			/* a page of frames: what each showed */
 };
 static struct hist g_hist[HIST_MAX];
 static int g_nhist, g_hpos = -1;
@@ -787,6 +794,8 @@ static void load_string(const char *html, const char *url)
 	pcss_end();
 	g_img_busy = g_css_busy = 0;
 	g_refresh_url[0] = '\0';
+	xfree(g_frames);
+	g_frames = NULL;
 	doc_free(&g_doc);
 	doc_init(&g_doc, 0);
 	g_doc.img_w = scr_pixels() ? scr_pane_w() : 0;	/* (srcset) */
@@ -912,6 +921,8 @@ static void doc_reset(void)
 	g_img_busy = g_css_busy = 0;
 	g_img_relayout = 0;
 	g_refresh_url[0] = '\0';
+	xfree(g_frames);
+	g_frames = NULL;
 	doc_free(&g_doc);
 	doc_init(&g_doc, 0);
 	g_started = g_gopher = g_feed = g_aborted = g_unsupported = 0;
@@ -919,6 +930,104 @@ static void doc_reset(void)
 	g_top = 0;
 	g_sel = -1;
 	g_info[0] = '\0';
+}
+
+/* frames_get: a frame's document, fetched whole */
+struct fgot {
+	struct frame_bytes *out;
+	size_t cap;
+};
+
+static void fr_head(void *ctx, int status, const char *ctype,
+	const char *charset, const char *url)
+{
+	struct fgot *g = ctx;
+
+	(void)status;
+	(void)ctype;
+	snprintf(g->out->charset, sizeof g->out->charset, "%s", charset);
+	snprintf(g->out->url, sizeof g->out->url, "%s", url ? url : "");
+}
+
+static int fr_body(void *ctx, const unsigned char *d, size_t n)
+{
+	struct fgot *g = ctx;
+	struct frame_bytes *o = g->out;
+
+	if (o->len + n > g->cap) {
+		size_t cap = g->cap ? g->cap * 2 : 16384;
+		unsigned char *p;
+
+		while (cap < o->len + n)
+			cap *= 2;
+		if ((p = xrealloc(o->data, cap)) == NULL)
+			return -1;
+		o->data = p;
+		g->cap = cap;
+	}
+	memcpy(o->data + o->len, d, n);
+	o->len += n;
+	return stop_asked() ? -1 : 0;
+}
+
+static void fr_reset(void *ctx)
+{
+	struct fgot *g = ctx;
+
+	g->out->len = 0;
+}
+
+static int get_frame(void *ctx, const char *url, struct frame_bytes *out)
+{
+	static struct fetch_result res;
+	struct fetch_opts o;
+	struct fetch_cb cb;
+	struct fgot g;
+
+	(void)ctx;
+	/* (a page from the network gets no local files, as for its
+	 * pictures and style sheets) */
+	if (strncmp(url, "file:", 5) == 0 && strncmp(g_url, "file:", 5) != 0) {
+		snprintf(out->error, sizeof out->error, "a local file");
+		return -1;
+	}
+	memset(&g, 0, sizeof g);
+	g.out = out;
+	memset(&cb, 0, sizeof cb);
+	cb.ctx = &g;
+	cb.status = on_status;
+	cb.head = fr_head;
+	cb.body = fr_body;
+	cb.reset = fr_reset;
+	memset(&o, 0, sizeof o);
+	o.referer = g_url;
+	message("Loading frame %.250s", url);
+	draw(0);
+	if (fetch_ex(url, "GET", &o, &cb, &res) < 0) {
+		snprintf(out->error, sizeof out->error, "%s", res.error);
+		return -1;
+	}
+	return 0;
+}
+
+/* the page is frames: make them one page, in its place */
+static void frames_page(void)
+{
+	char *state, *html;
+
+	html = frames_compose(&g_doc, g_load.tree.frameset, &g_base,
+		g_fchosen ? g_fchosen : "", get_frame, NULL, &state);
+	if (html == NULL)
+		return;			/* (the frame links stay) */
+	doc_free(&g_doc);
+	doc_init(&g_doc, 0);
+	g_doc.img_w = scr_pixels() ? scr_pane_w() : 0;	/* (srcset) */
+	html_load_begin(&g_load, &g_doc, "utf-8", 0);
+	html_load_feed(&g_load, (const unsigned char *)html, strlen(html));
+	html_load_end(&g_load);
+	xfree(html);
+	xfree(g_frames);
+	g_frames = state;
 }
 
 /* the document is complete: its base URL, forms, layout, the fragment */
@@ -943,6 +1052,8 @@ static void finish_doc(const char *frag)
 		if (url_resolve(&g_base, g_load.tree.base_href, &b) == URL_OK)
 			g_base = b;
 	}
+	if (g_load.tree.frameset && !g_gopher && !g_feed)
+		frames_page();
 	make_forms();
 	pimg_begin(&g_doc, &g_base, g_url);
 	if (html_stylesheets) {
@@ -1190,17 +1301,20 @@ static void hist_push(const char *url)
 		xfree(g_hist[i].url);
 		xfree(g_hist[i].post_body);
 		xfree(g_hist[i].post_key);
+		xfree(g_hist[i].frames);
 	}
 	g_nhist = g_hpos + 1;
 	if (g_nhist == HIST_MAX) {
 		xfree(g_hist[0].url);
 		xfree(g_hist[0].post_body);
 		xfree(g_hist[0].post_key);
+		xfree(g_hist[0].frames);
 		memmove(g_hist, g_hist + 1, (HIST_MAX - 1) * sizeof g_hist[0]);
 		g_nhist--;
 	}
 	memset(&g_hist[g_nhist], 0, sizeof g_hist[0]);
 	g_hist[g_nhist].url = xstrdup(url);
+	g_hist[g_nhist].frames = g_frames ? xstrdup(g_frames) : NULL;
 	g_hist[g_nhist].sel = -1;
 	g_hpos = g_nhist++;
 }
@@ -1210,6 +1324,24 @@ static void visit(const char *url)
 {
 	hist_save_pos();
 	load(url, NULL, L_NORMAL, NULL);
+	hist_push(g_url);
+}
+
+/* a link aimed at one of the page's frames: the page again, with url in
+ * that frame */
+static void visit_frame(const char *name, const char *url)
+{
+	char *chosen = frames_choose(g_frames, name, url);
+	static char page[URL_MAX];
+
+	if (chosen == NULL)
+		return;
+	snprintf(page, sizeof page, "%.*s", (int)strcspn(g_url, "#"), g_url);
+	hist_save_pos();
+	g_fchosen = chosen;
+	load(page, NULL, L_NORMAL, NULL);
+	g_fchosen = NULL;
+	xfree(chosen);
 	hist_push(g_url);
 }
 
@@ -1250,7 +1382,9 @@ static void reload_entry(struct hist *h, int mode)
 	static struct cache_meta m;
 
 	if (h->post_body == NULL) {
+		g_fchosen = h->frames;
 		load(h->url, NULL, mode, NULL);
+		g_fchosen = NULL;
 		return;
 	}
 	if (mode == L_HISTORY && h->post_key && cache_lookup(h->post_key, &m)
@@ -1449,8 +1583,10 @@ static void do_refresh(void)
 	xfree(h->url);
 	xfree(h->post_body);
 	xfree(h->post_key);
+	xfree(h->frames);
 	memset(h, 0, sizeof *h);
 	h->url = xstrdup(g_url);
+	h->frames = g_frames ? xstrdup(g_frames) : NULL;
 	h->sel = -1;
 }
 
@@ -1910,6 +2046,12 @@ static void follow(void)
 	if (h == NULL || url_resolve(&g_base, h, &u) != URL_OK
 		|| url_format(&u, buf, sizeof buf, 1) != URL_OK) {
 		message("That link's URL is not usable.", NULL);
+		return;
+	}
+	if (g_frames && g_doc.nodes[k->node].tag == TAG_A
+		&& (h = doc_attr(&g_doc, k->node, ATTR_TARGET)) != NULL
+		&& frames_has(g_frames, h)) {
+		visit_frame(h, buf);
 		return;
 	}
 	go_url(buf);

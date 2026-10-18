@@ -13,12 +13,15 @@
  *   -w   lay the page out N columns wide and print it (-u: for a UTF-8
  *        terminal, -a: ASCII; default Latin-1); -r repeats the layout
  *        for timing
+ *   -F   a page of frames: fetch its frames and make it one page
+ *        (html/frames.h), which the rest is done to (alone: printed)
  * A URL is fetched with the network core, parsed as the bytes arrive.
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
+#include <unistd.h>
 #include "os.h"
 #include "tags.h"
 #include "doc.h"
@@ -28,6 +31,7 @@
 #include "conn.h"
 #include "fetch.h"
 #include "layout.h"
+#include "frames.h"
 
 static struct html_load g_load;
 static struct doc g_doc;
@@ -80,6 +84,72 @@ static void on_reset(void *ctx)
 	doc_free(&g_doc);
 	doc_init(&g_doc, g_doc.byte_cap);
 	g_started = 0;
+}
+
+/* frames_get: a frame's bytes, with fetch */
+struct fbuf {
+	struct frame_bytes *out;
+	size_t cap;
+};
+
+static void f_head(void *ctx, int status, const char *ctype,
+	const char *charset, const char *url)
+{
+	struct fbuf *b = ctx;
+
+	(void)status;
+	(void)ctype;
+	snprintf(b->out->charset, sizeof b->out->charset, "%s", charset);
+	snprintf(b->out->url, sizeof b->out->url, "%s", url ? url : "");
+}
+
+static int f_body(void *ctx, const unsigned char *d, size_t n)
+{
+	struct fbuf *b = ctx;
+	struct frame_bytes *o = b->out;
+
+	if (o->len + n > b->cap) {
+		size_t cap = b->cap ? b->cap * 2 : 16384;
+		unsigned char *p;
+
+		while (cap < o->len + n)
+			cap *= 2;
+		if ((p = xrealloc(o->data, cap)) == NULL)
+			return -1;
+		o->data = p;
+		b->cap = cap;
+	}
+	memcpy(o->data + o->len, d, n);
+	o->len += n;
+	return 0;
+}
+
+static void f_reset(void *ctx)
+{
+	struct fbuf *b = ctx;
+
+	b->out->len = 0;
+}
+
+static int get_frame(void *ctx, const char *url, struct frame_bytes *out)
+{
+	static struct fetch_result res;
+	struct fetch_cb cb;
+	struct fbuf b;
+
+	(void)ctx;
+	memset(&b, 0, sizeof b);
+	b.out = out;
+	memset(&cb, 0, sizeof cb);
+	cb.ctx = &b;
+	cb.head = f_head;
+	cb.body = f_body;
+	cb.reset = f_reset;
+	if (fetch(url, "GET", &cb, &res) < 0) {
+		snprintf(out->error, sizeof out->error, "%s", res.error);
+		return -1;
+	}
+	return 0;
 }
 
 static int count_links(const struct doc *d)
@@ -172,7 +242,7 @@ static void dump_page(const struct page *pg)
 int main(int argc, char **argv)
 {
 	int dump = 0, links = 0, text = 0, stats = 0, a, width = 0, reps = 1;
-	int structure = 0;
+	int structure = 0, frames = 0;
 	enum term_cs tcs = TCS_LATIN1;
 	size_t cap = 0;
 	const char *src;
@@ -195,6 +265,7 @@ int main(int argc, char **argv)
 		else if (strcmp(argv[a], "-r") == 0 && a + 1 < argc)
 			reps = atoi(argv[++a]);
 		else if (strcmp(argv[a], "-S") == 0) structure = 1;
+		else if (strcmp(argv[a], "-F") == 0) frames = 1;
 		else if (strcmp(argv[a], "-u") == 0) tcs = TCS_UTF8;
 		else if (strcmp(argv[a], "-a") == 0) tcs = TCS_ASCII;
 		else
@@ -203,7 +274,7 @@ int main(int argc, char **argv)
 	if (a != argc - 1)
 		usage();
 	src = argv[a];
-	if (!dump && !links && !text && !width)
+	if (!dump && !links && !text && !width && !frames)
 		stats = 1;
 	if (doc_init(&g_doc, cap) < 0) {
 		fprintf(stderr, "uparse: out of memory\n");
@@ -211,14 +282,17 @@ int main(int argc, char **argv)
 	}
 	t0 = os_msec();
 
-	if (strstr(src, "://")) {
-		struct fetch_cb cb;
-		static struct fetch_result res;
+	if (strstr(src, "://") || frames) {
 		char seed[600];
 
 		signal(SIGPIPE, SIG_IGN);
 		entropy_init(os_datapath(seed, sizeof seed, "seed"));
 		tls_init(getenv("MANX_CAFILE"), NULL);
+	}
+	if (strstr(src, "://")) {
+		struct fetch_cb cb;
+		static struct fetch_result res;
+
 		memset(&cb, 0, sizeof cb);
 		cb.head = on_head;
 		cb.body = on_body;
@@ -227,8 +301,6 @@ int main(int argc, char **argv)
 			fprintf(stderr, "uparse: %s: %s\n", src, res.error);
 			return 1;
 		}
-		conn_close_all();
-		entropy_save();
 	} else {
 		static unsigned char buf[4096];
 		FILE *f = strcmp(src, "-") == 0 ? stdin : fopen(src, "rb");
@@ -252,6 +324,43 @@ int main(int argc, char **argv)
 
 		html_load_end(&g_load);
 		g_parse_ms += os_msec() - t1;
+	}
+	if (frames && g_load.tree.frameset) {
+		static struct url base;
+		static char where[URL_MAX];
+		char *html, *state;
+
+		if (strstr(src, "://"))
+			snprintf(where, sizeof where, "%s", src);
+		else if (src[0] == '/')
+			snprintf(where, sizeof where, "file://%s", src);
+		else {
+			char cwd[1024];
+
+			if (getcwd(cwd, sizeof cwd) == NULL)
+				cwd[0] = '\0';
+			snprintf(where, sizeof where, "file://%s/%s", cwd, src);
+		}
+		url_parse(where, &base);
+		html = frames_compose(&g_doc, g_load.tree.frameset, &base, "",
+			get_frame, NULL, &state);
+		if (html == NULL) {
+			fprintf(stderr, "uparse: frames: out of memory\n");
+			return 1;
+		}
+		if (!dump && !links && !text && !width && !stats)
+			fputs(html, stdout);
+		doc_free(&g_doc);
+		doc_init(&g_doc, cap);
+		html_load_begin(&g_load, &g_doc, "utf-8", 0);
+		html_load_feed(&g_load, (const unsigned char *)html, strlen(html));
+		html_load_end(&g_load);
+		xfree(html);
+		xfree(state);
+	}
+	if (strstr(src, "://") || frames) {
+		conn_close_all();
+		entropy_save();
 	}
 
 	if (dump)
