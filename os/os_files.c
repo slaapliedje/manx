@@ -17,6 +17,37 @@ int chmod(const char *, mode_t);
 #else
 #include <unistd.h>
 #endif
+#if defined(__sgi)
+#include <sys/systeminfo.h>
+#elif !defined(MANX_SYSV4) && !defined(MANX_HELIOS)
+#include <sys/utsname.h>
+#endif
+
+const char *os_cpu(void)
+{
+#if defined(MANX_SYSV4) || defined(MANX_HELIOS)
+	return "68030";			/* (what the build is for) */
+#elif defined(__sgi)
+	/* IRIX: "R10000 2.7", the chip and its revision */
+	static char cpu[64];
+	char b[64];
+
+	if (cpu[0] == '\0') {
+		if (sysinfo(_MIPS_SI_PROCESSORS, b, sizeof b) > 0) {
+			b[strcspn(b, " ")] = '\0';
+			snprintf(cpu, sizeof cpu, "MIPS %s", b);
+		} else
+			strcpy(cpu, "MIPS");
+	}
+	return cpu;
+#else
+	static struct utsname u;
+
+	if (u.machine[0] == '\0' && uname(&u) < 0)
+		return "this computer's";
+	return u.machine;
+#endif
+}
 
 const char *os_datadir(void)
 {

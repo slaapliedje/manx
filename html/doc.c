@@ -120,6 +120,80 @@ nodeid doc_add_elem(struct doc *d, nodeid parent, int tag)
 	return id;
 }
 
+void doc_unlink(struct doc *d, nodeid id)
+{
+	struct node *n = &d->nodes[id];
+	struct node *p = &d->nodes[n->parent];
+	nodeid k, prev = 0;
+
+	for (k = p->first; k && k != id; k = d->nodes[k].next)
+		prev = k;
+	if (k == 0)
+		return;
+	if (prev)
+		d->nodes[prev].next = n->next;
+	else
+		p->first = n->next;
+	if (p->last == id)
+		p->last = prev;
+	n->next = 0;
+	d->last_text = 0;		/* text may not join what's gone */
+}
+
+void doc_move_before(struct doc *d, nodeid id, nodeid ref)
+{
+	nodeid parent = d->nodes[ref].parent, k, prev = 0;
+	nodeid keep = d->last_text;
+
+	if (d->nodes[id].parent != parent || id == ref)
+		return;
+	doc_unlink(d, id);
+	d->last_text = keep;
+	for (k = d->nodes[parent].first; k && k != ref; k = d->nodes[k].next)
+		prev = k;
+	if (k == 0)
+		return;
+	d->nodes[id].next = ref;
+	if (prev)
+		d->nodes[prev].next = id;
+	else
+		d->nodes[parent].first = id;
+}
+
+/* id as parent's last child */
+static void append_child(struct doc *d, nodeid parent, nodeid id)
+{
+	struct node *p = &d->nodes[parent];
+
+	d->nodes[id].parent = parent;
+	d->nodes[id].next = 0;
+	if (p->last)
+		d->nodes[p->last].next = id;
+	else
+		p->first = id;
+	p->last = id;
+}
+
+void doc_reparent(struct doc *d, nodeid id, nodeid parent)
+{
+	nodeid keep = d->last_text;
+
+	doc_unlink(d, id);
+	d->last_text = keep;
+	append_child(d, parent, id);
+}
+
+void doc_move_children(struct doc *d, nodeid from, nodeid to)
+{
+	nodeid k = d->nodes[from].first, next;
+
+	d->nodes[from].first = d->nodes[from].last = 0;
+	for (; k; k = next) {
+		next = d->nodes[k].next;
+		append_child(d, to, k);
+	}
+}
+
 static int is_ws(char c)
 {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f';

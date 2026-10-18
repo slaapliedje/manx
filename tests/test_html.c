@@ -260,10 +260,15 @@ int main(void)
 		"    \"a bcdefg\"\n");
 	check_body("table",
 		"<table><tr><td>1<td>2<tr><td>3</table>",
-		"    <table>\n      <tr>\n        <td>\n          \"1\"\n        <td>\n"
-		"          \"2\"\n      <tr>\n        <td>\n          \"3\"\n");
+		"    <table>\n      <tbody>\n        <tr>\n          <td>\n            \"1\"\n"
+		"          <td>\n            \"2\"\n        <tr>\n          <td>\n"
+		"            \"3\"\n");
 	check_body("cell without row", "<table><td>x</table>y",
-		"    <table>\n      <tr>\n        <td>\n          \"x\"\n    \"y\"\n");
+		"    <table>\n      <tbody>\n        <tr>\n          <td>\n"
+		"            \"x\"\n    \"y\"\n");
+	check_body("fostered", "<table>a<b>b</b><tr><td>c</td>d</table>",
+		"    \"a\"\n    <b>\n      \"b\"\n    \"d\"\n    <table>\n      <tbody>\n"
+		"        <tr>\n          <td>\n            \"c\"\n");
 	check("head", "<title>T  &amp; x</title><meta charset=utf-8><p>b",
 		"<html>\n  <head>\n    <title>\n      \"T  & x\"\n    <meta charset=\"utf-8\">\n"
 		"  <body>\n    <p>\n      \"b\"\n");
@@ -271,6 +276,21 @@ int main(void)
 		"    <pre>\n      \"  a\\n b\"\n    \"c\"\n");
 	check_body("svg dropped", "x<svg><text>hide</text><svg></svg></svg>y<math><mi>z</mi></math>",
 		"    \"x\"\n    <svg>\n    \"y\"\n    <math>\n");
+	check_body("svg left open", "<table><tr><td>a<svg><g>b</td><td>c</table><p>d",
+		"    <table>\n      <tbody>\n        <tr>\n          <td>\n            \"a\"\n"
+		"            <svg>\n          <td>\n            \"c\"\n    <p>\n      \"d\"\n");
+	check_body("formatting past a block", "<p><b class=x>bold<p>still</b> not",
+		"    <p>\n      <b class=\"x\">\n        \"bold\"\n    <p>\n"
+		"      <b class=\"x\">\n        \"still\"\n      \" not\"\n");
+	check_body("misnested formatting", "<b>1<i>2</b>3</i>4",
+		"    <b>\n      \"1\"\n      <i>\n        \"2\"\n    <i>\n"
+		"      \"3\"\n    \"4\"\n");
+	check_body("adoption", "<a href=u>1<p>2</a>3</p>",
+		"    <a href=\"u\">\n      \"1\"\n    <p>\n      <a href=\"u\">\n"
+		"        \"2\"\n      \"3\"\n");
+	check_body("formatting stays out of cells", "<b><table><tr><td>x</table>y",
+		"    <b>\n      <table>\n        <tbody>\n          <tr>\n            <td>\n"
+		"              \"x\"\n      \"y\"\n");
 	check_body("stray end tags", "<div>a</span>b</div></div>c",
 		"    <div>\n      \"ab\"\n    \"c\"\n");
 	check_body("nested links", "<a href=1>one<a href=2>two</a>",
@@ -292,6 +312,20 @@ int main(void)
 	check_body("noscript shown", "<noscript><p>no js</p></noscript>",
 		"    <noscript>\n      <p>\n        \"no js\"\n");
 	check_body("CRLF", "a\r\nb\rc", "    \"a b c\"\n");
+	check("frameset", "<html><frameset rows=\"100,*\"><frame src=menu.html name=menu>"
+		"<frameset cols=\"1,2\"><frame src=a><frame src=b></frameset>"
+		"<noframes><p>none</noframes>x<p>y</frameset><p>z",
+		"<html>\n  <head>\n  <frameset rows=\"100,*\">\n"
+		"    <frame src=\"menu.html\" name=\"menu\">\n    <frameset cols=\"1,2\">\n"
+		"      <frame src=\"a\">\n      <frame src=\"b\">\n    <noframes>\n");
+	check("frameset after head and empty body",
+		"<title>t</title><body>\n<div><frameset><frame src=a>",
+		"<html>\n  <head>\n    <title>\n      \"t\"\n  <frameset>\n"
+		"    <frame src=\"a\">\n");
+	check_body("frameset too late", "x<frameset><frame src=a>y",
+		"    \"xy\"\n");
+	check_body("frameset after an image", "<img src=i><frameset>",
+		"    <img src=\"i\">\n");
 	check("plain text", "", "<html>\n  <head>\n  <body>\n");
 	{
 		char *got = parse("a <b>\n&amp;", 11, 3, "", 1);

@@ -16,9 +16,13 @@ struct node {
 	unsigned char type;
 	unsigned char tag;		/* enum tag, for NODE_ELEM */
 	nodeid parent, first, last, next;
-	unsigned short pad;
+	unsigned short flags;		/* NF_ */
 	unsigned long data;		/* text or attribute pool offset */
 };
+
+/* node flags */
+#define NF_COPY		1	/* the parser's copy of a formatting element
+				 * (HTML5 opens them again past a block) */
 
 #define DOC_MAX_NODES	65535U
 
@@ -64,6 +68,19 @@ void doc_attr_end(struct doc *d);
  * AVIF, which can't be shown here. Its URL (*len bytes into ss), or NULL.
  */
 const char *doc_srcset_pick(const char *ss, int target, size_t *len);
+
+/* Take a node (and what's inside) out of its parent's children; its
+ * space stays used until the document is freed. */
+void doc_unlink(struct doc *d, nodeid id);
+
+/* Put id (a child of ref's parent) just before ref. */
+void doc_move_before(struct doc *d, nodeid id, nodeid ref);
+
+/* Move id (and what's in it) to be parent's last child. */
+void doc_reparent(struct doc *d, nodeid id, nodeid parent);
+
+/* Move all of from's children to the end of to's. */
+void doc_move_children(struct doc *d, nodeid from, nodeid to);
 
 /* Append text to parent: joined to its last child if that is text and
  * still ends the pool. */

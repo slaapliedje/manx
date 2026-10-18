@@ -11,6 +11,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#ifndef MANX_HELIOS
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#endif
 #include "os.h"
 #include "conn.h"
 #include "http.h"
@@ -557,6 +562,128 @@ static int gopher_fetch(const struct url *u, const struct fetch_cb *cb,
 
 /* --- file -------------------------------------------------------------- */
 
+#ifndef MANX_HELIOS
+#define DIR_MAX_ENTRIES	4000
+
+static int name_cmp(const void *a, const void *b)
+{
+	return strcmp(*(char *const *)a, *(char *const *)b);
+}
+
+/* s into out for HTML text (esc 0) or a URL's path (esc 1) */
+static size_t dir_put(char *out, size_t n, const char *s, int url)
+{
+	size_t o = 0;
+
+	for (; *s && o + 7 < n; s++) {
+		unsigned char c = (unsigned char)*s;
+
+		if (url && (c <= 0x20 || c >= 0x7F || strchr("\"#%&'<>?", c)))
+			o += (size_t)sprintf(out + o, "%%%02X", c);
+		else if (!url && c == '<')
+			o += (size_t)sprintf(out + o, "&lt;");
+		else if (!url && c == '&')
+			o += (size_t)sprintf(out + o, "&amp;");
+		else if (!url && c == '>')
+			o += (size_t)sprintf(out + o, "&gt;");
+		else
+			out[o++] = (char)c;
+	}
+	out[o] = '\0';
+	return o;
+}
+
+/* a directory as a page: its entries, sorted, each a link (directories
+ * with a slash), with the parent first. 0, or -1. */
+static int dir_listing(const char *path, const struct fetch_cb *cb,
+	struct fetch_result *res)
+{
+	static char line[3 * URL_MAX + 512], full[URL_MAX], ep[3 * URL_MAX], et[URL_MAX * 2];
+	char base[URL_MAX];
+	char **names = NULL;
+	size_t nn = 0, cap = 0, i, bl;
+	struct dirent *d;
+	struct stat st;
+	DIR *dir;
+
+	if ((dir = opendir(path)) == NULL)
+		return fail(res, "can't read the directory");
+	while ((d = readdir(dir)) != NULL && nn < DIR_MAX_ENTRIES) {
+		if (strcmp(d->d_name, ".") == 0 || strcmp(d->d_name, "..") == 0)
+			continue;
+		if (nn == cap) {
+			char **m = realloc(names, (cap = cap ? cap * 2 : 64) * sizeof *names);
+
+			if (m == NULL)
+				break;
+			names = m;
+		}
+		if ((names[nn] = malloc(strlen(d->d_name) + 1)) == NULL)
+			break;
+		strcpy(names[nn++], d->d_name);
+	}
+	closedir(dir);
+	if (nn)
+		qsort(names, nn, sizeof *names, name_cmp);
+
+	/* links are whole paths: a directory named without its slash would
+	 * have relative ones resolve against its parent */
+	snprintf(base, sizeof base, "%s", path);
+	bl = strlen(base);
+	while (bl > 1 && base[bl - 1] == '/')
+		base[--bl] = '\0';
+	if (strcmp(base, "/") == 0)
+		base[0] = '\0', bl = 0;
+
+	res->status = 200;
+	snprintf(res->content_type, sizeof res->content_type, "text/html");
+	if (cb->head) {
+		snprintf(line, sizeof line, "file://%s/", base);
+		cb->head(cb->ctx, 200, "text/html", "", line);
+	}
+	dir_put(et, sizeof et, bl ? base : "/", 0);
+	snprintf(line, sizeof line, "<title>%s</title><h1>%s</h1><pre>", et, et);
+	if (bl) {
+		char *slash;
+
+		snprintf(full, sizeof full, "%s", base);
+		slash = strrchr(full, '/');
+		slash[1] = '\0';
+		dir_put(ep, sizeof ep, full, 1);
+		snprintf(line + strlen(line), sizeof line - strlen(line),
+			"<a href=\"file://%s\">../</a>\n", ep);
+	}
+	if (cb->body)
+		cb->body(cb->ctx, (const unsigned char *)line, strlen(line));
+	res->body_bytes += (long)strlen(line);
+	for (i = 0; i < nn; i++) {
+		int isdir;
+		long size = 0;
+
+		snprintf(full, sizeof full, "%s/%s", base, names[i]);
+		isdir = stat(full, &st) == 0 && S_ISDIR(st.st_mode);
+		if (!isdir && stat(full, &st) == 0)
+			size = (long)st.st_size;
+		dir_put(ep, sizeof ep, full, 1);
+		dir_put(et, sizeof et, names[i], 0);
+		if (isdir)
+			snprintf(line, sizeof line, "<a href=\"file://%s/\">%s/</a>\n", ep, et);
+		else
+			snprintf(line, sizeof line, "<a href=\"file://%s\">%s</a>  %ld\n",
+				ep, et, size);
+		if (cb->body && cb->body(cb->ctx, (const unsigned char *)line, strlen(line)) < 0)
+			break;
+		res->body_bytes += (long)strlen(line);
+	}
+	if (cb->body)
+		cb->body(cb->ctx, (const unsigned char *)"</pre>", 6);
+	for (i = 0; i < nn; i++)
+		free(names[i]);
+	free(names);
+	return 0;
+}
+#endif
+
 static int file_fetch(const struct url *u, const struct fetch_cb *cb,
 	struct fetch_result *res)
 {
@@ -580,6 +707,16 @@ static int file_fetch(const struct url *u, const struct fetch_cb *cb,
 			path[n++] = *p;
 	}
 	path[n] = '\0';
+#ifndef MANX_HELIOS
+	{
+		struct stat st;
+
+		if (path[0] == '\0')
+			strcpy(path, "/");
+		if (stat(path, &st) == 0 && S_ISDIR(st.st_mode))
+			return dir_listing(path, cb, res);
+	}
+#endif
 	if ((f = fopen(path, "rb")) == NULL)
 		return fail(res, "can't open the file");
 	dot = strrchr(path, '.');

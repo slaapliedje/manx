@@ -3,6 +3,8 @@
 #   make                  host build (Linux): tests, fuzzing, development
 #   make TARGET=sysv4     static AMIX binary; runs on AMIX and, through
 #                         atari-sysv-sp1's amx module, on Atari System V
+#   make TARGET=irix      IRIX 6.5 (MIPS), built on the machine with SGUG
+#                         RSE's gcc and gmake
 #   make TARGET=no64      host build as if the compiler had no 64-bit
 #                         integer type (Helios C): `make TARGET=no64 test-no64`
 #
@@ -44,6 +46,20 @@ BRFLAGS := $(CPU) $(BROPT) -fomit-frame-pointer \
 LDLIBS  := -lsocket
 TERMLIB := -ltermlib
 X11LIB  := -lX11
+else ifeq ($(TARGET),irix)
+# IRIX 6.5 on MIPS, built natively with SGUG RSE's gcc 9 (n32). Its own
+# <stdint.h> (IRIX has only <inttypes.h>) and clock (no CLOCK_MONOTONIC);
+# BearSSL's X25519 in place of crypt68k's 68030 code.
+CC      := gcc
+LD      := $(CC)
+AR      := ar
+OS      := os/irix
+IRIXINC := -Ios/irix/include
+CFLAGS  := -DMANX_NO_C68K=1 $(IRIXINC) -std=gnu99 -O2 -g -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers
+BRFLAGS := $(IRIXINC) -O2 -g -DBR_USE_URANDOM=1 -DBR_USE_UNIX_TIME=1
+LDLIBS  :=
+TERMLIB := -ltinfo
+X11LIB  := -L/usr/lib32 -lX11
 else ifeq ($(TARGET),no64)
 # the host, compiling as Helios C does for the transputer: no 64-bit
 # integer type (tests/no_u64.h), so BearSSL's 32-bit code (BR_NO_U64)
@@ -59,7 +75,7 @@ LDLIBS  :=
 TERMLIB := -ltinfo
 X11LIB  := -lX11
 else
-$(error TARGET must be host, sysv4 or no64)
+$(error TARGET must be host, sysv4, irix or no64)
 endif
 
 CRYPT68K := third_party/crypt68k
@@ -81,6 +97,9 @@ C68K_OBJ := $(B)/$(CRYPT68K)/src/x25519.o $(B)/$(CRYPT68K)/src/fe_m68k.o \
 	$(B)/$(CRYPT68K)/src/bearssl_x25519.o
 ifeq ($(TARGET),no64)
 C68K_OBJ :=		# (68030 assembly: BearSSL's X25519 instead)
+endif
+ifeq ($(TARGET),irix)
+C68K_OBJ :=		# (not a 68k: BearSSL's X25519 instead)
 endif
 TLS_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard tls/*.c)) $(C68K_OBJ)
 HTML_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard text/*.c html/*.c style/*.c layout/*.c))
@@ -268,8 +287,15 @@ check: test build/fuzz/fuzz_html build/fuzz/fuzz_image build/fuzz/fuzz_mail buil
 	build/fuzz/fuzz_mail $(CHECK_ITERS)0 1
 	build/fuzz/fuzz_feed $(CHECK_ITERS) 1
 
+# the HTML5 tree-construction tests (tests/fetch_html5lib.sh first): a
+# score per test file, not pass/fail (our tree builder leaves out parts of
+# HTML5 on purpose; see html/tree.h). H5V=N shows N failures.
+H5V ?= 0
+html5lib: $(B)/uparse
+	python3 tests/html5lib_tree.py $(B)/uparse build/wpt/html/syntax/parsing -v $(H5V)
+
 clean:
 	rm -rf build
 
-.PHONY: all clean test fuzz check
+.PHONY: all clean test fuzz check html5lib
 -include $(shell find build -name '*.d' 2>/dev/null)

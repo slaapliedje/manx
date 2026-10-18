@@ -43,6 +43,8 @@
 #include "cache.h"
 #include "pageimg.h"
 #include "pagecss.h"
+#include "frames.h"
+#include "css.h"
 #include <time.h>
 
 #define HIST_MAX	64
@@ -91,6 +93,11 @@ static char g_refresh_url[URL_MAX];
 static unsigned long g_refresh_at;
 static int g_refresh_hops, g_refreshing;
 
+/* a page of frames (html/frames.h): which document each frame shows,
+ * "name\turl" lines; and what the next load is to show in them */
+static char *g_frames;
+static const char *g_fchosen;
+
 struct hist {
 	char *url;
 	long top, sel;
@@ -99,6 +106,7 @@ struct hist {
 	size_t post_len;
 	char post_type[80];
 	char *post_key;			/* its answer in the cache */
+	char *frames;			/* a page of frames: what each showed */
 };
 static struct hist g_hist[HIST_MAX];
 static int g_nhist, g_hpos = -1;
@@ -257,9 +265,9 @@ static void draw_images(int x, int base, const char *s, int n, int attr)
 		long k = layout_image(p, s);
 
 		if (k < 0) {
-			int sw = layout_spacer_w(s);	/* (a grid's gap) */
+			int sw = layout_spacer_w(s);	/* (a grid's gap, a float's) */
 
-			if (sw > 0)
+			if (sw != LAYOUT_NO_SPACER)
 				x += sw;
 			continue;
 		}
@@ -460,8 +468,10 @@ static void draw(int full)
 			long y0 = tops[g_top];
 			unsigned long b;
 
-			/* the boxes under the text: tables' and cells' backgrounds
-			 * and borders */
+			/* the page's background, then the boxes under the text:
+			 * blocks', tables' and cells' backgrounds and borders */
+			if (g_page.page_bg != LBOX_NONE)
+				scr_rect(0, 0, scr_pane_w(), h, g_page.page_bg, 0, 0);
 			for (b = 0; b < g_page.nboxes; b++) {
 				const struct lbox *bx = &g_page.boxes[b];
 				long by;
@@ -787,6 +797,8 @@ static void load_string(const char *html, const char *url)
 	pcss_end();
 	g_img_busy = g_css_busy = 0;
 	g_refresh_url[0] = '\0';
+	xfree(g_frames);
+	g_frames = NULL;
 	doc_free(&g_doc);
 	doc_init(&g_doc, 0);
 	g_doc.img_w = scr_pixels() ? scr_pane_w() : 0;	/* (srcset) */
@@ -852,7 +864,7 @@ static const char help_html[] =
 	"</pre><p>Start pages: <a href=\"about:start\">about:start</a>";
 
 static const char start_html[] =
-	"<title>Manx</title><h1>Manx - a web browser for 68030 Unix</h1>"
+	"<title>Manx</title><h1>Manx - a web browser for %s Unix</h1>"
 	"<p>Press <b>g</b> and type a URL, or words to search for. "
 	"<b>?</b> lists the keys.</p><ul>"
 	"<li><a href=\"https://lite.duckduckgo.com/lite/\">DuckDuckGo Lite</a>"
@@ -912,6 +924,8 @@ static void doc_reset(void)
 	g_img_busy = g_css_busy = 0;
 	g_img_relayout = 0;
 	g_refresh_url[0] = '\0';
+	xfree(g_frames);
+	g_frames = NULL;
 	doc_free(&g_doc);
 	doc_init(&g_doc, 0);
 	g_started = g_gopher = g_feed = g_aborted = g_unsupported = 0;
@@ -919,6 +933,104 @@ static void doc_reset(void)
 	g_top = 0;
 	g_sel = -1;
 	g_info[0] = '\0';
+}
+
+/* frames_get: a frame's document, fetched whole */
+struct fgot {
+	struct frame_bytes *out;
+	size_t cap;
+};
+
+static void fr_head(void *ctx, int status, const char *ctype,
+	const char *charset, const char *url)
+{
+	struct fgot *g = ctx;
+
+	(void)status;
+	(void)ctype;
+	snprintf(g->out->charset, sizeof g->out->charset, "%s", charset);
+	snprintf(g->out->url, sizeof g->out->url, "%s", url ? url : "");
+}
+
+static int fr_body(void *ctx, const unsigned char *d, size_t n)
+{
+	struct fgot *g = ctx;
+	struct frame_bytes *o = g->out;
+
+	if (o->len + n > g->cap) {
+		size_t cap = g->cap ? g->cap * 2 : 16384;
+		unsigned char *p;
+
+		while (cap < o->len + n)
+			cap *= 2;
+		if ((p = xrealloc(o->data, cap)) == NULL)
+			return -1;
+		o->data = p;
+		g->cap = cap;
+	}
+	memcpy(o->data + o->len, d, n);
+	o->len += n;
+	return stop_asked() ? -1 : 0;
+}
+
+static void fr_reset(void *ctx)
+{
+	struct fgot *g = ctx;
+
+	g->out->len = 0;
+}
+
+static int get_frame(void *ctx, const char *url, struct frame_bytes *out)
+{
+	static struct fetch_result res;
+	struct fetch_opts o;
+	struct fetch_cb cb;
+	struct fgot g;
+
+	(void)ctx;
+	/* (a page from the network gets no local files, as for its
+	 * pictures and style sheets) */
+	if (strncmp(url, "file:", 5) == 0 && strncmp(g_url, "file:", 5) != 0) {
+		snprintf(out->error, sizeof out->error, "a local file");
+		return -1;
+	}
+	memset(&g, 0, sizeof g);
+	g.out = out;
+	memset(&cb, 0, sizeof cb);
+	cb.ctx = &g;
+	cb.status = on_status;
+	cb.head = fr_head;
+	cb.body = fr_body;
+	cb.reset = fr_reset;
+	memset(&o, 0, sizeof o);
+	o.referer = g_url;
+	message("Loading frame %.250s", url);
+	draw(0);
+	if (fetch_ex(url, "GET", &o, &cb, &res) < 0) {
+		snprintf(out->error, sizeof out->error, "%s", res.error);
+		return -1;
+	}
+	return 0;
+}
+
+/* the page is frames: make them one page, in its place */
+static void frames_page(void)
+{
+	char *state, *html;
+
+	html = frames_compose(&g_doc, g_load.tree.frameset, &g_base,
+		g_fchosen ? g_fchosen : "", get_frame, NULL, &state);
+	if (html == NULL)
+		return;			/* (the frame links stay) */
+	doc_free(&g_doc);
+	doc_init(&g_doc, 0);
+	g_doc.img_w = scr_pixels() ? scr_pane_w() : 0;	/* (srcset) */
+	html_load_begin(&g_load, &g_doc, "utf-8", 0);
+	html_load_feed(&g_load, (const unsigned char *)html, strlen(html));
+	html_load_end(&g_load);
+	xfree(html);
+	xfree(g_frames);
+	g_frames = state;
 }
 
 /* the document is complete: its base URL, forms, layout, the fragment */
@@ -943,6 +1055,8 @@ static void finish_doc(const char *frag)
 		if (url_resolve(&g_base, g_load.tree.base_href, &b) == URL_OK)
 			g_base = b;
 	}
+	if (g_load.tree.frameset && !g_gopher && !g_feed)
+		frames_page();
 	make_forms();
 	pimg_begin(&g_doc, &g_base, g_url);
 	if (html_stylesheets) {
@@ -1068,7 +1182,11 @@ static int load(const char *url_in, const struct fetch_opts *opts, int mode,
 	}
 	if (strcmp(url, "about:start") == 0 || strcmp(url, "about:") == 0
 		|| strcmp(url, "about:blank") == 0) {
-		load_string(start_html, url);
+		/* (the heading names the processor it runs on) */
+		static char start[sizeof start_html + 64];
+
+		snprintf(start, sizeof start, start_html, os_cpu());
+		load_string(start, url);
 		return 0;
 	}
 
@@ -1186,17 +1304,20 @@ static void hist_push(const char *url)
 		xfree(g_hist[i].url);
 		xfree(g_hist[i].post_body);
 		xfree(g_hist[i].post_key);
+		xfree(g_hist[i].frames);
 	}
 	g_nhist = g_hpos + 1;
 	if (g_nhist == HIST_MAX) {
 		xfree(g_hist[0].url);
 		xfree(g_hist[0].post_body);
 		xfree(g_hist[0].post_key);
+		xfree(g_hist[0].frames);
 		memmove(g_hist, g_hist + 1, (HIST_MAX - 1) * sizeof g_hist[0]);
 		g_nhist--;
 	}
 	memset(&g_hist[g_nhist], 0, sizeof g_hist[0]);
 	g_hist[g_nhist].url = xstrdup(url);
+	g_hist[g_nhist].frames = g_frames ? xstrdup(g_frames) : NULL;
 	g_hist[g_nhist].sel = -1;
 	g_hpos = g_nhist++;
 }
@@ -1206,6 +1327,24 @@ static void visit(const char *url)
 {
 	hist_save_pos();
 	load(url, NULL, L_NORMAL, NULL);
+	hist_push(g_url);
+}
+
+/* a link aimed at one of the page's frames: the page again, with url in
+ * that frame */
+static void visit_frame(const char *name, const char *url)
+{
+	char *chosen = frames_choose(g_frames, name, url);
+	static char page[URL_MAX];
+
+	if (chosen == NULL)
+		return;
+	snprintf(page, sizeof page, "%.*s", (int)strcspn(g_url, "#"), g_url);
+	hist_save_pos();
+	g_fchosen = chosen;
+	load(page, NULL, L_NORMAL, NULL);
+	g_fchosen = NULL;
+	xfree(chosen);
 	hist_push(g_url);
 }
 
@@ -1246,7 +1385,9 @@ static void reload_entry(struct hist *h, int mode)
 	static struct cache_meta m;
 
 	if (h->post_body == NULL) {
+		g_fchosen = h->frames;
 		load(h->url, NULL, mode, NULL);
+		g_fchosen = NULL;
 		return;
 	}
 	if (mode == L_HISTORY && h->post_key && cache_lookup(h->post_key, &m)
@@ -1445,8 +1586,10 @@ static void do_refresh(void)
 	xfree(h->url);
 	xfree(h->post_body);
 	xfree(h->post_key);
+	xfree(h->frames);
 	memset(h, 0, sizeof *h);
 	h->url = xstrdup(g_url);
+	h->frames = g_frames ? xstrdup(g_frames) : NULL;
 	h->sel = -1;
 }
 
@@ -1908,6 +2051,12 @@ static void follow(void)
 		message("That link's URL is not usable.", NULL);
 		return;
 	}
+	if (g_frames && g_doc.nodes[k->node].tag == TAG_A
+		&& (h = doc_attr(&g_doc, k->node, ATTR_TARGET)) != NULL
+		&& frames_has(g_frames, h)) {
+		visit_frame(h, buf);
+		return;
+	}
 	go_url(buf);
 }
 
@@ -2161,6 +2310,7 @@ static int ch_cols(const char *b, size_t n)
 static int prompt_mask(const char *label, char *buf, size_t n, int flags)
 {
 	size_t len = strlen(buf), pos = len;
+	size_t sa = 0, sb = 0;		/* xmanx: a selection, sa < sb */
 	int r = scr_rows - 1, lw = (int)strlen(label), skip = 0;
 	static char stars[1024];
 
@@ -2176,8 +2326,10 @@ static int prompt_mask(const char *label, char *buf, size_t n, int flags)
 			start = (int)st;
 		}
 		draw_status();
-		if ((flags & PM_URL) && scr_url_edit(buf, (int)pos))
+		if ((flags & PM_URL) && scr_url_edit(buf, (int)pos)) {
+			scr_url_sel((int)sa, (int)sb);
 			scr_cursor(-1, -1);
+		}
 		else {
 			scr_fill(r, 0, scr_cols, ' ', 0);
 			scr_put(r, 0, label, lw, CA_BOLD);
@@ -2191,7 +2343,49 @@ static int prompt_mask(const char *label, char *buf, size_t n, int flags)
 		}
 		scr_flush(0);
 		k = scr_getkey(-1);
+		/* a selection: typing, pasting or deleting replaces it; any
+		 * other key lets it go */
+		if (sa < sb && k >= 0) {
+			int del = k == 8 || k == 127 || k == K_DEL || k == 4;
+
+			if (del || k == K_PASTE || (k >= 32 && k < 256)) {
+				memmove(buf + sa, buf + sb, len - sb + 1);
+				len -= sb - sa;
+				pos = sa;
+			}
+			sa = sb = 0;
+			if (del)
+				continue;
+		}
 		switch (k) {
+		case K_FIELD:			/* xmanx: a click in the field */
+			if (scr_field_clicks >= 2) {
+				sa = 0;
+				sb = pos = len;
+			} else {
+				size_t p = 0;
+
+				while (p < len && p < (size_t)scr_field_pos)
+					p = ch_next(buf, p, len);
+				pos = p;
+			}
+			break;
+		case K_PASTE: {			/* xmanx: a middle click */
+			const unsigned char *s = (const unsigned char *)scr_paste;
+
+			for (; *s && len + 1 < n; s++) {
+				if (*s < 32 || *s == 127)
+					continue;	/* (a newline, a tab) */
+				/* (a UTF-8 character that won't fit whole stops it) */
+				if (*s >= 0xC0 && len + 1 + (*s >= 0xF0 ? 3
+					: *s >= 0xE0 ? 2 : 1) >= n)
+					break;
+				memmove(buf + pos + 1, buf + pos, len - pos + 1);
+				buf[pos++] = (char)*s;
+				len++;
+			}
+			break;
+		}
 		case '\r':
 			scr_cursor(-1, -1);
 			if (flags & PM_URL)
@@ -2264,6 +2458,33 @@ static int prompt_mask(const char *label, char *buf, size_t n, int flags)
 	}
 }
 
+/* a path on this machine as a file: URL in out: 1, or 0 when in isn't
+ * one (~ is $HOME; a relative path must exist, being otherwise a host) */
+static int local_url(const char *in, char *out, size_t n)
+{
+	char cwd[URL_MAX / 2];
+	const char *home;
+	long sz, mt;
+
+	if ((in[0] == '~' && (in[1] == '/' || in[1] == '\0'))
+		&& (home = getenv("HOME")) != NULL) {
+		snprintf(out, n, "file://%s%s", strcmp(home, "/") ? home : "", in + 1);
+		return 1;
+	}
+	if (in[0] == '/') {
+		snprintf(out, n, "file://%s", in);
+		return 1;
+	}
+	if (strncmp(in, "./", 2) != 0 && os_file_info(in, &sz, &mt) != 0)
+		return 0;
+	if (getcwd(cwd, sizeof cwd) == NULL)
+		return 0;
+	if (strncmp(in, "./", 2) == 0)
+		in += 2;
+	snprintf(out, n, "file://%s/%s", strcmp(cwd, "/") ? cwd : "", in);
+	return 1;
+}
+
 /* what was typed at g: a URL, a file, or words to search for */
 static void typed(const char *in, char *out, size_t n)
 {
@@ -2271,10 +2492,11 @@ static void typed(const char *in, char *out, size_t n)
 
 	while (*in == ' ')
 		in++;
-	if (strstr(in, "://") || strncmp(in, "about:", 6) == 0)
+	if (strstr(in, "://") || strncmp(in, "about:", 6) == 0
+		|| strncmp(in, "file:", 5) == 0)
 		snprintf(out, n, "%s", in);
-	else if (in[0] == '/' || strncmp(in, "./", 2) == 0)
-		snprintf(out, n, "file://%s", in);
+	else if (local_url(in, out, n))
+		;
 	else if (!strchr(in, ' ') && strchr(in, '.'))
 		snprintf(out, n, "https://%s", in);
 	else {
@@ -2661,19 +2883,12 @@ int main(int argc, char **argv)
 		fprintf(stderr, "manx: needs %s\n", scr_needs);
 		return 1;
 	}
+	/* (boxes - backgrounds, borders, floats - only where they're drawn:
+	 * a terminal's sheets keep none of that) */
+	css_boxes = scr_metrics() != NULL;
 	if (a < argc && !strstr(start, "://") && strncmp(start, "about:", 6)) {
-		long sz, mt;
-
-		if (os_file_info(start, &sz, &mt) == 0) {
-			/* a file here: file:// with its full path */
-			char cwd[URL_MAX / 2];
-
-			if (start[0] == '/' || getcwd(cwd, sizeof cwd) == NULL)
-				snprintf(go, sizeof go, "file://%s", start);
-			else
-				snprintf(go, sizeof go, "file://%s/%s", cwd, start);
-		} else
-			typed(start, go, sizeof go);
+		/* (a file here: file:// with its full path) */
+		typed(start, go, sizeof go);
 		start = go;
 	}
 	visit(start);

@@ -36,6 +36,9 @@ int scr_mouse_row, scr_mouse_col;
 int scr_mouse_x, scr_mouse_y;
 int scr_proportional = 1;
 long scr_scroll_target;
+int scr_field_pos, scr_field_clicks;
+static char paste_buf[1024];		/* what a middle click brought */
+const char *scr_paste = paste_buf;
 const char *scr_font;
 const char *scr_geometry;
 const char *scr_needs = "an X display ($DISPLAY)";
@@ -57,6 +60,7 @@ static GC sgc;				/* scrolling: reports what it can't copy */
 static XFontStruct *font, *bold;	/* bold: NULL to overstrike */
 static int cw, ch, ascent;		/* cell size, baseline */
 static Atom wm_delete;
+static Atom a_targets, a_utf8, a_paste;	/* for the PRIMARY selection */
 static int win_w, win_h;		/* the window's size */
 static int closing;
 
@@ -113,6 +117,12 @@ static int url_x, url_label_w;		/* the URL field: label at url_x */
 static char url_text[512];
 static char edit_text[1024];		/* a URL being typed into the field */
 static int editing, edit_pos;
+static int field_start;			/* the field's first byte shown */
+static int sel_a, sel_b;		/* the highlighted part of edit_text */
+static char sel_text[1024];		/* ... as offered to other clients */
+static int sel_owned;			/* we hold PRIMARY */
+static Time last_click;			/* button 1 in the field: a double? */
+static int pending = -1;		/* a button's key, after the field shuts */
 static long sc_top, sc_rows, sc_total;	/* the page, for the scrollbar */
 static int dragging, drag_dy;		/* the elevator, held */
 static int controls_dirty = 1, scroll_dirty = 1;
@@ -401,6 +411,9 @@ int scr_open(const char *cs_env)
 	XStoreName(dpy, win, "Manx");
 	XSetIconName(dpy, win, "Manx");
 	wm_delete = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
+	a_targets = XInternAtom(dpy, "TARGETS", False);
+	a_utf8 = XInternAtom(dpy, "UTF8_STRING", False);
+	a_paste = XInternAtom(dpy, "MANX_PASTE", False);
 	XSetWMProtocols(dpy, win, &wm_delete, 1);
 
 	gc = XCreateGC(dpy, win, 0, NULL);
@@ -549,6 +562,7 @@ int scr_url_edit(const char *text, int pos)
 {
 	if (text == NULL) {
 		editing = 0;
+		sel_a = sel_b = 0;
 		controls_dirty = 1;
 		return 1;
 	}
@@ -558,6 +572,26 @@ int scr_url_edit(const char *text, int pos)
 	editing = 1;
 	controls_dirty = 1;
 	return 1;
+}
+
+void scr_url_sel(int from, int to)
+{
+	int n;
+
+	if (from == sel_a && to == sel_b)
+		return;
+	sel_a = from;
+	sel_b = to;
+	controls_dirty = 1;
+	if (from >= to)
+		return;
+	n = to - from;
+	if (n > (int)sizeof sel_text - 1)
+		n = (int)sizeof sel_text - 1;
+	memcpy(sel_text, edit_text + from, (size_t)n);
+	sel_text[n] = '\0';
+	XSetSelectionOwner(dpy, XA_PRIMARY, win, last_click);
+	sel_owned = XGetSelectionOwner(dpy, XA_PRIMARY) == win;
 }
 
 void scr_state(int can_back, int can_forward, int loading)
@@ -658,6 +692,20 @@ static void draw_controls(void)
 		if (n > fit + 1)
 			n = fit + 1;
 		XDrawString(dpy, win, gc, fx, y, (char *)t + start, n);
+		field_start = start;
+		/* a selection (a double click): reversed */
+		if (editing && sel_a < sel_b) {
+			int a = sel_a > start ? sel_a : start;
+			int b = sel_b < start + n ? sel_b : start + n;
+
+			if (a < b) {
+				XFillRectangle(dpy, win, gc, fx + (a - start) * cw,
+					y - ascent, (unsigned)((b - a) * cw), (unsigned)ch);
+				XSetForeground(dpy, gc, px_bg1);
+				XDrawString(dpy, win, gc, fx + (a - start) * cw, y,
+					edit_text + a, b - a);
+			}
+		}
 		XSetForeground(dpy, gc, editing ? px_fg : px_bg3);
 		XDrawLine(dpy, win, gc, fx, y + 3, fx + fw, y + 3);
 		if (editing) {
@@ -832,9 +880,9 @@ static int shown_ok;			/* the window's pane shows that frame */
 static int shown_w, shown_h;		/* at this pane size */
 static int shown_over;			/* with cells over the pane */
 
-/* fonts by look: [bold][face] */
-static XFontStruct *faces[2][16];
-static unsigned char face_tried[2][16];
+/* fonts by look: [bold][face, but LF_IMAGE] */
+static XFontStruct *faces[2][256];
+static unsigned char face_tried[2][256];
 
 static int pane_x(void) { return gx; }
 static int pane_y(void) { return gy + ch; }
@@ -864,23 +912,26 @@ static XFontStruct *find_font(const char *family, int bold, int slant, int px)
 
 static XFontStruct *face_font(int attr, int face)
 {
-	int b = (attr & CA_BOLD) != 0, k = face & 15, h = face & LF_HMASK;
+	int b = (attr & CA_BOLD) != 0, k = face & ~LF_IMAGE & 0xFF, h = face & LF_HMASK;
 	XFontStruct *f;
 
 	if (faces[b][k])
 		return faces[b][k];
 	if (!face_tried[b][k]) {
-		/* headings: bigger and bold; 12 pixels otherwise */
+		/* headings: bigger and bold; 12 pixels otherwise; the page's
+		 * size (a class of LF_SIZE_PX) over both */
 		static const int sizes[4] = { 12, 18, 14, 12 };
+		static const int csize[8] = LF_SIZE_PX;
 		int bold = b || h, slant = (face & LF_ITALIC) != 0;
+		int px = face & LF_SMASK ? csize[(face & LF_SMASK) >> 5] : sizes[h];
 		const char *fam = (face & LF_MONO) ? "courier" : "helvetica";
 
 		face_tried[b][k] = 1;
-		f = find_font(fam, bold, slant, sizes[h]);
+		f = find_font(fam, bold, slant, px);
 		if (f == NULL && slant)
-			f = find_font(fam, bold, 0, sizes[h]);
+			f = find_font(fam, bold, 0, px);
 		if (f == NULL && !(face & LF_MONO))
-			f = find_font("lucida", bold, slant, sizes[h]);
+			f = find_font("lucida", bold, slant, px);
 		faces[b][k] = f;
 	}
 	if (faces[b][k] == NULL)
@@ -2449,6 +2500,64 @@ static int scrollbar_press(int y)
 	return K_SCROLL;
 }
 
+/* another client asks for the PRIMARY selection we hold */
+static void selection_request(XSelectionRequestEvent *rq)
+{
+	XSelectionEvent ne;
+	/* (an obsolete client names no property: the target's then) */
+	Atom prop = rq->property != None ? rq->property : rq->target;
+
+	memset(&ne, 0, sizeof ne);
+	ne.type = SelectionNotify;
+	ne.display = rq->display;
+	ne.requestor = rq->requestor;
+	ne.selection = rq->selection;
+	ne.target = rq->target;
+	ne.time = rq->time;
+	ne.property = None;
+	if (sel_owned && rq->selection == XA_PRIMARY) {
+		if (rq->target == XA_STRING || rq->target == a_utf8) {
+			XChangeProperty(dpy, rq->requestor, prop, rq->target, 8,
+				PropModeReplace, (unsigned char *)sel_text,
+				(int)strlen(sel_text));
+			ne.property = prop;
+		} else if (rq->target == a_targets) {
+			Atom t[3];
+
+			t[0] = a_targets;
+			t[1] = XA_STRING;
+			t[2] = a_utf8;
+			XChangeProperty(dpy, rq->requestor, prop, XA_ATOM, 32,
+				PropModeReplace, (unsigned char *)t, 3);
+			ne.property = prop;
+		}
+	}
+	XSendEvent(dpy, rq->requestor, False, 0, (XEvent *)&ne);
+}
+
+/* what a middle click asked for has come: K_PASTE, or -1 */
+static int selection_notify(XSelectionEvent *se)
+{
+	Atom type;
+	int fmt;
+	unsigned long n, after;
+	unsigned char *data = NULL;
+
+	paste_buf[0] = '\0';
+	if (se->property == None || XGetWindowProperty(dpy, win, se->property,
+		0, (long)(sizeof paste_buf / 4), True, AnyPropertyType, &type,
+		&fmt, &n, &after, &data) != Success || data == NULL)
+		return -1;
+	if (fmt == 8) {
+		if (n > sizeof paste_buf - 1)
+			n = sizeof paste_buf - 1;
+		memcpy(paste_buf, data, n);
+		paste_buf[n] = '\0';
+	}
+	XFree(data);
+	return paste_buf[0] ? K_PASTE : -1;
+}
+
 /* one event: a key, or -1 */
 static int event(void)
 {
@@ -2470,6 +2579,12 @@ static int event(void)
 			return K_WHEELUP;
 		if (ev.xbutton.button == Button5)
 			return K_WHEELDN;
+		if (ev.xbutton.button == Button2 && editing
+			&& ev.xbutton.y < ctrl_h && ev.xbutton.x >= url_x) {
+			XConvertSelection(dpy, XA_PRIMARY, XA_STRING, a_paste,
+				win, ev.xbutton.time);
+			return -1;
+		}
 		if (ev.xbutton.button != Button1)
 			return -1;
 		x = ev.xbutton.x;
@@ -2481,7 +2596,19 @@ static int event(void)
 				draw_button(&buttons[b], 1);
 				return -1;
 			}
-			return x >= url_x ? 'G' : -1;
+			if (x < url_x)
+				return -1;
+			/* the field: a click opens it (G); once open, a click
+			 * places the cursor and a double click selects it all */
+			scr_field_clicks = ev.xbutton.time - last_click < 400 ? 2 : 1;
+			last_click = ev.xbutton.time;
+			if (!editing)
+				return 'G';
+			scr_field_pos = field_start
+				+ (x - (url_x + url_label_w) + cw / 2) / cw;
+			if (scr_field_pos < 0)
+				scr_field_pos = 0;
+			return K_FIELD;
 		}
 		if (x >= sb_x)
 			return scrollbar_press(y);
@@ -2505,8 +2632,14 @@ static int event(void)
 			b = pressed;
 			pressed = -1;
 			draw_button(&buttons[b], 0);
-			if (button_at(ev.xbutton.x, ev.xbutton.y) == b && buttons[b].on)
+			if (button_at(ev.xbutton.x, ev.xbutton.y) == b && buttons[b].on) {
+				/* the field open: shut it (Esc), then the button */
+				if (editing) {
+					pending = buttons[b].key;
+					return 27;
+				}
 				return buttons[b].key;
+			}
 		}
 		return -1;
 	case MotionNotify:
@@ -2534,6 +2667,14 @@ static int event(void)
 	case MappingNotify:
 		XRefreshKeyboardMapping(&ev.xmapping);
 		return -1;
+	case SelectionRequest:
+		selection_request(&ev.xselectionrequest);
+		return -1;
+	case SelectionClear:
+		sel_owned = 0;
+		return -1;
+	case SelectionNotify:
+		return selection_notify(&ev.xselection);
 	case ClientMessage:
 		if ((Atom)ev.xclient.data.l[0] == wm_delete)
 			closing = 1;
@@ -2553,6 +2694,12 @@ int scr_getkey(int timeout_ms)
 
 		if (closing)
 			return K_CLOSE;
+		if (pending >= 0) {
+			int k = pending;
+
+			pending = -1;
+			return k;
+		}
 		while (XPending(dpy)) {
 			int k = event();
 

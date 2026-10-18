@@ -3,7 +3,8 @@
 A web browser for 68030 System V Unix: **Atari System V** on the TT030 and
 **Amiga UNIX** (AMIX). In a terminal (`manx`) or an X11 window with
 pictures (`xmanx`). It does HTTPS itself, and decodes its images, on the
-68030, in a few megabytes.
+68030, in a few megabytes. It also runs on **IRIX 6.5**, SGI's System V,
+on its MIPS workstations.
 
 Named after Lynx's tailless cousin, and after Manx Software Systems, whose
 Aztec C built a good share of the Amiga's and the Atari ST's software.
@@ -54,7 +55,7 @@ Aztec C built a good share of the Amiga's and the Atari ST's software.
   own colour for greys, so text reads on any background.
 - Forms (GET and POST, every field type, `$EDITOR` for text areas), a
   cookie jar, a disk cache (Back without the network), bookmarks, gopher,
-  `file:`.
+  `file:` (a directory as a list of its files).
 - Pages that send you on (a `Refresh` header, `<meta
   http-equiv=refresh>`) after the wait they ask for; `z` or Esc stays.
   That passes [Anubis](https://anubis.techaro.lol)'s check for browsers
@@ -127,6 +128,19 @@ This needs:
 
 `toolchain/sysv4-cc` explains how the three fit together.
 
+For IRIX 6.5, on the SGI itself, with the gcc 9 and GNU make of
+[SGUG RSE](https://github.com/sgidevnet/sgug-rse) (which needs IRIX
+6.5.30):
+
+```sh
+gmake TARGET=irix    # build/irix/manx, xmanx, manxtrust, ufetch
+```
+
+That takes about 25 minutes on a 195 MHz R10000. TLS uses BearSSL's own
+portable code in place of crypt68k. `xmanx` needs only IRIX's own `libX11`
+and `libc`; `manx` also needs SGUG's `libtinfo` and `libgcc_s`, found
+through `LD_LIBRARYN32_PATH` with `/usr/sgug/lib32` in it.
+
 `xmanx` also builds with Helios 1.31's C compiler and runs on the
 ATW800/2's T425 itself, under Helios's X server, HTTPS included. Helios C
 has no 64-bit integers, so BearSSL is built with `BR_NO_U64`
@@ -155,6 +169,11 @@ manxtrust roots cacert.pem   # trusted roots, from any PEM bundle (e.g. curl's c
 manxtrust seed               # SVR4 has no /dev/random: type for a while to seed
 manx                         # or: manx https://news.ycombinator.com/
 ```
+
+On IRIX, put the programs anywhere on `PATH` (`/usr/local/bin`, or
+`~/bin`). SGUG's bundle will do for the roots (`manxtrust roots
+/usr/sgug/etc/pki/tls/certs/ca-bundle.crt`), and there is no need to seed:
+IRIX has `/dev/urandom`.
 
 `xmanx` is the same browser in an X11 window, with controls in the OPEN
 LOOK manner of both systems' desktops (Back, Forward, Reload and Stop
@@ -252,6 +271,9 @@ Tested on an Atari TT030 with Atari System V, and on AMIX 2.1 in an
 emulated Amiga 3000 (`tools/amix/`), where it loads Hacker News over HTTPS.
 It also runs on [Ash Nazag](https://github.com/kdedon/ashnazag)'s AMIX for
 the Quadra 800, in QEMU. It hasn't been tried on a real Amiga yet.
+
+On IRIX it is built and run on an SGI Octane (R10000, 195 MHz) with IRIX
+6.5.30, where Hacker News loads over HTTPS in about a second.
 
 ## Licence
 

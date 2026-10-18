@@ -43,6 +43,7 @@
 #include "mime.h"
 #include "smtp.h"
 #include "compose.h"
+#include "css.h"
 
 #define PAGE_MSGS	50		/* messages fetched at a time */
 #define MAX_PARTS	32
@@ -1868,6 +1869,7 @@ int main(int argc, char **argv)
 	char path[600];
 	const char *err = NULL, *h, *colon;
 
+	css_boxes = 0;			/* (a terminal: no boxes drawn) */
 	if (strrchr(argv[0], '/') && strlen(argv[0]) + 5 < sizeof g_manx) {
 		strcpy(g_manx, argv[0]);
 		strcpy(strrchr(g_manx, '/') + 1, "manx");

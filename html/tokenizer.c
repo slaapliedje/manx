@@ -199,8 +199,11 @@ static void tag_emit(struct tokenizer *t)
 	if (t->name_len < sizeof t->name) {
 		t->name[t->name_len] = '\0';
 		t->t.tag = tag_lookup(t->name);
-	} else
+		t->t.name = t->name;
+	} else {
 		t->t.tag = TAG_UNKNOWN;
+		t->t.name = "";
+	}
 	if (t->t.tag == TAG_IMAGE)
 		t->t.tag = TAG_IMG;		/* HTML5 does this too */
 	if (t->sink.tag)
