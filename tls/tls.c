@@ -23,10 +23,15 @@
 /* The key exchange's curves. X25519 by crypt68k (third_party/crypt68k,
  * its 68030 multiply; ~3x BearSSL's m31 there), the others by BearSSL's
  * m31. With no 64-bit integer type (Helios C: BR_NO_U64), BearSSL's m15
- * code instead: crypt68k is 68030 assembly. */
+ * code instead: crypt68k is 68030 assembly. Where it isn't wanted
+ * (MANX_NO_C68K, TARGET=irix), BearSSL's m31. */
 #if BR_NO_U64
 #define EC_X25519	br_ec_c25519_m15
 #define EC_ALL		br_ec_all_m15
+#elif MANX_NO_C68K
+/* not a 68k (IRIX on MIPS): BearSSL's own X25519 */
+#define EC_X25519	br_ec_c25519_m31
+#define EC_ALL		br_ec_all_m31
 #else
 #include "crypt68k_bearssl.h"
 #define EC_X25519	c68k_br_ec_c25519
