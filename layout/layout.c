@@ -1543,6 +1543,12 @@ static int el_box(struct lay *L, nodeid id, const struct eattr *ea,
 	return b->set != 0;
 }
 
+/* n/d to the nearest (d > 0) */
+static long rdiv(long n, long d)
+{
+	return n >= 0 ? (n + d / 2) / d : -((-n + d / 2) / d);
+}
+
 /* a CSS length in units (of: what a % is of) */
 static int box_units(const struct lay *L, struct css_len l, int of)
 {
@@ -1550,13 +1556,14 @@ static int box_units(const struct lay *L, struct css_len l, int of)
 
 	switch (l.u) {
 	case CSS_U_PX:
-		v = l.v / 10;
+		v = rdiv(l.v, 10);
 		break;
 	case CSS_U_EM:
-		v = (long)l.v * L->fsz / 100;
+		v = rdiv((long)l.v * L->fsz, 100);
 		break;
 	case CSS_U_PCT:
-		v = (long)l.v * of / 1000;
+		/* rounded: Acid1's 10.638% of 470 is 50, not 49 */
+		v = rdiv((long)l.v * of, 1000);
 		break;
 	default:
 		return 0;
@@ -1767,11 +1774,22 @@ static void box_close(struct lay *L, const struct saved *sv)
 		vspace(L, (int)(sv->box_minh - h));
 		h = sv->box_minh;
 	}
+	lb = &p->boxes[sv->box - 1];
 	if (sv->box_in_b) {
-		vspace(L, sv->box_in_b);
+		int in_b = sv->box_in_b;
+
+		/* ending with floats, and nothing of its own to show: its
+		 * bottom padding is beside them, not below (CSS1: it is
+		 * no taller than its text; Acid1's dl) */
+		if (p->heights && p->nlines && p->gap_line == p->nlines
+			&& lb->bg == LBOX_NONE && lb[1].w == 0 && lb[2].w == 0
+			&& lb[3].w == 0 && lb[4].w == 0)
+			in_b = in_b > p->heights[p->nlines - 1].height
+				? in_b - p->heights[p->nlines - 1].height : 0;
+		if (in_b)
+			vspace(L, in_b);
 		h = lines_h(L, sv->box_line);
 	}
-	lb = &p->boxes[sv->box - 1];
 	lb->h = h;
 	for (i = 0; i < 4; i++) {
 		struct lbox *sd = &lb[1 + i];
@@ -3625,7 +3643,7 @@ static void float_emit(struct lay *L, struct fitem *it, int n, long H)
 	struct page *p = L->p;
 	unsigned long nev = 0, e, k, base = 0, j;
 	struct bev *ev;
-	long *band, *cy, over;
+	long *band, *cy, over, ink = 0;
 	int *cx, i, nb = 0, x0 = 0;
 
 	for (i = 0; i < n; i++)
@@ -3656,6 +3674,11 @@ static void float_emit(struct lay *L, struct fitem *it, int n, long H)
 				ev[e].ln = j;
 				y += f->gc.pg.heights[j].height;
 			}
+		if (y > ink)
+			ink = y;
+		y = f->y + f->m[0] + f->bw[0] + f->pd[0] + f->h + f->pd[2] + f->bw[2];
+		if (y > ink)
+			ink = y;
 	}
 	qsort(ev, (size_t)nev, sizeof *ev, bev_cmp);
 	for (e = 0; e < nev; e++)
@@ -3721,6 +3744,10 @@ static void float_emit(struct lay *L, struct fitem *it, int n, long H)
 		}
 	}
 	(void)base;
+	if (nb > 0) {
+		p->gap_line = p->nlines;
+		p->gap = H > ink ? H - ink : 0;
+	}
 	xfree(ev);
 	xfree(band);
 	xfree(cy);
@@ -3976,8 +4003,14 @@ static nodeid float_run(struct lay *L, nodeid id)
 		if (f->gc.pg.heights)
 			for (ln = 0; ln < f->gc.pg.nlines; ln++)
 				f->h += f->gc.pg.heights[ln].height;
-		if ((b.set & CSS_B_H) && b.h.u != CSS_U_AUTO && box_units(L, b.h, 0) > f->h)
-			f->h = box_units(L, b.h, 0);
+		if ((b.set & CSS_B_H) && b.h.u != CSS_U_AUTO) {
+			/* as tall as it says: what's drawn may reach lower, its
+			 * floats' bottom margins may not (Acid1's dd) */
+			if (f->gc.pg.nlines && f->gc.pg.gap_line == f->gc.pg.nlines)
+				f->h -= f->gc.pg.gap;
+			if (box_units(L, b.h, 0) > f->h)
+				f->h = box_units(L, b.h, 0);
+		}
 		if (f->gc.pg.nlinks
 			&& (f->gc.lmap = xmalloc(f->gc.pg.nlinks * sizeof *f->gc.lmap)) != NULL) {
 			unsigned long k;

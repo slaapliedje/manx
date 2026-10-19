@@ -277,9 +277,74 @@ static void check_grid_bands(void)
 	doc_free(&d);
 }
 
+/* the box of colour bg in pg, or NULL */
+static const struct lbox *box_bg(const struct page *pg, unsigned long bg)
+{
+	unsigned long i;
+
+	for (i = 0; i < pg->nboxes; i++)
+		if (pg->boxes[i].bg == bg)
+			return &pg->boxes[i];
+	return NULL;
+}
+
+/* Acid1's floats, to the pixel */
+static void check_acid1_floats(void)
+{
+	struct page pg;
+	struct doc d;
+	const struct lbox *b;
+	unsigned long i;
+	long top = 0;
+
+	/* a percentage rounds: 41.17% of 340 is 140, not 139 */
+	lay_px("<div style='width:340px'><p style='float:left;width:41.17%;"
+		"margin:0;background:#f00'>a</p><p style='float:left;width:10px'>b</p>"
+		"</div>", &pg, &d);
+	b = box_bg(&pg, 0xff0000UL);
+	runs++;
+	if (b == NULL || b->w != 140) {
+		fails++;
+		printf("FAIL percentage rounds: %d wide\n", b ? b->w : -1);
+	}
+	layout_free(&pg);
+	doc_free(&d);
+
+	/* a float as tall as it says, though its floats' bottom margins
+	 * reach lower */
+	lay_px("<div style='float:left;width:300px;height:50px;background:#f00'>"
+		"<p style='float:left;width:20px;height:20px;margin:0 0 40px'>a</p>"
+		"<p style='float:left;width:20px;height:20px;margin:0'>b</p></div>"
+		"<div style='float:left;width:10px'>c</div>", &pg, &d);
+	b = box_bg(&pg, 0xff0000UL);
+	runs++;
+	if (b == NULL || b->h != 50) {
+		fails++;
+		printf("FAIL float's height: %ld high\n", b ? b->h : -1L);
+	}
+	layout_free(&pg);
+	doc_free(&d);
+
+	/* a box of floats alone: its bottom padding beside them, what
+	 * clears them right below them */
+	lay_px("<div style='padding:5px'><p style='float:left;width:50px;"
+		"height:30px;margin:0'>a</p><p style='float:left;width:50px;"
+		"height:30px;margin:0'>b</p></div><p style='clear:both;margin:0'>t", &pg, &d);
+	for (i = 0; i + 1 < pg.nlines; i++)
+		top += pg.heights[i].height;
+	runs++;
+	if (pg.nlines < 2 || top != 35) {
+		fails++;
+		printf("FAIL floats' box padding: text at %ld, not 35\n", top);
+	}
+	layout_free(&pg);
+	doc_free(&d);
+}
+
 int main(void)
 {
 	check_grid_bands();
+	check_acid1_floats();
 	/* foreign elements close themselves: what follows is the page's */
 	check("svg/ and math/", "<p>before</p><svg/><p>after</p><math/><p>end</p>",
 		40, TCS_ASCII, "before\n\nafter\n\nend\n");

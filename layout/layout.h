@@ -136,6 +136,10 @@ struct page {
 	unsigned long page_bg;		/* the page's background (the root's or
 					 * the body's), LBOX_NONE: the screen's */
 	long main_line;			/* where <main> begins, or -1 */
+	unsigned long gap_line;		/* the line count when a float run */
+	long gap;			/* ended the page, and how much of its
+					 * last line is only its floats' bottom
+					 * margins (nothing drawn there) */
 	long content_line;		/* the first real paragraph (or its
 					 * heading), or -1 */
 	int truncated;			/* the cap was hit: the rest is missing */
