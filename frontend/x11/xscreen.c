@@ -75,6 +75,8 @@ static struct lmetrics metrics;		/* ... measured with these */
 static XFontStruct *find_font(const char *family, int bold, int slant, int px);
 static XFontStruct *face_font(int attr, int face);
 static int m_width(void *ctx, int attr, int face, const char *s, int n);
+static int toggle_of(const char *t, int n);
+static int toggle_d(const XFontStruct *f);
 static int m_height(void *ctx, int attr, int face, int *ascent);
 static int cur_row = -1, cur_col = -1;	/* where scr_cursor asked */
 static int drawn_row = -1, drawn_col = -1;	/* where the cursor is drawn */
@@ -959,9 +961,12 @@ static const char *x_text(const char *s, int n)
 
 static int m_width(void *ctx, int attr, int face, const char *s, int n)
 {
+	XFontStruct *f = face_font(attr & SA_BOLD ? CA_BOLD : 0, face);
+
 	(void)ctx;
-	return XTextWidth(face_font(attr & SA_BOLD ? CA_BOLD : 0, face),
-		(char *)x_text(s, n), n);
+	if ((attr & SA_FIELD) && toggle_of(s, n))
+		return toggle_d(f) + 6;		/* (its frame, when selected) */
+	return XTextWidth(f, (char *)x_text(s, n), n);
 }
 
 static int m_height(void *ctx, int attr, int face, int *ascent)
@@ -1115,7 +1120,81 @@ static void run_rows(const struct run *r, int *y0, int *y1)
 	int down = f->max_bounds.descent > f->descent ? f->max_bounds.descent : f->descent;
 
 	*y0 = base - up;
+	if ((r->attr & CA_FIELD) && base - toggle_d(f) - 2 < *y0)
+		*y0 = base - toggle_d(f) - 2;	/* (a checkbox's frame) */
 	*y1 = base + (down > 2 ? down : 2) + 1;
+}
+
+/* a checkbox's or radio button's field ("[x]", "(_)"...): 1 a checkbox,
+ * 2 a radio button, 0 neither */
+static int toggle_of(const char *t, int n)
+{
+	if (n != 3 || (t[1] != '_' && t[1] != ' ' && t[1] != '*' && t[1] != 'x'))
+		return 0;
+	return t[0] == '[' && t[2] == ']' ? 1 : t[0] == '(' && t[2] == ')' ? 2 : 0;
+}
+
+/* its box's size in font f: as tall as a capital (odd: a disc is round) */
+static int toggle_d(const XFontStruct *f)
+{
+	return f->ascent < 9 ? 9 : f->ascent | 1;
+}
+
+/* a checkbox or radio button (r, its field t) at x, w wide: a white box
+ * or disc, ticked or dotted, framed in hi when it is the selected link;
+ * 0 when t is not one */
+static int paint_toggle(const struct run *r, const char *t, int x, int base,
+	XFontStruct *f, unsigned long hi)
+{
+	int k = 0, kind, radio, on, d, y;
+
+	/* (the space before it may be in its run) */
+	while (k < (int)r->n && t[k] == ' ')
+		k++;
+	if ((kind = toggle_of(t + k, (int)r->n - k)) == 0)
+		return 0;
+	radio = kind == 2;
+	on = t[k + 1] == '*' || t[k + 1] == 'x';
+	/* on the baseline, in the middle of its place (m_width's) */
+	d = toggle_d(f);
+	x += XTextWidth(f, (char *)t, k) + 3;
+	y = base - d;
+	XSetForeground(dpy, gc, px_bg);
+	if (radio)	/* (inside its outline: on a dark box none shows past) */
+		XFillArc(dpy, win, gc, x + 1, y + 1, (unsigned)(d - 2), (unsigned)(d - 2),
+			0, 360 * 64);
+	else
+		XFillRectangle(dpy, win, gc, x, y, (unsigned)d, (unsigned)d);
+	XSetForeground(dpy, gc, px_fg);
+	if (radio) {
+		XDrawArc(dpy, win, gc, x, y, (unsigned)(d - 1), (unsigned)(d - 1),
+			0, 360 * 64);
+		if (on) {
+			int k = d / 4 + 1;
+
+			XFillArc(dpy, win, gc, x + k, y + k, (unsigned)(d - 2 * k),
+				(unsigned)(d - 2 * k), 0, 360 * 64);
+		}
+	} else {
+		XDrawRectangle(dpy, win, gc, x, y, (unsigned)(d - 1), (unsigned)(d - 1));
+		if (on) {
+			/* a tick, two pixels thick */
+			int i;
+
+			for (i = 0; i < 2; i++) {
+				XDrawLine(dpy, win, gc, x + 2, y + d / 2 + i,
+					x + d / 2 - 1, y + d - 3 + i);
+				XDrawLine(dpy, win, gc, x + d / 2 - 1, y + d - 3 + i,
+					x + d - 3, y + 2 + i);
+			}
+		}
+	}
+	if (r->attr & CA_REV) {
+		XSetForeground(dpy, gc, hi);
+		XDrawRectangle(dpy, win, gc, x - 2, y - 2, (unsigned)(d + 3),
+			(unsigned)(d + 3));
+	}
+	return 1;
 }
 
 /* one run (its text in text), onto the window */
@@ -1132,9 +1211,13 @@ static void paint_run(const struct run *r, const char *text)
 		fg = r->attr & CA_ONDARK ? text_raw[r->fg] : text_px[r->fg];
 	else if ((r->attr & CA_LINK) && link_px_ok)
 		fg = px_link[scr_link_color & 7];
+	if ((r->attr & CA_FIELD) && paint_toggle(r, t, x, base, f, fg))
+		return;
 	if (r->attr & CA_REV) {
+		/* (on a dark box the text is light: dark on it) */
 		bg = fg;
-		fg = px_bg;
+		fg = bg == px_bg || ((r->attr & CA_ONDARK) && bg != px_fg)
+			? px_fg : px_bg;
 		fill = 1;
 	}
 	if (r->attr & CA_MARK) {

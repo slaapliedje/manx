@@ -1121,12 +1121,13 @@ static void render_input(struct lay *L, nodeid id)
 		type = "text";
 	if (strcmp(type, "hidden") == 0)
 		return;
+	/* (with fonts one word, which the screen draws as a box) */
 	if (strcmp(type, "checkbox") == 0) {
-		render_field(L, id, checked ? "[x]" : "[ ]");
+		render_field(L, id, checked ? "[x]" : L->m ? "[_]" : "[ ]");
 		return;
 	}
 	if (strcmp(type, "radio") == 0) {
-		render_field(L, id, checked ? "(*)" : "( )");
+		render_field(L, id, checked ? "(*)" : L->m ? "(_)" : "( )");
 		return;
 	}
 	if (strcmp(type, "submit") == 0 || strcmp(type, "button") == 0

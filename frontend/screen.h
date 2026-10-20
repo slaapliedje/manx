@@ -31,6 +31,7 @@ enum {
 #define CA_LINK		0x08	/* a link's colour (underline without colour) */
 #define CA_MARK		0x10	/* a find match's colour (reverse without) */
 #define CA_ONDARK	0x20	/* on a dark box (scr_rect): colours as given */
+#define CA_FIELD	0x40	/* a form's field (xmanx: [ ] and ( ) as boxes) */
 #define CA_FG(i)	((i) << 8)	/* the page's colour i (scr_palette) */
 #define CA_FG_OF(a)	(((a) >> 8) & 255)
 

@@ -193,6 +193,8 @@ static int cell_attr(int sa, int link)
 		a |= CA_UNDER;
 	if (sa & SA_ONDARK)
 		a |= CA_ONDARK;
+	if (sa & SA_FIELD)
+		a |= CA_FIELD;
 	if (link) {
 		a |= CA_LINK;
 		if (link - 1 == g_sel)
