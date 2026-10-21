@@ -1606,7 +1606,43 @@ static int box_shows(const struct css_box *b)
 			return 1;
 	}
 	return ((b->set & CSS_B_W) && b->w.u != CSS_U_AUTO)
-		|| ((b->set & CSS_B_H) && b->h.u != CSS_U_AUTO);
+		|| ((b->set & CSS_B_H) && b->h.u != CSS_U_AUTO)
+		|| ((b->set & CSS_B_MINW) && b->minw.u != CSS_U_AUTO)
+		|| ((b->set & CSS_B_MAXW) && b->maxw.u != CSS_U_AUTO)
+		|| ((b->set & CSS_B_MINH) && b->minh.u != CSS_U_AUTO);
+}
+
+/* a width (its content's) as max-width, then min-width, have it (of: what
+ * a % is of) */
+static int clamp_w(const struct lay *L, const struct css_box *b, int of, int w)
+{
+	int k;
+
+	if ((b->set & CSS_B_MAXW) && b->maxw.u != CSS_U_AUTO
+		&& w > (k = box_units(L, b->maxw, of)))
+		w = k;
+	if ((b->set & CSS_B_MINW) && b->minw.u != CSS_U_AUTO
+		&& w < (k = box_units(L, b->minw, of)))
+		w = k;
+	return w;
+}
+
+/* how tall a box's content is at least: its height, as max-height and
+ * min-height have it (0: as tall as what's in it; a % of a height
+ * not known: none) */
+static long box_min_h(const struct lay *L, const struct css_box *b)
+{
+	long h = 0, k;
+
+	if ((b->set & CSS_B_H) && b->h.u != CSS_U_AUTO)
+		h = box_units(L, b->h, 0);
+	if ((b->set & CSS_B_MAXH) && b->maxh.u != CSS_U_AUTO
+		&& b->maxh.u != CSS_U_PCT && h > (k = box_units(L, b->maxh, 0)))
+		h = k;
+	if ((b->set & CSS_B_MINH) && b->minh.u != CSS_U_AUTO
+		&& h < (k = box_units(L, b->minh, 0)))
+		h = k;
+	return h > 0 ? h : 0;
 }
 
 /* the blank lines owed, made now (a box's edge must be where they end) */
@@ -1650,6 +1686,7 @@ static void box_open(struct lay *L, struct saved *sv, const struct css_box *b,
 {
 	struct page *p = L->p;
 	int m[4], bw[4], pd[4], of = L->width - L->indent, x, w, i;
+	int sides, said, cw, k;
 	unsigned long first;
 
 	box_sides(L, b, of, m, bw, pd);
@@ -1660,14 +1697,19 @@ static void box_open(struct lay *L, struct saved *sv, const struct css_box *b,
 		margin(L, m[0]);
 	flush_blank(L);
 	x = L->indent + m[3];
-	if ((b->set & CSS_B_W) && b->w.u != CSS_U_AUTO) {
-		w = box_units(L, b->w, of) + pd[1] + pd[3] + bw[1] + bw[3];
-		/* margin: auto either side: in the middle */
+	sides = pd[1] + pd[3] + bw[1] + bw[3];
+	said = (b->set & CSS_B_W) && b->w.u != CSS_U_AUTO;
+	cw = said ? box_units(L, b->w, of) : L->width - x - m[1] - sides;
+	k = clamp_w(L, b, of, cw);
+	if (k > cw)
+		said = 1;		/* (min-width: as wide as it says) */
+	w = k + sides;
+	/* margin: auto either side, narrower than the room: in the middle */
+	if (k != cw || said) {
 		if ((b->set & CSS_B_M(1)) && (b->set & CSS_B_M(3))
 			&& b->m[1].u == CSS_U_AUTO && b->m[3].u == CSS_U_AUTO && w < of)
 			x = L->indent + (of - w) / 2;
-	} else
-		w = L->width - x - m[1];
+	}
 	if (w > L->width - x)
 		w = L->width - x;
 	if (w < 1)
@@ -1676,7 +1718,7 @@ static void box_open(struct lay *L, struct saved *sv, const struct css_box *b,
 	sv->box = 0;
 	sv->box_rin = L->rin;
 	/* (a box as wide as it says: its page needs that) */
-	if ((b->set & CSS_B_W) && b->w.u != CSS_U_AUTO && L->m
+	if (said && L->m
 		&& x + w + m[1] > p->need_w)
 		p->need_w = x + w + m[1];
 	L->rin += m[1] + (draw ? bw[1] + pd[1] : 0);
@@ -1728,8 +1770,7 @@ static void box_open(struct lay *L, struct saved *sv, const struct css_box *b,
 	sv->box = first + 1;
 	sv->box_line = p->nlines;
 	sv->box_in_b = bw[2] + pd[2];
-	sv->box_minh = (b->set & CSS_B_H) && b->h.u != CSS_U_AUTO
-		? box_units(L, b->h, 0) : 0;
+	sv->box_minh = box_min_h(L, b);
 	vspace(L, bw[0] + pd[0]);
 	sv->box_minh += bw[0] + pd[0];
 	if (bw[0] + pd[0] == 0 && L->ntop_pend < 8)
@@ -3976,6 +4017,7 @@ static nodeid float_run(struct lay *L, nodeid id)
 		cw = avail - extra;
 		if ((b.set & CSS_B_W) && b.w.u != CSS_U_AUTO)
 			cw = box_units(L, b.w, avail);
+		cw = clamp_w(L, &b, avail, cw);
 		if (cw < L->em)
 			cw = L->em;
 		if (lay_cell(L, S, &f->gc, cw, 0, 1) < 0) {
@@ -3991,7 +4033,8 @@ static nodeid float_run(struct lay *L, nodeid id)
 				if (lw > w)
 					w = lw;
 			}
-			if (w < cw && w > 0) {
+			/* (no narrower than min-width says) */
+			if (w > 0 && (w = clamp_w(L, &b, avail, w)) < cw) {
 				cw = w;
 				if (lay_cell(L, S, &f->gc, cw, 0, 1) < 0) {
 					layout_free(&f->gc.pg);
@@ -4004,13 +4047,13 @@ static nodeid float_run(struct lay *L, nodeid id)
 		if (f->gc.pg.heights)
 			for (ln = 0; ln < f->gc.pg.nlines; ln++)
 				f->h += f->gc.pg.heights[ln].height;
-		if ((b.set & CSS_B_H) && b.h.u != CSS_U_AUTO) {
+		if (box_min_h(L, &b) > 0) {
 			/* as tall as it says: what's drawn may reach lower, its
 			 * floats' bottom margins may not (Acid1's dd) */
 			if (f->gc.pg.nlines && f->gc.pg.gap_line == f->gc.pg.nlines)
 				f->h -= f->gc.pg.gap;
-			if (box_units(L, b.h, 0) > f->h)
-				f->h = box_units(L, b.h, 0);
+			if (box_min_h(L, &b) > f->h)
+				f->h = box_min_h(L, &b);
 		}
 		if (f->gc.pg.nlinks
 			&& (f->gc.lmap = xmalloc(f->gc.pg.nlinks * sizeof *f->gc.lmap)) != NULL) {

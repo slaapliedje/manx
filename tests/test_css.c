@@ -234,6 +234,18 @@ static void box(const char *name, const char *css, const char *body, int tag,
 		sprintf(got + strlen(got), "w=%d.%d%c ", b.w.v / 10, b.w.v % 10, "-pe%a"[b.w.u]);
 	if (b.set & CSS_B_H)
 		sprintf(got + strlen(got), "h=%d.%d%c ", b.h.v / 10, b.h.v % 10, "-pe%a"[b.h.u]);
+	if (b.set & CSS_B_MINW)
+		sprintf(got + strlen(got), "minw=%d.%d%c ", b.minw.v / 10, b.minw.v % 10,
+			"-pe%a"[b.minw.u]);
+	if (b.set & CSS_B_MAXW)
+		sprintf(got + strlen(got), "maxw=%d.%d%c ", b.maxw.v / 10, b.maxw.v % 10,
+			"-pe%a"[b.maxw.u]);
+	if (b.set & CSS_B_MINH)
+		sprintf(got + strlen(got), "minh=%d.%d%c ", b.minh.v / 10, b.minh.v % 10,
+			"-pe%a"[b.minh.u]);
+	if (b.set & CSS_B_MAXH)
+		sprintf(got + strlen(got), "maxh=%d.%d%c ", b.maxh.v / 10, b.maxh.v % 10,
+			"-pe%a"[b.maxh.u]);
 	if (b.set & CSS_B_FLOAT)
 		sprintf(got + strlen(got), "fl=%d ", b.fl);
 	if (b.set & CSS_B_CLEAR)
@@ -452,6 +464,13 @@ int main(void)
 	box("display and auto", "p{display:block;margin:0 auto;width:auto}", "<p>x", TAG_P,
 		"m0=0.0p m1=0.0a m2=0.0p m3=0.0a w=0.0a di=1 ");
 	box("nothing", "p{color:red}", "<p>x", TAG_P, "");
+	box("min and max", "div{min-width:10em;max-width:50%;min-height:3px;max-height:none}"
+		" div.a{max-width:none!important}", "<div class=a>x", TAG_DIV,
+		"minw=10.0e maxw=0.0a minh=3.0p maxh=0.0a ");
+	box("min and max inline", "", "<p style='max-width:600px;min-width:auto'>x",
+		TAG_P, "minw=0.0a maxw=600.0p ");
+	box("min-width not a length", "p{min-width:10em;min-width:fit-content}", "<p>x",
+		TAG_P, "minw=10.0e ");
 	{
 		/* line-height: in the box's declarations (the layout inherits it) */
 		static struct html_load l;

@@ -341,10 +341,52 @@ static void check_acid1_floats(void)
 	doc_free(&d);
 }
 
+/* min-width, max-width, min-height, max-height: the box of colour bg in
+ * html laid 400 wide is at x, w wide, h high (-1: any) */
+static void check_minmax(const char *name, const char *html, unsigned long bg,
+	int x, int w, long h)
+{
+	struct page pg;
+	struct doc d;
+	const struct lbox *b;
+
+	lay_px(html, &pg, &d);
+	b = box_bg(&pg, bg);
+	runs++;
+	if (b == NULL || (x >= 0 && b->x != x) || (w >= 0 && b->w != w)
+		|| (h >= 0 && b->h != h)) {
+		fails++;
+		printf("FAIL %s: x=%d w=%d h=%ld, not %d %d %ld\n", name, b ? b->x : -1,
+			b ? b->w : -1, b ? b->h : -1L, x, w, h);
+	}
+	layout_free(&pg);
+	doc_free(&d);
+}
+
 int main(void)
 {
 	check_grid_bands();
 	check_acid1_floats();
+	check_minmax("max-width, in the middle", "<div style='max-width:100px;"
+		"margin:0 auto;background:#f00'>x</div>", 0xff0000UL, 150, 100, -1);
+	check_minmax("max-width, padding outside it", "<div style='max-width:50%;"
+		"padding:0 10px;background:#f00'>x</div>", 0xff0000UL, 0, 220, -1);
+	check_minmax("max-width wider than the room", "<div style='max-width:900px;"
+		"background:#f00'>x</div>", 0xff0000UL, 0, 400, -1);
+	check_minmax("min-width beats max-width", "<div style='width:50px;"
+		"max-width:40px;min-width:60px;background:#f00'>x</div>", 0xff0000UL, 0, 60, -1);
+	check_minmax("float shrunk, min-width", "<div style='float:left;min-width:80px;"
+		"background:#f00'>a</div><div style='float:left'>b</div>", 0xff0000UL,
+		-1, 80, -1);
+	check_minmax("float, max-width", "<div style='float:left;width:300px;"
+		"max-width:120px;background:#f00'>a</div><div style='float:left'>b</div>",
+		0xff0000UL, -1, 120, -1);
+	check_minmax("min-height", "<div style='min-height:50px;background:#f00'>x</div>",
+		0xff0000UL, -1, -1, 50);
+	check_minmax("max-height caps height", "<div style='height:100px;"
+		"max-height:40px;background:#f00'>x</div>", 0xff0000UL, -1, -1, 40);
+	check_minmax("min-height beats max-height", "<div style='max-height:20px;"
+		"min-height:30px;background:#f00'>x</div>", 0xff0000UL, -1, -1, 30);
 	/* foreign elements close themselves: what follows is the page's */
 	check("svg/ and math/", "<p>before</p><svg/><p>after</p><math/><p>end</p>",
 		40, TCS_ASCII, "before\n\nafter\n\nend\n");

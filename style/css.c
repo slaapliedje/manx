@@ -1811,6 +1811,20 @@ static unsigned long box_decl(const char *p, size_t pn, const char *v,
 		return parse_len(v, vn, &b->w) ? CSS_B_W : 0;
 	if (pn == 6 && starts(p, pn, "height"))
 		return parse_len(v, vn, &b->h) ? CSS_B_H : 0;
+	if ((pn == 9 || pn == 10) && (starts(p, pn, "min-") || starts(p, pn, "max-"))
+		&& (starts(p + 4, pn - 4, "width") || starts(p + 4, pn - 4, "height"))) {
+		int mx = p[1] == 'a', wd = p[4] == 'w';
+		struct css_len *l = wd ? (mx ? &b->maxw : &b->minw)
+			: (mx ? &b->maxh : &b->minh);
+
+		/* (none, and auto: no limit) */
+		if (starts(v, vn, "none")) {
+			l->v = 0;
+			l->u = CSS_U_AUTO;
+		} else if (!parse_len(v, vn, l))
+			return 0;
+		return wd ? (mx ? CSS_B_MAXW : CSS_B_MINW) : (mx ? CSS_B_MAXH : CSS_B_MINH);
+	}
 	if (pn == 5 && starts(p, pn, "float")) {
 		if (starts(v, vn, "left"))
 			b->fl = CSS_FL_LEFT;
@@ -2649,6 +2663,14 @@ static void box_take(struct css_box *b, const struct css_box *a, int k)
 		b->disp = a->disp;
 	else if (bit == CSS_B_LH)
 		b->lh = a->lh;
+	else if (bit == CSS_B_MINW)
+		b->minw = a->minw;
+	else if (bit == CSS_B_MAXW)
+		b->maxw = a->maxw;
+	else if (bit == CSS_B_MINH)
+		b->minh = a->minh;
+	else if (bit == CSS_B_MAXH)
+		b->maxh = a->maxh;
 	b->set |= bit;
 }
 

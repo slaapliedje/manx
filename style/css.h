@@ -104,8 +104,8 @@ int css_inline_shows(const char *style);
 int css_inline_list(const char *style);
 
 /*
- * Boxes: margin, border, padding, width, height, float, clear, display
- * and background-color, for a screen that draws them (css_boxes: 1, the
+ * Boxes: margin, border, padding, width, height (and their min- and
+ * max-), float, clear, display and background-color, for a screen that draws them (css_boxes: 1, the
  * default; a terminal sets it 0 before reading sheets, and then their
  * rules about boxes take no memory and no time).
  */
@@ -124,7 +124,11 @@ extern int css_boxes;
 #define CSS_B_CLEAR	0x040000UL
 #define CSS_B_DISP	0x080000UL
 #define CSS_B_LH	0x100000UL	/* line-height (inherited: the layout's) */
-#define CSS_B_NBITS	21
+#define CSS_B_MINW	0x200000UL	/* min-width (auto: none) */
+#define CSS_B_MAXW	0x400000UL	/* max-width (auto: none) */
+#define CSS_B_MINH	0x800000UL	/* min-height */
+#define CSS_B_MAXH	0x1000000UL	/* max-height */
+#define CSS_B_NBITS	25
 
 enum { CSS_FL_NONE = 1, CSS_FL_LEFT, CSS_FL_RIGHT };
 enum { CSS_CL_NONE = 1, CSS_CL_LEFT, CSS_CL_RIGHT, CSS_CL_BOTH };
@@ -139,6 +143,7 @@ struct css_box {
 	unsigned char bstyle;		/* the border is drawn (solid...): 1 */
 	unsigned char fl, clr, disp;	/* CSS_FL_*, CSS_CL_*, CSS_DI_* */
 	struct css_len m[4], p[4], bw[4], w, h;
+	struct css_len minw, maxw, minh, maxh;	/* (max: none is auto) */
 	struct css_len lh;		/* line-height: em (a number, an em: of
 					 * the font's size), px, or auto: normal */
 };
