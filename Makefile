@@ -18,6 +18,12 @@
 TARGET ?= host
 B      := build/$(TARGET)
 
+# the release (VERSION), and what the updater fetches for this build
+# (net/update.h). PACKAGED=inst or tdnf: a package's copy, which the
+# package system updates, never Manx itself.
+VERSION := $(shell cat VERSION)
+PACKAGED ?=
+
 BEARSSL := third_party/bearssl
 
 ifeq ($(TARGET),host)
@@ -71,8 +77,11 @@ AR      := ar
 endif
 OS      := os/irix
 IRIXINC := -Ios/irix/include
-CFLAGS  := -DMANX_NO_C68K=1 $(IRIXINC) -std=gnu99 -O2 -g -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers
-BRFLAGS := $(IRIXINC) -O2 -g -DBR_USE_URANDOM=1 -DBR_USE_UNIX_TIME=1
+# (G= for a release: no debugging information. GNU strip can't be used
+# instead: what it leaves of an IRIX program dies at once)
+G       ?= -g
+CFLAGS  := -DMANX_NO_C68K=1 $(IRIXINC) -std=gnu99 -O2 $(G) -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers
+BRFLAGS := $(IRIXINC) -O2 $(G) -DBR_USE_URANDOM=1 -DBR_USE_UNIX_TIME=1
 LDLIBS  :=
 ifneq ($(IRIX_SYSROOT),)
 TERMLIB := -lcurses
@@ -97,6 +106,15 @@ TERMLIB := -ltinfo
 X11LIB  := -lX11
 else
 $(error TARGET must be host, sysv4, irix or no64)
+endif
+
+# the updater's name for the platform: AMIX's binary is Atari System V's
+ifeq ($(TARGET),sysv4)
+PLATFORM := sysv4-m68k
+else ifeq ($(TARGET),irix)
+PLATFORM := irix-mips
+else
+PLATFORM := $(shell uname -s | tr A-Z a-z)-$(shell uname -m)
 endif
 
 CRYPT68K := third_party/crypt68k
@@ -210,6 +228,12 @@ $(B)/$(CRYPT68K)/%.o: $(CRYPT68K)/%.c
 # ("Can't extend frag"); its switches are keys, so compare chains are
 # no loss.
 $(B)/src/manx.o $(B)/src/manxmail.o: CFLAGS += -fno-jump-tables
+
+$(B)/net/update.o: VERSION
+$(B)/net/update.o: CFLAGS += -DMANX_VERSION='"$(VERSION)"' \
+	-DMANX_PLATFORM='"$(PLATFORM)"' -DMANX_PACKAGED='"$(PACKAGED)"'
+# (also manx.o: its --version)
+$(B)/src/manx.o: VERSION
 
 $(B)/%.o: %.c
 	@mkdir -p $(dir $@)

@@ -257,6 +257,28 @@ message, `r` replies, `a` replies to all and `f` forwards. Before it goes
 a message is shown to be sent, edited again, or kept: what isn't sent
 stays in `~/.manx/draft` and is offered next time.
 
+## Updating
+
+Manx asks once a day, in the background, whether there is a newer
+release (`update_check = off` in `~/.manx/config` stops it), and says
+so on the status line and the start page. `about:update` shows what's
+new and installs it; `manx --update` does the same from a shell, and
+`manx --version` says which this is.
+
+Each release on GitHub carries a list of its programs for each platform
+with their SHA-256 sums, `manx-update.txt`, signed with the release key
+(ECDSA P-256), whose public half is built into Manx (`net/update_key.h`).
+The signature, not the connection, is what's trusted: Manx installs only
+programs that list names, checked against their sums, so an old
+certificate store or a check that comes after the request doesn't
+matter. It replaces the programs beside the one running (manx, xmanx,
+...), keeping each old one as `NAME.old`. A copy installed by a package
+system (the IRIX inst package, mogrix's) is left to that system.
+
+Releases are made with `tools/release.sh`, which builds each platform,
+signs the list with the key kept in `~/.config/manx-release` (never on
+GitHub), and makes the IRIX inst package (`tools/mkinst.sh`).
+
 ## Status
 
 The phases of [PLAN.md](PLAN.md) are done: toolchain, network core, HTML

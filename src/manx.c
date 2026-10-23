@@ -45,6 +45,7 @@
 #include "pagecss.h"
 #include "frames.h"
 #include "css.h"
+#include "update.h"
 #include <time.h>
 
 #define HIST_MAX	64
@@ -863,7 +864,10 @@ static const char help_html[] =
 	"transputer = off       don't share certificate checks with the "
 	"ATW800/2's T425\n"
 	"transputer_program = FILE  its program (tpsig.btl in ~/.manx)\n"
-	"</pre><p>Start pages: <a href=\"about:start\">about:start</a>";
+	"update_check = off     never ask once a day whether there's a newer "
+	"Manx\n"
+	"</pre><p>Start pages: <a href=\"about:start\">about:start</a>. "
+	"A newer Manx: <a href=\"about:update\">about:update</a>.";
 
 static const char start_html[] =
 	"<title>Manx</title><h1>Manx - a web browser for %s Unix</h1>"
@@ -1153,6 +1157,78 @@ static void cache_finish(int ok, const char *final_url)
 	cache_commit(&m);
 }
 
+/* about:update: the newest release, and (about:update?install, followed
+ * from that page only) putting it in place of this one */
+static void update_page(const char *url)
+{
+	static struct update_info u;
+	static char html[UPDATE_NOTES * 2 + 2400];
+	char err[400], why[600], e[UPDATE_NOTES * 2];
+	int r, install = strcmp(url, "about:update?install") == 0
+		&& strncmp(g_url, "about:update", 12) == 0;
+	size_t n;
+
+	message("Asking what the newest Manx is", NULL);
+	draw(0);
+	r = update_check(NULL, &u, err, sizeof err, on_status, NULL);
+	snprintf(html, sizeof html, "<title>Updating Manx</title>"
+		"<h1>Updating Manx</h1><p>This is Manx %s, for %s.</p>",
+		update_version(), update_platform());
+	n = strlen(html);
+	if (r < 0) {
+		html_escape(err, e, sizeof e);
+		snprintf(html + n, sizeof html - n, "<p>What the newest is "
+			"can't be told: <b>%s</b></p><p>r tries again.</p>", e);
+	} else if (r == 0) {
+		snprintf(html + n, sizeof html - n, "<p>That is the newest: the "
+			"latest release is Manx %s.</p>", u.version);
+	} else {
+		const char *nl, *t;
+
+		snprintf(html + n, sizeof html - n, "<p><b>Manx %s</b>%s%s%s is "
+			"out.</p>", u.version, u.date[0] ? " (" : "", u.date,
+			u.date[0] ? ")" : "");
+		/* what's new, a line an item */
+		for (t = u.notes; (nl = strchr(t, '\n')) != NULL; t = nl + 1) {
+			char one[400];
+
+			snprintf(one, sizeof one, "%.*s", (int)(nl - t), t);
+			html_escape(one, e, sizeof e);
+			n = strlen(html);
+			snprintf(html + n, sizeof html - n, "%s<li>%s",
+				t == u.notes ? "<ul>" : "", e);
+		}
+		n = strlen(html);
+		if (u.notes[0])
+			snprintf(html + n, sizeof html - n, "</ul>");
+		n = strlen(html);
+		if (install) {
+			int ok = update_install(&u, why, sizeof why, on_status,
+				NULL) == 0;
+
+			html_escape(why, e, sizeof e);
+			snprintf(html + n, sizeof html - n, "<p><b>%s</b></p>%s", e,
+				ok ? "" : "<p><a href=\"about:update?install\">"
+				"Try again</a></p>");
+		} else if (update_can_install(why, sizeof why)) {
+			html_escape(update_self(), e, sizeof e);
+			snprintf(html + n, sizeof html - n, "<p><a href=\""
+				"about:update?install\">Install it</a>, in place of %s "
+				"(and of the other Manx programs beside it).</p>", e);
+		} else {
+			html_escape(why, e, sizeof e);
+			snprintf(html + n, sizeof html - n, "<p>%s</p>", e);
+		}
+	}
+	n = strlen(html);
+	snprintf(html + n, sizeof html - n, "<p>Each release's list of files is "
+		"signed, and Manx installs only what that list names. It asks "
+		"once a day whether there is a newer one; update_check = off in "
+		"~/.manx/config stops that.</p>");
+	load_string(html, install ? "about:update" : url);
+	g_msg[0] = '\0';
+}
+
 /*
  * Get url into the page: with opts, a form's POST (key: where its answer
  * is kept, or NULL). mode: how the cache may be used. 0, or -1 (the old
@@ -1185,10 +1261,18 @@ static int load(const char *url_in, const struct fetch_opts *opts, int mode,
 	if (strcmp(url, "about:start") == 0 || strcmp(url, "about:") == 0
 		|| strcmp(url, "about:blank") == 0) {
 		/* (the heading names the processor it runs on) */
-		static char start[sizeof start_html + 64];
+		static char start[sizeof start_html + 200];
 
 		snprintf(start, sizeof start, start_html, os_cpu());
+		if (update_known()[0])
+			snprintf(start + strlen(start), sizeof start - strlen(start),
+				"<p><b>Manx %s is out:</b> <a href=\"about:update\">"
+				"about:update</a></p>", update_known());
 		load_string(start, url);
+		return 0;
+	}
+	if (strncmp(url, "about:update", 12) == 0) {
+		update_page(url);
 		return 0;
 	}
 
@@ -2832,6 +2916,50 @@ static void img_work(void)
 		g_frag[0] = '\0';
 }
 
+static int g_cli_over;		/* a progress line to write over */
+
+static void cli_status(void *ctx, const char *msg)
+{
+	int over = g_cli_over, progress = strstr(msg, " KB") != NULL;
+
+	(void)ctx;
+	fflush(stdout);
+	if (progress && !isatty(2))
+		return;
+	if (progress)
+		fprintf(stderr, "\r%-60s", msg);
+	else
+		fprintf(stderr, "%s%s\n", over ? "\n" : "", msg);
+	g_cli_over = progress;
+}
+
+/* manx --update: check, and install if there's newer (as about:update) */
+static int update_cli(void)
+{
+	static struct update_info u;
+	char err[600];
+	int r;
+
+	printf("Manx %s, for %s\n", update_version(), update_platform());
+	r = update_check(NULL, &u, err, sizeof err, cli_status, NULL);
+	if (r < 0) {
+		fprintf(stderr, "manx: %s\n", err);
+		return 1;
+	}
+	if (r == 0) {
+		printf("That is the newest: the latest release is %s.\n",
+			u.version);
+		return 0;
+	}
+	printf("Manx %s%s%s%s is out.\n%s", u.version, u.date[0] ? " (" : "",
+		u.date, u.date[0] ? ")" : "", u.notes);
+	r = update_install(&u, err, sizeof err, cli_status, NULL);
+	if (g_cli_over)
+		fputc('\n', stderr);
+	printf("%s\n", err);
+	return r < 0;
+}
+
 int main(int argc, char **argv)
 {
 	char path[600], in[URL_MAX], go[URL_MAX];
@@ -2839,6 +2967,13 @@ int main(int argc, char **argv)
 	int quit = 0, a = 1;
 
 	signal(SIGPIPE, SIG_IGN);
+	update_init(argv[0]);
+	if (argc == 2 && (strcmp(argv[1], "--version") == 0
+			|| strcmp(argv[1], "-version") == 0)) {
+		printf("Manx %s (%s%s%s)\n", update_version(), update_platform(),
+			update_packaged()[0] ? ", from " : "", update_packaged());
+		return 0;
+	}
 	/* settings: ~/.manx/config, MANX_<KEY> overriding */
 	if (config_load(os_datapath(path, sizeof path, "config"), &err) < 0)
 		fprintf(stderr, "manx: %s\n", err);
@@ -2881,6 +3016,10 @@ int main(int argc, char **argv)
 	dns_cache_init(os_datapath(path, sizeof path, "dns"));
 	/* the first run builds the trust store: say so, it takes a minute */
 	tls_init(config_str("cafile", NULL), tls_note);
+	if (argc == 2 && strcmp(argv[1], "--update") == 0)
+		return update_cli();
+	/* (before the screen: the child has none of it) */
+	update_bg_start();
 	if (doc_init(&g_doc, 0) < 0 || scr_open(config_str("charset", NULL)) < 0) {
 		fprintf(stderr, "manx: needs %s\n", scr_needs);
 		return 1;
@@ -2900,6 +3039,11 @@ int main(int argc, char **argv)
 		if (refresh_left() == 0) {
 			do_refresh();
 			continue;
+		}
+		if (update_bg_poll()) {
+			snprintf(g_msg, sizeof g_msg, "Manx %s is out: about:update "
+				"has it.", update_known());
+			g_msg_sticky = 1;
 		}
 		if (scr_check_size()) {
 			relayout_same_text();

@@ -393,6 +393,14 @@ static void shim_reset(void *ctx)
 	s->outer->reset(s->outer->ctx);
 }
 
+/* (progress goes out with the caller's own ctx) */
+static void shim_status(void *ctx, const char *msg)
+{
+	struct final_shim *s = ctx;
+
+	s->outer->status(s->outer->ctx, msg);
+}
+
 static int http_fetch(struct url *u, const char *method,
 	const struct fetch_opts *opts, const struct fetch_cb *cb,
 	struct fetch_result *res)
@@ -409,7 +417,7 @@ static int http_fetch(struct url *u, const char *method,
 		shim.res = res;
 		shim.u = u;
 		shim.inner.ctx = &shim;
-		shim.inner.status = cb->status;
+		shim.inner.status = cb->status ? shim_status : NULL;
 		shim.inner.header = shim_header;
 		shim.inner.body = shim_body;
 		shim.inner.reset = cb->reset ? shim_reset : NULL;
