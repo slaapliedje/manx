@@ -127,11 +127,13 @@ static char *dump_of(const unsigned char *s, size_t n, int chunked, size_t cap)
 		if (layout_run_m(&pg, &d, lw, lcs, lmax, lcap, NULL, m) == 0) {
 			unsigned long i;
 
-			/* with metrics, every line has a height */
+			/* with metrics, every line has a height (an empty
+			 * one, a margin spacer a negative margin took back:
+			 * none) */
 			if (m && pg.nlines && pg.heights == NULL)
 				abort();
 			for (i = 0; m && i < pg.nlines; i++)
-				if (pg.heights[i].height == 0
+				if ((pg.heights[i].height == 0 && pg.lines[i].len)
 					|| pg.heights[i].ascent > pg.heights[i].height)
 					abort();
 

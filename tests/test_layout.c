@@ -364,6 +364,33 @@ static void check_minmax(const char *name, const char *html, unsigned long bg,
 	doc_free(&d);
 }
 
+/* between the box with background bg1 and the one with bg2 below it: gap
+ * pixels; and bg2's x and width (-1: any) */
+static void check_gap(const char *name, const char *html, unsigned long bg1,
+	unsigned long bg2, long gap, int x, int w)
+{
+	struct page pg;
+	struct doc d;
+	const struct lbox *a, *b;
+	const long *t;
+	long g = -99999;
+
+	lay_px(html, &pg, &d);
+	a = box_bg(&pg, bg1);
+	b = box_bg(&pg, bg2);
+	t = layout_tops(&pg);
+	if (a && b && t)
+		g = t[b->line] + b->dy - (t[a->line] + a->dy + a->h);
+	runs++;
+	if (g != gap || (b && x >= 0 && b->x != x) || (b && w >= 0 && b->w != w)) {
+		fails++;
+		printf("FAIL %s: gap %ld x=%d w=%d, not %ld %d %d\n", name, g,
+			b ? b->x : -1, b ? b->w : -1, gap, x, w);
+	}
+	layout_free(&pg);
+	doc_free(&d);
+}
+
 /* page p's layers as "id@line+dy,x" (fixed: "id@win+dy,x", from the
  * foot: "id@foot-dy,x"), their own in {} after, ";" between */
 static void layers_str(const struct page *p, const struct doc *d, char *out, size_t n)
@@ -541,6 +568,20 @@ int main(void)
 		"max-height:40px;background:#f00'>x</div>", 0xff0000UL, -1, -1, 40);
 	check_minmax("min-height beats max-height", "<div style='max-height:20px;"
 		"min-height:30px;background:#f00'>x</div>", 0xff0000UL, -1, -1, 30);
+	/* negative margins: less the one above (no less than none); either
+	 * side, wider */
+	check_gap("margins: 30 and -10", "<div style='margin:0 0 30px;background:#f00'>a</div>"
+		"<div style='margin:-10px 0 0;background:#00f'>b</div>", 0xff0000UL, 0xffUL,
+		20, -1, -1);
+	check_gap("margins: -10, 30 inside", "<div style='margin:0;background:#f00'>a</div>"
+		"<div style='margin:-10px 0 0'><div style='margin:30px 0 0;background:#00f'>b"
+		"</div></div>", 0xff0000UL, 0xffUL, 20, -1, -1);
+	check_gap("margins: -10 alone", "<div style='margin:0;background:#f00'>a</div>"
+		"<div style='margin:-10px 0 0;background:#00f'>b</div>", 0xff0000UL, 0xffUL,
+		0, -1, -1);
+	check_gap("margins: a row's sides", "<div style='margin:0;padding:0 20px;"
+		"background:#f00'><div style='margin:0 -20px;background:#00f'>b</div></div>"
+		"<p>x", 0xff0000UL, 0xffUL, -12, 0, 400);
 	/* foreign elements close themselves: what follows is the page's */
 	check("svg/ and math/", "<p>before</p><svg/><p>after</p><math/><p>end</p>",
 		40, TCS_ASCII, "before\n\nafter\n\nend\n");
