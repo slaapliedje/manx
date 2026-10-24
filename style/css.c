@@ -86,8 +86,18 @@ struct rule {
 /* what a rule says of the box, and which of it is !important */
 struct bdecl {
 	struct css_box b;
-	unsigned long imp;		/* CSS_B_* */
+	unsigned long imp, imp2;	/* CSS_B_*, CSS_B2_* */
 };
+
+/* the box's properties, CSS_B_* then CSS_B2_*, numbered */
+#define BOX_NBITS	(CSS_B_NBITS + CSS_B2_NBITS)
+
+/* is property k among the bits w (CSS_B_*) and w2 (CSS_B2_*)? */
+static int box_bit(unsigned long w, unsigned long w2, int k)
+{
+	return k < CSS_B_NBITS ? (w >> k & 1) != 0
+		: (w2 >> (k - CSS_B_NBITS) & 1) != 0;
+}
 
 /* a custom property set on :root, html or body (only colours are kept) */
 struct cvar {
@@ -911,6 +921,25 @@ static int is_color(const char *w, size_t wn, struct cval *c)
 				 * alpha 0: rgba(0,0,0,0)) */
 				return i < 4 ? COL_CLEAR : COL_OTHER;
 	return COL_NO;
+}
+
+/* a border's colour word: 1 and *rgb (0xRRGGBB, CSS_BG_NONE or
+ * CSS_BG_CURRENT), 0 for one not known here (var(), lab()...), -1 for no
+ * colour */
+static int border_rgb(const char *w, size_t wn, unsigned long *rgb)
+{
+	struct cval c;
+	int ck = is_color(w, wn, &c);
+
+	if (ck == COL_RGB)
+		*rgb = c.rgb;
+	else if (ck == COL_CLEAR)
+		*rgb = CSS_BG_NONE;
+	else if (is_kw(w, wn, "currentcolor"))
+		*rgb = CSS_BG_CURRENT;
+	else
+		return ck == COL_OTHER ? 0 : -1;
+	return 1;
 }
 
 /* var(--x, fallback): the fallback (a word: *f, *fn), when there is one */
@@ -1749,7 +1778,7 @@ static int border_style(const char *v, size_t vn, unsigned char *st)
 /* border, border-top...: width, style, colour in any order, each once
  * (else none of it is taken) */
 static unsigned long border_short(const char *v, size_t vn, int side,
-	struct css_box *b)
+	struct css_box *b, unsigned long *set2)
 {
 	const char *w[4];
 	size_t wn[4];
@@ -1761,7 +1790,6 @@ static unsigned long border_short(const char *v, size_t vn, int side,
 	if (n == 0 || n > 3)
 		return 0;
 	for (i = 0; i < n; i++) {
-		struct cval c;
 		int ck;
 
 		/* (var(--w, 1px): taken as its fallback) */
@@ -1774,41 +1802,39 @@ static unsigned long border_short(const char *v, size_t vn, int side,
 			got |= 1;
 		else if (!(got & 2) && border_style(w[i], wn[i], &st))
 			got |= 2;
-		else if (!(got & 4) && (ck = is_color(w[i], wn[i], &c)) != COL_NO) {
-			got |= 4;
-			if (ck == COL_RGB || ck == COL_CLEAR) {
-				rgb = ck == COL_RGB ? c.rgb : CSS_BG_NONE;
-				got |= 8;
-			}
-		} else
+		else if (!(got & 4) && (ck = border_rgb(w[i], wn[i], &rgb)) >= 0)
+			got |= ck ? 4 | 8 : 4;
+		else
 			return 0;
 	}
-	if (got & 1) {
-		for (k = 0; k < 4; k++)
-			if (side < 0 || side == k) {
-				b->bw[k] = wl;
-				set |= CSS_B_BW(k);
-			}
-	}
-	if (got & 2) {
-		b->bstyle = st;
-		set |= CSS_B_BSTYLE;
-	}
-	if (got & 8) {
-		b->bcolor = rgb;
-		set |= CSS_B_BCOLOR;
-	}
-	/* (what the shorthand leaves out is reset: no style, no border) */
-	if (!wild && !(set & CSS_B_BSTYLE) && side < 0) {
-		b->bstyle = 0;
-		set |= CSS_B_BSTYLE;
-	}
-	if (!wild && side < 0 && !(set & CSS_B_BW(0))) {
-		for (k = 0; k < 4; k++) {
-			b->bw[k].v = 30;
-			b->bw[k].u = CSS_U_PX;
+	/* (what the shorthand leaves out is reset: no style, medium,
+	 * currentcolor) */
+	if (!wild) {
+		if (!(got & 2))
+			st = 0;
+		if (!(got & 1)) {
+			wl.v = 30;
+			wl.u = CSS_U_PX;
 		}
-		set |= CSS_B_BW(0) | CSS_B_BW(1) | CSS_B_BW(2) | CSS_B_BW(3);
+		if (!(got & 4))
+			rgb = CSS_BG_CURRENT;
+		got |= 1 | 2 | 8;
+	}
+	for (k = 0; k < 4; k++) {
+		if (side >= 0 && side != k)
+			continue;
+		if (got & 1) {
+			b->bw[k] = wl;
+			set |= CSS_B_BW(k);
+		}
+		if (got & 2) {
+			b->bstyle[k] = st;
+			*set2 |= CSS_B2_BS(k);
+		}
+		if (got & 8) {
+			b->bcolor[k] = rgb;
+			*set2 |= CSS_B2_BC(k);
+		}
 	}
 	return set;
 }
@@ -1848,9 +1874,39 @@ static int line_height(const char *v, size_t vn, struct css_len *l)
 	return 1;
 }
 
-/* one declaration about the box into *b: the CSS_B_* bits it set (0: none) */
+/* the 1 to 4 words of a per-side value ("none solid"), each as one()
+ * takes it, into the sides of *b (style: 1, else colour): the CSS_B2_*
+ * bits set, or 0 */
+static unsigned long side_words(const char *v, size_t vn, int style,
+	struct css_box *b)
+{
+	const char *w[5];
+	size_t wn[5];
+	int n = words(v, vn, w, wn, 5), i;
+	unsigned char st[4];
+	unsigned long rgb[4];
+	static const int from[4][4] = {
+		{ 0, 0, 0, 0 }, { 0, 1, 0, 1 }, { 0, 1, 2, 1 }, { 0, 1, 2, 3 } };
+
+	if (n == 0 || n > 4)
+		return 0;
+	for (i = 0; i < n; i++)
+		if (style ? !border_style(w[i], wn[i], &st[i])
+			: border_rgb(w[i], wn[i], &rgb[i]) <= 0)
+			return 0;
+	for (i = 0; i < 4; i++)
+		if (style)
+			b->bstyle[i] = st[from[n - 1][i]];
+		else
+			b->bcolor[i] = rgb[from[n - 1][i]];
+	return style ? CSS_B2_BS(0) | CSS_B2_BS(1) | CSS_B2_BS(2) | CSS_B2_BS(3)
+		: CSS_B2_BC(0) | CSS_B2_BC(1) | CSS_B2_BC(2) | CSS_B2_BC(3);
+}
+
+/* one declaration about the box into *b: the CSS_B_* bits it set (0: none),
+ * and the CSS_B2_* bits into *set2 */
 static unsigned long box_decl(const char *p, size_t pn, const char *v,
-	size_t vn, struct css_box *b)
+	size_t vn, struct css_box *b, unsigned long *set2)
 {
 	static const char *const sides[] = { "top", "right", "bottom", "left" };
 	struct css_len l[4];
@@ -1891,7 +1947,7 @@ static unsigned long box_decl(const char *p, size_t pn, const char *v,
 			return CSS_B_P(i);
 		}
 		if (pn == 7 + k && starts(p, 7, "border-") && starts(p + 7, k, sides[i]))
-			return border_short(v, vn, i, b);
+			return border_short(v, vn, i, b, set2);
 		if (pn == 13 + k && starts(p, 7, "border-") && starts(p + 7, k, sides[i])
 			&& starts(p + 7 + k, 6, "-width")) {
 			if (!border_width(v, vn, &l[0]))
@@ -1899,9 +1955,29 @@ static unsigned long box_decl(const char *p, size_t pn, const char *v,
 			b->bw[i] = l[0];
 			return CSS_B_BW(i);
 		}
+		if (pn == 13 + k && starts(p, 7, "border-") && starts(p + 7, k, sides[i])
+			&& starts(p + 7 + k, 6, "-style")) {
+			const char *w[1];
+			size_t wn[1];
+
+			if (words(v, vn, w, wn, 1) == 1
+				&& border_style(w[0], wn[0], &b->bstyle[i]))
+				*set2 |= CSS_B2_BS(i);
+			return 0;
+		}
+		if (pn == 13 + k && starts(p, 7, "border-") && starts(p + 7, k, sides[i])
+			&& starts(p + 7 + k, 6, "-color")) {
+			const char *w[1];
+			size_t wn[1];
+
+			if (words(v, vn, w, wn, 1) == 1
+				&& border_rgb(w[0], wn[0], &b->bcolor[i]) > 0)
+				*set2 |= CSS_B2_BC(i);
+			return 0;
+		}
 	}
 	if (pn == 6 && starts(p, pn, "border"))
-		return border_short(v, vn, -1, b);
+		return border_short(v, vn, -1, b, set2);
 	if (pn == 12 && starts(p, pn, "border-width")) {
 		const char *w[5];
 		size_t wn[5];
@@ -1919,26 +1995,9 @@ static unsigned long box_decl(const char *p, size_t pn, const char *v,
 		b->bw[3] = n > 3 ? t[3] : b->bw[1];
 		return CSS_B_BW(0) | CSS_B_BW(1) | CSS_B_BW(2) | CSS_B_BW(3);
 	}
-	if (pn == 12 && starts(p, pn, "border-style")) {
-		const char *w[1];
-		size_t wn[1];
-
-		if (words(v, vn, w, wn, 1) && border_style(w[0], wn[0], &b->bstyle))
-			return CSS_B_BSTYLE;
+	if (pn == 12 && (starts(p, pn, "border-style") || starts(p, pn, "border-color"))) {
+		*set2 |= side_words(v, vn, p[7] == 's' || p[7] == 'S', b);
 		return 0;
-	}
-	if (pn == 12 && starts(p, pn, "border-color")) {
-		const char *w[1];
-		size_t wn[1];
-		struct cval c;
-		int ck;
-
-		if (!words(v, vn, w, wn, 1))
-			return 0;
-		if ((ck = is_color(w[0], wn[0], &c)) != COL_RGB && ck != COL_CLEAR)
-			return 0;
-		b->bcolor = ck == COL_RGB ? c.rgb : CSS_BG_NONE;
-		return CSS_B_BCOLOR;
 	}
 	if ((pn == 16 && starts(p, pn, "background-color"))
 		|| (pn == 10 && starts(p, pn, "background"))) {
@@ -2243,13 +2302,18 @@ static void end_rule(struct css_sheet *s)
 		}
 		if (boxes) {
 			/* (first: the font shorthand is the text's too) */
-			unsigned long bits = box_decl(p, pn, v, vn, &bd.b);
+			unsigned long bits2 = 0;
+			unsigned long bits = box_decl(p, pn, v, vn, &bd.b, &bits2);
 
 			bd.b.set |= bits;
-			if (imp)
+			bd.b.set2 |= bits2;
+			if (imp) {
 				bd.imp |= bits;
-			else
+				bd.imp2 |= bits2;
+			} else {
 				bd.imp &= ~bits;
+				bd.imp2 &= ~bits2;
+			}
 		}
 		if (text_decl(s, p, pn, v, vn, imp, &t))
 			continue;
@@ -2283,7 +2347,7 @@ static void end_rule(struct css_sheet *s)
 		 * minutes ago", "Search", a logo's name.)
 		 */
 	}
-	if (bd.b.set && s->nboxes < MAX_BOX_DECLS) {
+	if ((bd.b.set || bd.b.set2) && s->nboxes < MAX_BOX_DECLS) {
 		if (s->nboxes == s->boxes_cap) {
 			int c = s->boxes_cap ? s->boxes_cap * 2 : 32;
 			struct bdecl *q = xrealloc(s->boxes, (size_t)c * sizeof *q);
@@ -2743,7 +2807,7 @@ static int beats(int imp_a, const struct rule *a, int imp_b, const struct rule *
 /* the rule that wins each property for an element */
 struct winners {
 	const struct rule *disp, *vis, *ls, *fg, *fw, *fs, *td, *ta, *fz;
-	const struct rule *box[CSS_B_NBITS];	/* each box property's */
+	const struct rule *box[BOX_NBITS];	/* each box property's */
 	int boxed;			/* some rule said something of the box */
 };
 
@@ -2785,12 +2849,13 @@ static void try_bucket(const struct css_sheet *s, unsigned b, const struct doc *
 			int k;
 
 			w->boxed = 1;
-			for (k = 0; k < CSS_B_NBITS; k++) {
-				unsigned long bit = 1UL << k;
+			for (k = 0; k < BOX_NBITS; k++) {
 				const struct rule *o = w->box[k];
+				const struct bdecl *ob = o ? &s->boxes[o->box] : NULL;
 
-				if ((bd->b.set & bit) && beats((bd->imp & bit) != 0, r,
-					o ? (s->boxes[o->box].imp & bit) != 0 : 0, o))
+				if (box_bit(bd->b.set, bd->b.set2, k)
+					&& beats(box_bit(bd->imp, bd->imp2, k), r,
+					ob ? box_bit(ob->imp, ob->imp2, k) : 0, o))
 					w->box[k] = r;
 			}
 		}
@@ -2956,14 +3021,19 @@ int css_display(struct css_sheet *s, const struct doc *d, nodeid node,
 /* the field of struct css_box that box bit k is about, copied from a to b */
 static void box_take(struct css_box *b, const struct css_box *a, int k)
 {
-	unsigned long bit = 1UL << k;
+	unsigned long bit = 1UL << (k % CSS_B_NBITS);
 
+	if (k >= CSS_B_NBITS) {
+		k -= CSS_B_NBITS;
+		if (k < 4)
+			b->bstyle[k] = a->bstyle[k];
+		else
+			b->bcolor[k - 4] = a->bcolor[k - 4];
+		b->set2 |= 1UL << k;
+		return;
+	}
 	if (bit == CSS_B_BG)
 		b->bg = a->bg;
-	else if (bit == CSS_B_BCOLOR)
-		b->bcolor = a->bcolor;
-	else if (bit == CSS_B_BSTYLE)
-		b->bstyle = a->bstyle;
 	else if (bit >= CSS_B_M(0) && bit <= CSS_B_M(3))
 		b->m[k - 3] = a->m[k - 3];
 	else if (bit >= CSS_B_P(0) && bit <= CSS_B_P(3))
@@ -3016,7 +3086,7 @@ int css_box(struct css_sheet *s, const struct doc *d, nodeid node,
 	match_all(s, d, node, id, cls, vw, &me, &w);
 	if (!w.boxed)
 		return 0;
-	for (k = 0; k < CSS_B_NBITS; k++)
+	for (k = 0; k < BOX_NBITS; k++)
 		if (w.box[k])
 			box_take(b, &s->boxes[w.box[k]->box].b, k);
 	return 1;
@@ -3035,14 +3105,14 @@ void css_inline_box(const char *style, struct css_box *b)
 		e = decl_end(p, end);
 		if (split_decl(p, e, &n, &pn, &v, &vn, &imp, nbuf, sizeof nbuf)) {
 			struct css_box t;
-			unsigned long bits;
+			unsigned long bits, bits2 = 0;
 			int k;
 
 			p = n;
 			memset(&t, 0, sizeof t);
-			bits = box_decl(p, pn, v, vn, &t);
-			for (k = 0; k < CSS_B_NBITS; k++)
-				if (bits & 1UL << k)
+			bits = box_decl(p, pn, v, vn, &t, &bits2);
+			for (k = 0; k < BOX_NBITS; k++)
+				if (box_bit(bits, bits2, k))
 					box_take(b, &t, k);
 		}
 		p = e + 1;

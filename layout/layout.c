@@ -1632,18 +1632,51 @@ static int box_units(const struct lay *L, struct css_len l, int of)
 	return v < -4000 ? -4000 : v > 8000 ? 8000 : (int)v;
 }
 
+/* is the box's border on side i drawn (a style, solid...)? */
+static int side_drawn(const struct css_box *b, int i)
+{
+	return (b->set2 & CSS_B2_BS(i)) && b->bstyle[i];
+}
+
+/* the colour of the box's border on side i, 0xRRGGBB or LBOX_NONE */
+static unsigned long side_rgb(const struct lay *L, const struct css_box *b,
+	int i)
+{
+	unsigned long c = (b->set2 & CSS_B2_BC(i)) ? b->bcolor[i] : CSS_BG_CURRENT;
+
+	if (c == CSS_BG_NONE)
+		return LBOX_NONE;
+	if (c == CSS_BG_CURRENT)
+		return L->fg ? L->p->palette[L->fg] : 0;
+	return c;
+}
+
+/* each side's border colour, top right bottom left */
+static void side_rgbs(const struct lay *L, const struct css_box *b,
+	unsigned long *bc)
+{
+	int i;
+
+	for (i = 0; i < 4; i++)
+		bc[i] = side_rgb(L, b, i);
+}
+
 /* the box's sides, in units: margins, borders (0 when not drawn),
  * padding; of: the width a % is of */
 static void box_sides(const struct lay *L, const struct css_box *b, int of,
 	int *m, int *bw, int *pd)
 {
+	struct css_len medium;
 	int i;
 
+	medium.v = 30;
+	medium.u = CSS_U_PX;
 	for (i = 0; i < 4; i++) {
 		m[i] = b->set & CSS_B_M(i) ? box_units(L, b->m[i], of) : 0;
 		pd[i] = b->set & CSS_B_P(i) ? box_units(L, b->p[i], of) : 0;
-		bw[i] = (b->set & CSS_B_BSTYLE) && b->bstyle && (b->set & CSS_B_BW(i))
-			? box_units(L, b->bw[i], of) : 0;
+		/* (no width said: medium) */
+		bw[i] = !side_drawn(b, i) ? 0 : box_units(L,
+			(b->set & CSS_B_BW(i)) ? b->bw[i] : medium, of);
 		if (pd[i] < 0)
 			pd[i] = 0;
 		if (bw[i] < 0)
@@ -1659,8 +1692,7 @@ static int box_shows(const struct css_box *b)
 	if ((b->set & CSS_B_BG) && b->bg != CSS_BG_NONE)
 		return 1;
 	for (i = 0; i < 4; i++) {
-		if ((b->set & CSS_B_BSTYLE) && b->bstyle && (b->set & CSS_B_BW(i))
-			&& b->bw[i].v > 0)
+		if (side_drawn(b, i) && (!(b->set & CSS_B_BW(i)) || b->bw[i].v > 0))
 			return 1;
 		if ((b->set & CSS_B_P(i)) && b->p[i].v > 0)
 			return 1;
@@ -1822,7 +1854,7 @@ static void box_open(struct lay *L, struct saved *sv, const struct css_box *b,
 
 		if (bw[i] == 0)
 			continue;
-		lb->bg = (b->set & CSS_B_BCOLOR) ? b->bcolor : 0;
+		lb->bg = side_rgb(L, b, i);
 		lb->x = i == 1 ? x + w - bw[1] : x;
 		lb->w = i == 1 || i == 3 ? bw[i] : w;
 		lb->h = i == 0 || i == 2 ? bw[i] : 0;
@@ -1972,7 +2004,7 @@ static int enter(struct lay *L, nodeid id, int depth)
 		 * (1 pixel wide, a letter a line) */
 		if ((bx.set & CSS_B_POS) && (bx.pos == CSS_PO_ABSOLUTE
 			|| bx.pos == CSS_PO_FIXED) && tiny_box(L, &bx))
-			bx.set &= CSS_B_BG | CSS_B_BCOLOR | CSS_B_DISP | CSS_B_LH;
+			bx.set &= CSS_B_BG | CSS_B_DISP | CSS_B_LH;
 		if (tag == TAG_BODY && L->p->page_bg != LBOX_NONE && !L->html_bg)
 			bx.set &= ~CSS_B_BG;
 		if (bx.set & CSS_B_DISP)
@@ -3744,7 +3776,8 @@ struct fitem {
 	struct gcell gc;		/* its content, laid out */
 	int fl;				/* CSS_FL_LEFT or CSS_FL_RIGHT */
 	int m[4], bw[4], pd[4];
-	unsigned long bg, bc;		/* LBOX_NONE: no background */
+	unsigned long bg;		/* LBOX_NONE: no background */
+	unsigned long bc[4];		/* each side's border colour */
 	int w;				/* its content's width */
 	long h;				/* ... and height */
 	int x;				/* its margin box's left, in the run */
@@ -3926,10 +3959,10 @@ static void float_emit(struct lay *L, struct fitem *it, int n, long H)
 				add_box(L, base, by, bx, bwid, bht, f->bg, 0, 0);
 				if (bx + bwid + f->m[1] + L->rin > p->need_w)
 					p->need_w = bx + bwid + f->m[1] + L->rin;
-				add_box(L, base, by, bx, bwid, f->bw[0], f->bc, 0, 0);
-				add_box(L, base, by + bht - f->bw[2], bx, bwid, f->bw[2], f->bc, 0, 0);
-				add_box(L, base, by, bx, f->bw[3], bht, f->bc, 0, 0);
-				add_box(L, base, by, bx + bwid - f->bw[1], f->bw[1], bht, f->bc, 0, 0);
+				add_box(L, base, by, bx, bwid, f->bw[0], f->bc[0], 0, 0);
+				add_box(L, base, by + bht - f->bw[2], bx, bwid, f->bw[2], f->bc[2], 0, 0);
+				add_box(L, base, by, bx, f->bw[3], bht, f->bc[3], 0, 0);
+				add_box(L, base, by, bx + bwid - f->bw[1], f->bw[1], bht, f->bc[1], 0, 0);
 			}
 		}
 		over = 0;
@@ -4138,10 +4171,10 @@ static void fl_start(struct lay *L, struct fitem *f)
 	if (bx + bwid + f->m[1] + L->rin > p->need_w)
 		p->need_w = bx + bwid + f->m[1] + L->rin;
 	add_box_any(L, p->nlines, by, bx, bwid, bht, f->bg);
-	add_box_any(L, p->nlines, by, bx, bwid, f->bw[0], f->bc);
-	add_box_any(L, p->nlines, by + bht - f->bw[2], bx, bwid, f->bw[2], f->bc);
-	add_box_any(L, p->nlines, by, bx, f->bw[3], bht, f->bc);
-	add_box_any(L, p->nlines, by, bx + bwid - f->bw[1], f->bw[1], bht, f->bc);
+	add_box_any(L, p->nlines, by, bx, bwid, f->bw[0], f->bc[0]);
+	add_box_any(L, p->nlines, by + bht - f->bw[2], bx, bwid, f->bw[2], f->bc[2]);
+	add_box_any(L, p->nlines, by, bx, f->bw[3], bht, f->bc[3]);
+	add_box_any(L, p->nlines, by, bx + bwid - f->bw[1], f->bw[1], bht, f->bc[1]);
 	L->fl_level = L->in_box;
 	L->fl_cx = bx + f->bw[3] + f->pd[3];
 	L->fl_cut = L->fl_right ? ow + L->em : 0;
@@ -4194,7 +4227,7 @@ static nodeid float_run(struct lay *L, nodeid id)
 		f->fl = b.fl;
 		box_sides(L, &b, avail, f->m, f->bw, f->pd);
 		f->bg = (b.set & CSS_B_BG) && b.bg != CSS_BG_NONE ? b.bg : LBOX_NONE;
-		f->bc = (b.set & CSS_B_BCOLOR) ? b.bcolor : 0;
+		side_rgbs(L, &b, f->bc);
 		f->gc.node = nodes[i];
 		extra = f->m[1] + f->m[3] + f->bw[1] + f->bw[3] + f->pd[1] + f->pd[3];
 		cw = avail - extra;
@@ -4352,8 +4385,9 @@ static void look_swap(struct lay *L, struct pend *pe)
 /* page pg's own background and border, under what's in it (its content's
  * top left is its origin) */
 static void layer_boxes(struct page *pg, const int *bw, const int *pd, int w,
-	long h, unsigned long bg, unsigned long bc)
+	long h, unsigned long bg, const unsigned long *bc)
 {
+	static const int side[5] = { 0, 0, 2, 3, 1 };
 	struct lbox *b;
 	int bx = -(bw[3] + pd[3]), bwid = bw[3] + pd[3] + w + pd[1] + bw[1], i;
 	long by = -(bw[0] + pd[0]), bht = bw[0] + pd[0] + h + pd[2] + bw[2];
@@ -4364,7 +4398,7 @@ static void layer_boxes(struct page *pg, const int *bw, const int *pd, int w,
 	memmove(b + 5, b, pg->nboxes * sizeof *b);
 	memset(b, 0, 5 * sizeof *b);
 	for (i = 0; i < 5; i++) {
-		b[i].bg = i ? bc : bg;
+		b[i].bg = i ? bc[side[i]] : bg;
 		b[i].border_rgb = LBOX_NONE;
 		b[i].x = bx;
 		b[i].dy = by;
@@ -4447,7 +4481,7 @@ static void lay_layer(struct lay *L, struct pend *pe, const struct cbox *cb,
 	struct lay *S;
 	struct llayer *ly;
 	int m[4], bw[4], pd[4], off[4], has[4], i, cw, said, shrink, ext_w;
-	unsigned long ln, bg;
+	unsigned long ln, bg, bc[4];
 	long h, ext_h, dy;
 	int x;
 
@@ -4529,8 +4563,8 @@ static void lay_layer(struct lay *L, struct pend *pe, const struct cbox *cb,
 		h = box_units(L, b.minh, (int)cb->h);
 	if (h < 0)
 		h = 0;
-	layer_boxes(&gc.pg, bw, pd, cw, h, bg,
-		(b.set & CSS_B_BCOLOR) ? b.bcolor : 0);
+	side_rgbs(L, &b, bc);
+	layer_boxes(&gc.pg, bw, pd, cw, h, bg, bc);
 	/* where its border box goes */
 	ln = cb->line;
 	if (rel) {

@@ -226,10 +226,21 @@ static void box(const char *name, const char *css, const char *body, int tag,
 		if (b.set & CSS_B_BW(i))
 			sprintf(got + strlen(got), "bw%d=%d.%d%c ", i, b.bw[i].v / 10, b.bw[i].v % 10,
 				"-pe%a"[b.bw[i].u]);
-	if (b.set & CSS_B_BSTYLE)
-		sprintf(got + strlen(got), "bs=%d ", b.bstyle);
-	if (b.set & CSS_B_BCOLOR)
-		sprintf(got + strlen(got), "bc=%06lx ", b.bcolor);
+	/* (all four sides alike: one) */
+	if ((b.set2 & 0x0F) == 0x0F && b.bstyle[0] == b.bstyle[1]
+		&& b.bstyle[0] == b.bstyle[2] && b.bstyle[0] == b.bstyle[3])
+		sprintf(got + strlen(got), "bs=%d ", b.bstyle[0]);
+	else
+		for (i = 0; i < 4; i++)
+			if (b.set2 & CSS_B2_BS(i))
+				sprintf(got + strlen(got), "bs%d=%d ", i, b.bstyle[i]);
+	if ((b.set2 & 0xF0) == 0xF0 && b.bcolor[0] == b.bcolor[1]
+		&& b.bcolor[0] == b.bcolor[2] && b.bcolor[0] == b.bcolor[3])
+		sprintf(got + strlen(got), "bc=%06lx ", b.bcolor[0]);
+	else
+		for (i = 0; i < 4; i++)
+			if (b.set2 & CSS_B2_BC(i))
+				sprintf(got + strlen(got), "bc%d=%06lx ", i, b.bcolor[i]);
 	if (b.set & CSS_B_W)
 		sprintf(got + strlen(got), "w=%d.%d%c ", b.w.v / 10, b.w.v % 10, "-pe%a"[b.w.u]);
 	if (b.set & CSS_B_H)
@@ -472,7 +483,7 @@ int main(void)
 		"bs=1 bc=000000 w=10.6% h=28.0e fl=2 ");
 	box("cascade by side", "li{margin:0;border:.5em solid black} #bar{margin:0 1em;border:0}",
 		"<ul><li id=bar>x</ul>", TAG_LI, "m0=0.0p m1=1.0e m2=0.0p m3=1.0e "
-		"bw0=0.0p bw1=0.0p bw2=0.0p bw3=0.0p bs=0 bc=000000 ");
+		"bw0=0.0p bw1=0.0p bw2=0.0p bw3=0.0p bs=0 bc=fffffffe ");
 	box("border-width four", "blockquote{border-width:1em 1.5em 2em .5em;border-style:solid}",
 		"<blockquote>x</blockquote>", TAG_BLOCKQUOTE,
 		"bw0=1.0e bw1=1.5e bw2=2.0e bw3=0.5e bs=1 ");
@@ -517,6 +528,17 @@ int main(void)
 		"<p>x", TAG_P, "bw0=2.0p bw1=2.0p bw2=2.0p bw3=2.0p bs=1 bc=0000ff ");
 	box("border transparent", "p{border:1em solid transparent}", "<p>x", TAG_P,
 		"bw0=1.0e bw1=1.0e bw2=1.0e bw3=1.0e bs=1 bc=ffffffff ");
+	box("border-style, -color: one to four", "p{border-style:none solid}"
+		" p{border-color:red #00f lime}", "<p>x", TAG_P,
+		"bs0=0 bs1=1 bs2=0 bs3=1 bc0=ff0000 bc1=0000ff bc2=00ff00 bc3=0000ff ");
+	box("border sides cascade", "p{border:2px solid red} p.a{border-left-color:blue;"
+		"border-top-style:none;border-right:1px dotted}",
+		"<p class=a>x", TAG_P, "bw0=2.0p bw1=1.0p bw2=2.0p bw3=2.0p "
+		"bs0=0 bs1=1 bs2=1 bs3=1 bc0=ff0000 bc1=fffffffe bc2=ff0000 bc3=0000ff ");
+	box("acid2 border-style after border", "p{border:black 2em;border-style:none solid}",
+		"<p>x", TAG_P, "bw0=2.0e bw1=2.0e bw2=2.0e bw3=2.0e bs0=0 bs1=1 bs2=0 bs3=1 bc=000000 ");
+	box("border-color: one not known", "p{border-color:red} p{border-color:var(--x) blue}"
+		" p{border-color:currentColor}", "<p>x", TAG_P, "bc=fffffffe ");
 	box("background: no colour is transparent", "p{background:red} p{background:url(x.png)}",
 		"<p>x", TAG_P, "bg=ffffffff ");
 	box("background: its parts", "p{background:#fc0 url(x) no-repeat fixed 1px 0 / cover}",

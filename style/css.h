@@ -114,8 +114,7 @@ extern int css_boxes;
 
 /* which of struct css_box's fields were said */
 #define CSS_B_BG	0x000001UL
-#define CSS_B_BCOLOR	0x000002UL
-#define CSS_B_BSTYLE	0x000004UL
+/* (0x000002, 0x000004: free) */
 #define CSS_B_M(i)	(0x000008UL << (i))	/* margin: top right bottom left */
 #define CSS_B_P(i)	(0x000080UL << (i))	/* padding */
 #define CSS_B_BW(i)	(0x000800UL << (i))	/* border width */
@@ -133,6 +132,10 @@ extern int css_boxes;
 #define CSS_B_OFF(i)	(0x4000000UL << (i))	/* top right bottom left */
 #define CSS_B_Z		0x40000000UL	/* z-index (auto: 0) */
 #define CSS_B_NBITS	31
+/* ... and of set2: */
+#define CSS_B2_BS(i)	(0x01UL << (i))	/* border style: top right bottom left */
+#define CSS_B2_BC(i)	(0x10UL << (i))	/* border colour */
+#define CSS_B2_NBITS	8
 
 enum { CSS_FL_NONE = 1, CSS_FL_LEFT, CSS_FL_RIGHT };
 enum { CSS_CL_NONE = 1, CSS_CL_LEFT, CSS_CL_RIGHT, CSS_CL_BOTH };
@@ -141,13 +144,17 @@ enum { CSS_PO_STATIC = 1, CSS_PO_RELATIVE, CSS_PO_ABSOLUTE, CSS_PO_FIXED,
 	CSS_PO_STICKY };
 
 #define CSS_BG_NONE	0xFFFFFFFFUL	/* transparent */
+#define CSS_BG_CURRENT	0xFFFFFFFEUL	/* currentcolor (a border's) */
 
 struct css_box {
 	unsigned long set;		/* CSS_B_* */
+	unsigned long set2;		/* CSS_B2_* */
 	unsigned long bg;		/* 0xRRGGBB, or CSS_BG_NONE */
-	unsigned long bcolor;		/* the border's colour, 0xRRGGBB, or
-					 * CSS_BG_NONE: transparent */
-	unsigned char bstyle;		/* the border is drawn (solid...): 1 */
+	unsigned long bcolor[4];	/* each side's border colour, 0xRRGGBB,
+					 * CSS_BG_NONE: transparent, or
+					 * CSS_BG_CURRENT (unset: currentcolor) */
+	unsigned char bstyle[4];	/* each side's border is drawn
+					 * (solid...): 1 */
 	unsigned char fl, clr, disp;	/* CSS_FL_*, CSS_CL_*, CSS_DI_* */
 	unsigned char pos;		/* CSS_PO_* */
 	short z;			/* z-index */
