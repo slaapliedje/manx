@@ -443,8 +443,12 @@ static void draw_layers(struct page *p, int x0, long y0, int h)
 			long by = ly0 + line_top(lp, bx->line) + bx->dy;
 
 			if (bx->kind == b / lp->nboxes && by < h && by + bx->h > 0) {
-				scr_rect(lx + bx->x, (int)by, bx->w, (int)bx->h, bx->bg,
-					bx->border, bx->border_rgb);
+				if (bx->side)
+					scr_side(lx + bx->x, (int)by, bx->w, (int)bx->h, bx->bg,
+						bx->side, bx->cut[0], bx->cut[1]);
+				else
+					scr_rect(lx + bx->x, (int)by, bx->w, (int)bx->h, bx->bg,
+						bx->border, bx->border_rgb);
 				draw_bg_pic(bx->bgi, lx + bx->x, by, bx->w, bx->h, 0);
 			}
 		}
@@ -601,8 +605,12 @@ static void draw(int full)
 					continue;
 				by = tops[bx->line] - y0 + bx->dy;
 				if (by < h && by + bx->h > 0) {
-					scr_rect(bx->x, (int)by, bx->w, (int)bx->h, bx->bg,
-						bx->border, bx->border_rgb);
+					if (bx->side)
+						scr_side(bx->x, (int)by, bx->w, (int)bx->h, bx->bg,
+							bx->side, bx->cut[0], bx->cut[1]);
+					else
+						scr_rect(bx->x, (int)by, bx->w, (int)bx->h, bx->bg,
+							bx->border, bx->border_rgb);
 					draw_bg_pic(bx->bgi, bx->x, by, bx->w, bx->h, 0);
 				}
 			}

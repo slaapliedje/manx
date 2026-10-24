@@ -2145,9 +2145,9 @@ static unsigned long box_decl(const char *p, size_t pn, const char *v,
 	struct css_len l[4];
 	int i;
 
-	if (starts(v, vn, "inherit") || starts(v, vn, "var(")
-		|| starts(v, vn, "unset") || starts(v, vn, "revert"))
-		return 0;
+	if ((starts(v, vn, "inherit") && !(pn == 5 && starts(p, pn, "float")))
+		|| starts(v, vn, "var(") || starts(v, vn, "unset") || starts(v, vn, "revert"))
+		return 0;			/* (float: inherit, the layout's) */
 	if ((pn == 6 && starts(p, pn, "margin")) || (pn == 7 && starts(p, pn, "padding"))) {
 		int m = p[0] == 'm' || p[0] == 'M';
 
@@ -2310,6 +2310,8 @@ static unsigned long box_decl(const char *p, size_t pn, const char *v,
 			b->fl = CSS_FL_RIGHT;
 		else if (is_kw(v, vn, "none"))
 			b->fl = CSS_FL_NONE;
+		else if (is_kw(v, vn, "inherit"))
+			b->fl = CSS_FL_INHERIT;	/* (the parent's: the layout's) */
 		else
 			return 0;
 		return CSS_B_FLOAT;

@@ -922,6 +922,19 @@ void scr_rect(int x, int y, int w, int h, unsigned long fill, int border,
 	(void)border_rgb;
 }
 
+void scr_side(int x, int y, int w, int h, unsigned long rgb, int side, int c0,
+	int c1)
+{
+	(void)x;
+	(void)y;
+	(void)w;
+	(void)h;
+	(void)rgb;
+	(void)side;
+	(void)c0;
+	(void)c1;
+}
+
 /* a terminal shows no images */
 const struct px_format *scr_pixels(void)
 {

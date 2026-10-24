@@ -855,6 +855,8 @@ struct rdraw {
 	unsigned char rep;		/* tile: CSS_BR_* */
 	struct ximg *tile;		/* a picture over it (scr_tile), or NULL */
 	int tx, ty;			/* ... from there */
+	unsigned char side;		/* a border's side, mitred (scr_side) */
+	short cut[2];
 };
 
 static struct rdraw *rdraws;
@@ -1032,6 +1034,22 @@ void scr_rect(int x, int y, int w, int h, unsigned long fill, int border,
 	}
 	if (r->fill_ok || r->line_ok)
 		nrdraws++;
+}
+
+void scr_side(int x, int y, int w, int h, unsigned long rgb, int side, int c0,
+	int c1)
+{
+	struct rdraw *r;
+
+	scr_rect(x, y, w, h, rgb, 0, 0);
+	if (nrdraws == 0)
+		return;
+	r = &rdraws[nrdraws - 1];
+	if (r->x != x || r->y != y || r->w != w || r->h != h || !r->fill_ok)
+		return;
+	r->side = (unsigned char)side;
+	r->cut[0] = (short)c0;
+	r->cut[1] = (short)c1;
 }
 
 void scr_text(int x, int y, int ascent, const char *s, int n, int attr,
@@ -2013,6 +2031,43 @@ static void paint_rect(const struct rdraw *r, int b0, int b1)
 			paint_tile(r);
 		return;
 	}
+	if (r->fill_ok && r->side) {
+		/* a border's side, a row at a time: where the diagonal is at
+		 * each row's top (CSS's mitre, as browsers draw it) */
+		long j, h = y1 - y0, w = x1 - x0, c0 = r->cut[0], c1 = r->cut[1];
+
+		for (j = 0; j < h; j++) {
+			long a = x0, b = x1;
+
+			if (y0 + j < b0 || y0 + j >= b1)
+				continue;
+			switch (r->side) {
+			case 1:		/* top: narrower down */
+				a = x0 + c0 * j / h;
+				b = x1 - c1 * j / h;
+				break;
+			case 3:		/* bottom: wider down */
+				a = x0 + c0 * (h - j) / h;
+				b = x1 - c1 * (h - j) / h;
+				break;
+			default: {	/* a side: as wide as the corners let it be */
+				long k2 = w;
+
+				if (c0 > 0 && w * j / c0 < k2)
+					k2 = w * j / c0;
+				if (c1 > 0 && w * (h - j) / c1 < k2)
+					k2 = w * (h - j) / c1;
+				if (r->side == 4)
+					b = x0 + k2;
+				else
+					a = x1 - k2;
+			}
+			}
+			if (a < b)
+				fill_clipped(a, y0 + j, b, y0 + j + 1, r->fill, b0, b1);
+		}
+		return;
+	}
 	if (r->fill_ok)
 		fill_clipped(x0, y0, x1, y1, r->fill, b0, b1);
 	if (r->line_ok && k > 0) {
@@ -2151,7 +2206,8 @@ static int rect_like(const struct rdraw *a, const struct rdraw *b, int s)
 		&& a->fill_ok == b->fill_ok && a->line_ok == b->line_ok
 		&& a->border == b->border && (!a->fill_ok || a->fill == b->fill)
 		&& (!a->line_ok || a->line == b->line) && a->tile == b->tile
-		&& (!a->tile || (a->rep == b->rep && a->tx == b->tx && a->ty == b->ty + s));
+		&& (!a->tile || (a->rep == b->rep && a->tx == b->tx && a->ty == b->ty + s))
+		&& a->side == b->side && a->cut[0] == b->cut[0] && a->cut[1] == b->cut[1];
 }
 
 /* (arg: char *, as R5 has no XPointer) */

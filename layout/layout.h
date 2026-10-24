@@ -111,6 +111,12 @@ struct lbox {
 					 * none */
 	unsigned char kind;		/* LBOX_BLOCK...: what it is the box of,
 					 * which says when it's drawn */
+	unsigned char side;		/* a border's side (1 + top, right, bottom,
+					 * left) meeting another colour's: its
+					 * corners cut on the diagonal (CSS's
+					 * mitre), 0: a rectangle */
+	unsigned short cut[2];		/* ... the sides' widths it meets: at its
+					 * left (or top), its right (or bottom) */
 };
 
 /* the boxes are drawn blocks' first, then floats', then inline ones' (as

@@ -32,6 +32,14 @@ struct cbox {
 	int x, w;
 };
 
+/* a block's own look, which each of its lines is as tall as at least (CSS's
+ * strut): kept only where a CSS line-height is in effect */
+struct strut {
+	unsigned char on, attr, face;
+	short fsz, cfsz;
+	struct css_len lh;
+};
+
 struct saved {
 	unsigned char attr, pre, tag, list;
 	unsigned char display, margin, face, nomarker;
@@ -62,6 +70,7 @@ struct saved {
 	int cb_prev;			/* L->cb_top before it */
 	struct cbox *cb_in;		/* 2: where (from L->cbs) */
 	unsigned char after;		/* it has an ::after (CSS) */
+	struct strut strut;		/* L->strut before it */
 };
 
 /* an absolutely positioned (or fixed) element, its containing block not
@@ -100,6 +109,7 @@ struct lay {
 					 * border, margin) beside the text */
 	struct css_len lh;		/* the line height (with metrics; u
 					 * CSS_U_NONE: the font's own) */
+	struct strut strut;		/* the block's (with metrics) */
 	int fsz;			/* the font's size, tenths of a unit (with
 					 * metrics): the text's em */
 	int cfsz;			/* ... as CSS says it, tenths of a CSS
@@ -166,12 +176,14 @@ struct lay {
 					 * below the line's top */
 	int fl_inline;			/* the open line holds a float's line */
 	int fl_line_x;			/* ... which is where the line starts */
+	int fl_line_end;		/* ... and where the float's line ends */
 	int fl_level;			/* the boxes open when it started */
 	unsigned long fl_box;		/* its boxes: p->boxes[fl_box...] */
 	long fl_top;			/* its content's top, below its own */
 	int fl_narrow;			/* it leaves too little room for text:
 					 * text goes below it (boxes beside) */
 	int fl_flushing;		/* (float_flush at work) */
+	unsigned long fl_line0;		/* the line it started on */
 	int kind;			/* the boxes added now: LBOX_* */
 	/* the open line's inline boxes (a picture's padding, border...):
 	 * p->boxes[box...], their top `above` the baseline once it's known */
@@ -192,6 +204,7 @@ struct lay {
 	int ntop_pend;
 	/* positioned elements (with metrics) */
 	int measure;			/* (a cell's: see struct gcell) */
+	int right_measured;		/* a right float was put left to measure */
 	int layers_ok;			/* laid out as layers here (not in a
 					 * grid's cell or a float: in the flow) */
 	int cb_top;			/* the innermost containing block's depth
@@ -285,31 +298,60 @@ static int space_w(const struct lay *L)
 
 static long rdiv(long n, long d);
 
-/* the open line is as tall as the current look, at least */
+/* how tall a line of text in a look is, and its ascent (*a) */
+static int look_height(const struct lay *L, int attr, int face, struct css_len l,
+	int fsz, int cfsz, int *a)
+{
+	int h = L->m->height(L->m->ctx, attr, face, a);
+
+	if (l.u == CSS_U_EM || l.u == CSS_U_PCT || l.u == CSS_U_PX) {
+		/* CSS's line height: the difference half above, half below */
+		long lh = l.u == CSS_U_EM ? (long)l.v * fsz / 100
+			: l.u == CSS_U_PCT ? (long)l.v * cfsz / 100
+			: rdiv(l.v, 10);
+
+		if (lh < 1)
+			lh = 1;
+		*a += (int)(lh - h) / 2;
+		h = (int)lh;
+		if (*a < 0)
+			*a = 0;
+	}
+	return h;
+}
+
+/* the open line is as tall as the current look, at least (and as its
+ * block's strut) */
 static void note_height(struct lay *L)
 {
 	int h, a;
 
 	if (L->m == NULL)
 		return;
-	h = L->m->height(L->m->ctx, L->attr, L->face, &a);
-	if (L->lh.u == CSS_U_EM || L->lh.u == CSS_U_PCT || L->lh.u == CSS_U_PX) {
-		/* CSS's line height: the difference half above, half below */
-		long lh = L->lh.u == CSS_U_EM ? (long)L->lh.v * L->fsz / 100
-			: L->lh.u == CSS_U_PCT ? (long)L->lh.v * L->cfsz / 100
-			: rdiv(L->lh.v, 10);
-
-		if (lh < 1)
-			lh = 1;
-		a += (int)(lh - h) / 2;
-		h = (int)lh;
-		if (a < 0)
-			a = 0;
-	}
+	h = look_height(L, L->attr, L->face, L->lh, L->fsz, L->cfsz, &a);
 	if (a > L->line_a)
 		L->line_a = a;
 	if (h - a > L->line_d)
 		L->line_d = h - a;
+	if (L->strut.on) {
+		h = look_height(L, L->strut.attr, L->strut.face, L->strut.lh,
+			L->strut.fsz, L->strut.cfsz, &a);
+		if (a > L->line_a)
+			L->line_a = a;
+		if (h - a > L->line_d)
+			L->line_d = h - a;
+	}
+}
+
+/* the look now is a block's: its strut (only where CSS says a line height) */
+static void set_strut(struct lay *L)
+{
+	L->strut.on = L->m && L->lh.u != CSS_U_NONE && L->lh.u != CSS_U_AUTO;
+	L->strut.attr = (unsigned char)L->attr;
+	L->strut.face = (unsigned char)L->face;
+	L->strut.fsz = (short)L->fsz;
+	L->strut.cfsz = (short)L->cfsz;
+	L->strut.lh = L->lh;
 }
 
 /* a line's height and ascent: its own, or (blank) the plain look's */
@@ -498,6 +540,9 @@ static void close_line_at(struct lay *L, unsigned long end)
 			end--;
 			endcol -= space_w(L);
 		}
+	/* (a float's line, no text beside it: as wide as the float's) */
+	if (L->fl_inline && endcol <= L->line_indent)
+		endcol = L->fl_line_end;
 	/* centred or to the right (not a table row's line of cells; a grid
 	 * cell's only at its column's width: measured, it would seem as wide
 	 * as it was let be - it says it has some, to be laid again) */
@@ -733,6 +778,7 @@ static void open_line(struct lay *L)
 			L->link = k;
 			L->marker_w = 0;
 		}
+		L->fl_line_end = L->col;
 		go_to(L, ind);
 		L->line_indent = ind;	/* (the text's start; the line's is
 					 * the float's) */
@@ -1740,6 +1786,7 @@ static void text_look(struct lay *L, int tag, const struct style *s,
 
 static int dark(unsigned long rgb);
 static void float_flush(struct lay *L);
+static void clear_floats(struct lay *L, const struct css_box *b);
 static int tiny_box(const struct lay *L, const struct css_box *b);
 struct fitem;
 static void emit_pend(struct lay *L, int cb, const struct cbox *c);
@@ -1854,6 +1901,33 @@ static void box_sides(const struct lay *L, const struct css_box *b, int of,
 			pd[i] = 0;
 		if (bw[i] < 0)
 			bw[i] = 0;
+	}
+}
+
+/* a box's border sides t, r, b, l (bw[4] wide: top right bottom left),
+ * where one meets another's colour: cut on the diagonal there */
+static void mitre(struct lbox *t, struct lbox *r, struct lbox *b, struct lbox *l,
+	const int *bw)
+{
+	struct lbox *s[4];
+	int i;
+
+	s[0] = t;
+	s[1] = r;
+	s[2] = b;
+	s[3] = l;
+	for (i = 0; i < 4; i++) {
+		/* (its neighbours: left and right of a top or bottom, top and
+		 * bottom of a side) */
+		int n0 = i % 2 ? 0 : 3, n1 = i % 2 ? 2 : 1;
+
+		if (bw[i] <= 0 || s[i]->w <= 0)
+			continue;
+		if ((bw[n0] > 0 && s[n0]->bg != s[i]->bg) || (bw[n1] > 0 && s[n1]->bg != s[i]->bg)) {
+			s[i]->side = (unsigned char)(i + 1);
+			s[i]->cut[0] = (unsigned short)(bw[n0] > 0 ? bw[n0] : 0);
+			s[i]->cut[1] = (unsigned short)(bw[n1] > 0 ? bw[n1] : 0);
+		}
 	}
 }
 
@@ -2199,6 +2273,8 @@ static void box_open(struct lay *L, struct saved *sv, const struct css_box *b,
 		lb->w = i == 1 || i == 3 ? bw[i] : w;
 		lb->h = i == 0 || i == 2 ? bw[i] : 0;
 	}
+	mitre(&p->boxes[first + 1], &p->boxes[first + 2], &p->boxes[first + 3],
+		&p->boxes[first + 4], bw);
 	sv->box = first + 1;
 	sv->box_line = p->nlines;
 	sv->box_in_b = bw[2] + pd[2];
@@ -2455,7 +2531,7 @@ static int enter(struct lay *L, nodeid id, int depth)
 			&& (bx.set & (CSS_B_M(0) | CSS_B_M(1) | CSS_B_M(2) | CSS_B_M(3))))
 			boxed = 2;
 		if ((bx.set & CSS_B_CLEAR) && bx.clr != CSS_CL_NONE)
-			float_flush(L);
+			clear_floats(L, &bx);
 		/* (its margins say where it is: no blank lines of its own) */
 		if (boxed && (bx.set & (CSS_B_M(0) | CSS_B_M(2))))
 			s.margin = 0;
@@ -2593,6 +2669,7 @@ static int enter(struct lay *L, nodeid id, int depth)
 	sv->fsz = (short)L->fsz;
 	sv->cfsz = (short)L->cfsz;
 	sv->lh = L->lh;
+	sv->strut = L->strut;
 	sv->box = 0;
 	sv->boxk = 0;
 	sv->cb = 0;
@@ -2702,6 +2779,8 @@ static int enter(struct lay *L, nodeid id, int depth)
 		if (bx.lh.u == CSS_U_AUTO)
 			L->lh.u = CSS_U_NONE;	/* (normal: the font's) */
 	}
+	if (s.display != D_INLINE)
+		set_strut(L);
 	if (tag == TAG_A && ea.href
 		&& GROW(L, links, links_cap, L->p->nlinks + 1, 64) == 0) {
 		struct llink *k = &L->p->links[L->p->nlinks++];
@@ -2786,6 +2865,7 @@ static void leave(struct lay *L, nodeid id, int depth)
 	L->fsz = sv->fsz;
 	L->cfsz = sv->cfsz;
 	L->lh = sv->lh;
+	L->strut = sv->strut;
 	L->fg = sv->fg;
 	L->align = sv->align;
 	L->link = sv->link;
@@ -2898,6 +2978,7 @@ static void walk(struct lay *L, nodeid root, int depth)
 #define FRAME_WORD_EM	30		/* a longer word (a URL) is broken there */
 #define FRAME_MEASURE	40		/* lines a framing cell is measured by */
 #define GRID_DEPTH	3		/* grids in grids' cells, so deep */
+#define FLOAT_DEPTH	6		/* floats in layers' or floats' pages */
 
 struct gcell {
 	nodeid node;
@@ -3199,6 +3280,15 @@ static int seg_w(const struct lay *L, const struct page *tp, int attr, int face,
 	return w;
 }
 
+/* are n bytes at s of a run of face LF_IMAGE only spacers (no picture)? */
+static int only_spacers(const struct page *tp, const char *s, int n)
+{
+	for (; n >= LAYOUT_IMG_BYTES; s += LAYOUT_IMG_BYTES, n -= LAYOUT_IMG_BYTES)
+		if (layout_image(tp, s) >= 0)
+			return 0;
+	return 1;
+}
+
 /*
  * Line ln of page tp: its width (indent included) into *w, and its widest
  * piece that can't be broken (a word, a field, a picture) into *word.
@@ -3210,7 +3300,7 @@ static void line_widths(const struct lay *L, const struct page *tp, unsigned lon
 	unsigned long off = l->off, end = l->off + l->len, s = l->span;
 	int run = 0, reach = 0;
 
-	*w = l->indent;
+	*w = l->len ? l->indent : 0;	/* (an empty line: nothing to show) */
 	*word = 0;
 	while (off < end) {
 		unsigned long next = end, a;
@@ -3225,7 +3315,9 @@ static void line_widths(const struct lay *L, const struct page *tp, unsigned lon
 			continue;
 		}
 		*w += seg_w(L, tp, sp->attr, sp->face, tp->text + off, (int)(next - off));
-		if (*w > reach)
+		/* (where content ends: not a spacer to where text would go) */
+		if (*w > reach && !((sp->face & LF_IMAGE)
+			&& only_spacers(tp, tp->text + off, (int)(next - off))))
 			reach = *w;
 		if ((sp->attr & SA_FIELD) || (sp->face & LF_IMAGE))
 			run += seg_w(L, tp, sp->attr, sp->face, tp->text + off,
@@ -3249,8 +3341,7 @@ static void line_widths(const struct lay *L, const struct page *tp, unsigned lon
 	}
 	if (l->indent + run > *word)
 		*word = l->indent + run;
-	if (reach > *w)
-		*w = reach;		/* (back from a float's line) */
+	*w = reach;			/* (back from a float's line, too) */
 }
 
 /* lay cell gc out into its page, width wide, as a block's content, with
@@ -3342,6 +3433,7 @@ static int lay_cell(struct lay *L, struct lay *S, struct gcell *gc, int width,
 		font_look(S, 0, &ct);
 		text_look(S, L->d->nodes[gc->node].tag, &s, &ct, al);
 	}
+	set_strut(S);
 	set_span(S);
 	if (doc_attr(L->d, gc->node, ATTR_ID))
 		add_anchor(S, gc->node, here_line(S));	/* (the cell's own id) */
@@ -3768,6 +3860,8 @@ static void add_box(struct lay *L, unsigned long line, long dy, int x, int w,
 		return;
 	b = &p->boxes[p->nboxes++];
 	b->kind = (unsigned char)L->kind;
+	b->side = 0;
+	b->cut[0] = b->cut[1] = 0;
 	b->bgi = (unsigned short)bgi;
 	b->line = line;
 	b->dy = dy;
@@ -3777,6 +3871,26 @@ static void add_box(struct lay *L, unsigned long line, long dy, int x, int w,
 	b->bg = bg;
 	b->border = (unsigned char)border;
 	b->border_rgb = border_rgb;
+}
+
+/* box b of a cell's (or a float's) page into this one: on line, dy below
+ * its top, at x; drawn as L->kind says, or (none) as it was */
+static void copy_box(struct lay *L, const struct lbox *b, unsigned long line, long dy,
+	int x)
+{
+	struct page *p = L->p;
+	unsigned long n = p->nboxes;
+
+	add_box(L, line, dy, x, b->w, b->h, b->bg, b->border, b->border_rgb, b->bgi);
+	if (p->nboxes > n) {
+		struct lbox *c = &p->boxes[n];
+
+		c->side = b->side;
+		c->cut[0] = b->cut[0];
+		c->cut[1] = b->cut[1];
+		if (L->kind == LBOX_BLOCK)
+			c->kind = b->kind;
+	}
 }
 
 /* a cell's line in a grid in fonts: where it starts */
@@ -3978,9 +4092,7 @@ static int compose_bands(struct lay *L, struct grid *g, const struct gdecor *dc,
 				const struct lbox *b = &gc->pg.boxes[gc->box_i];
 
 				if (b->line == ln)
-					add_box(L, p->nlines, b->dy + dy,
-						x0 + g->x[gc->c] + b->x, b->w, b->h,
-						b->bg, b->border, b->border_rgb, b->bgi);
+					copy_box(L, b, p->nlines, b->dy + dy, x0 + g->x[gc->c] + b->x);
 			}
 		}
 		L->attr = attr;
@@ -4257,9 +4369,26 @@ static int out_of_flow(const struct lay *L, const struct css_box *b)
 static int float_of(struct lay *L, nodeid id, struct css_box *b)
 {
 	struct eattr ea;
+	nodeid a;
+	int k;
 
 	scan_attrs(L->d, id, &ea);
-	if (!el_box(L, id, &ea, b) || !(b->set & CSS_B_FLOAT)
+	if (!el_box(L, id, &ea, b))
+		return 0;
+	/* (float: inherit - its parent's, theirs...) */
+	for (a = id, k = 0; (b->set & CSS_B_FLOAT) && b->fl == CSS_FL_INHERIT && k < 16; k++) {
+		struct css_box pb;
+		struct eattr pa;
+
+		if ((a = L->d->nodes[a].parent) == 0 || L->d->nodes[a].type != NODE_ELEM) {
+			b->fl = CSS_FL_NONE;
+			break;
+		}
+		scan_attrs(L->d, a, &pa);
+		el_box(L, a, &pa, &pb);
+		b->fl = (pb.set & CSS_B_FLOAT) ? pb.fl : CSS_FL_NONE;
+	}
+	if (!(b->set & CSS_B_FLOAT)
 		|| (b->fl != CSS_FL_LEFT && b->fl != CSS_FL_RIGHT) || out_of_flow(L, b))
 		return 0;
 	return !el_hidden(L, id);
@@ -4444,8 +4573,7 @@ static void float_emit(struct lay *L, struct fitem *it, int n, long H)
 				const struct lbox *b = &gc->pg.boxes[gc->box_i];
 
 				if (b->line == ln)
-					add_box(L, p->nlines, b->dy + dy, x0 + cx[ev[e].cell] + b->x,
-						b->w, b->h, b->bg, b->border, b->border_rgb, b->bgi);
+					copy_box(L, b, p->nlines, b->dy + dy, x0 + cx[ev[e].cell] + b->x);
 			}
 		}
 		L->kind = LBOX_BLOCK;
@@ -4578,8 +4706,7 @@ static int fl_place(struct lay *L, int *ind)
 		const struct lbox *b = &f->gc.pg.boxes[f->gc.box_i];
 
 		if (b->line == ln)
-			add_box(L, p->nlines, b->dy + dy, L->fl_cx + b->x, b->w, b->h,
-				b->bg, b->border, b->border_rgb, b->bgi);
+			copy_box(L, b, p->nlines, b->dy + dy, L->fl_cx + b->x);
 	}
 	L->kind = LBOX_BLOCK;
 	if (dy + h + (f->gc.pg.heights ? f->gc.pg.heights[ln].over : 0) > L->fl_over)
@@ -4648,6 +4775,8 @@ static void fl_start(struct lay *L, struct fitem *f)
 
 	L->fl = f;
 	L->fl_right = f->fl == CSS_FL_RIGHT && !L->measure;
+	if (f->fl == CSS_FL_RIGHT && L->measure)
+		L->right_measured = 1;
 	f->x = L->fl_right ? L->width - ow : L->indent;
 	if (f->x < L->indent)
 		f->x = L->indent;
@@ -4669,6 +4798,9 @@ static void fl_start(struct lay *L, struct fitem *f)
 	add_box_any(L, p->nlines, by, bx, f->bw[3], bht, f->bc[3]);
 	add_box_any(L, p->nlines, by, bx + bwid - f->bw[1], f->bw[1], bht, f->bc[1]);
 	L->kind = LBOX_BLOCK;
+	if (L->fl_box + 5 <= p->nboxes)
+		mitre(&p->boxes[L->fl_box + 1], &p->boxes[L->fl_box + 4],
+			&p->boxes[L->fl_box + 2], &p->boxes[L->fl_box + 3], f->bw);
 	L->fl_level = L->in_box;
 	L->fl_cx = bx + f->bw[3] + f->pd[3];
 	L->fl_cut = L->fl_right ? ow + L->em : 0;
@@ -4683,6 +4815,7 @@ static void fl_start(struct lay *L, struct fitem *f)
 	f->gc.box_i = 0;
 	/* (margins after it collapse: not with those above it, that place it) */
 	L->gap_from = p->nlines;
+	L->fl_line0 = p->nlines;
 }
 
 /* lay the floats from sibling id on: the last sibling taken, or 0 when
@@ -4696,7 +4829,7 @@ static nodeid float_run(struct lay *L, nodeid id)
 	long row_y = 0, row_h = 0;
 	unsigned short link = L->link;
 
-	if (L->m == NULL || L->pre || L->cell || L->gdepth >= GRID_DEPTH
+	if (L->m == NULL || L->pre || L->cell || L->gdepth >= FLOAT_DEPTH
 		|| (n = float_gather(L, id, nodes, FLOAT_MAX, &last)) == 0)
 		return 0;
 	avail = L->width - L->indent;
@@ -4716,7 +4849,7 @@ static nodeid float_run(struct lay *L, nodeid id)
 	for (i = 0; i < n; i++) {
 		struct fitem *f = &it[i];
 		struct css_box b;
-		int extra, ow, cw;
+		int extra, ow, cw, shrink;
 		unsigned long ln;
 
 		float_of(L, nodes[i], &b);
@@ -4733,13 +4866,16 @@ static nodeid float_run(struct lay *L, nodeid id)
 		cw = clamp_w(L, &b, avail, cw);
 		if (cw < L->em)
 			cw = L->em;
+		/* (shrunk to fit: measured first, its right floats put left) */
+		shrink = !((b.set & CSS_B_W) && b.w.u != CSS_U_AUTO);
+		f->gc.measure = shrink;
 		if (lay_cell(L, S, &f->gc, cw, 0, 1, NULL) < 0) {
 			layout_free(&f->gc.pg);	/* (out of room: as far as here) */
 			break;
 		}
-		if (!((b.set & CSS_B_W) && b.w.u != CSS_U_AUTO)) {
+		if (shrink) {
 			/* (shrunk to fit its widest line) */
-			int w = f->gc.pg.need_w, lw, word;
+			int w = f->gc.pg.need_w, lw, word, again = S->right_measured;
 
 			for (ln = 0; ln < f->gc.pg.nlines; ln++) {
 				line_widths(L, &f->gc.pg, ln, &lw, &word);
@@ -4749,10 +4885,12 @@ static nodeid float_run(struct lay *L, nodeid id)
 			/* (no narrower than min-width says) */
 			if (w > 0 && (w = clamp_w(L, &b, avail, w)) < cw) {
 				cw = w;
-				if (lay_cell(L, S, &f->gc, cw, 0, 1, NULL) < 0) {
-					layout_free(&f->gc.pg);
-					break;
-				}
+				again = 1;
+			}
+			f->gc.measure = 0;
+			if (again && lay_cell(L, S, &f->gc, cw, 0, 1, NULL) < 0) {
+				layout_free(&f->gc.pg);
+				break;
 			}
 		}
 		f->w = cw;
@@ -4832,6 +4970,45 @@ static nodeid float_run(struct lay *L, nodeid id)
 	L->link = link;
 	set_span(L);
 	return last;
+}
+
+/*
+ * A block that clears the float beside the text (b: its box): below it.
+ * CSS's clearance: its border goes where it would have (its top margin
+ * collapsed with those just above), or lower, at the float's foot - its
+ * margin then taken into the clearance, not added below the float.
+ */
+static void clear_floats(struct lay *L, const struct css_box *b)
+{
+	long before, after, hyp, pos, neg;
+	int m0;
+
+	if (L->fl == NULL || L->m == NULL || L->p->heights == NULL) {
+		float_flush(L);
+		return;
+	}
+	flush_blank(L);
+	m0 = (b->set & CSS_B_M(0)) ? box_units(L, b->m[0], L->width - L->indent) : 0;
+	before = lines_h(L, L->fl_line0);
+	/* (where its border would be: the bottom of what's above, the
+	 * margins between collapsed with its own) */
+	pos = L->gap > m0 ? L->gap : m0;
+	neg = L->mneg < m0 ? L->mneg : m0;
+	if (pos < 0)
+		pos = 0;
+	if (neg > 0)
+		neg = 0;
+	hyp = before - (L->gap - L->cut) + pos + neg;
+	float_flush(L);
+	after = lines_h(L, L->fl_line0);
+	if (hyp > after)
+		push_spacer(L, hyp - after);
+	/* (its margin is spent: margin() adds nothing for it) */
+	L->gap = m0 > 0 ? m0 : 0;
+	L->mneg = 0;
+	L->cut = 0;
+	L->gap_from = L->p->nlines;
+	L->ntop_pend = 0;
 }
 
 /* --- positioned elements: layers --------------------------------------- */

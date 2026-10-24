@@ -127,6 +127,12 @@ int scr_pane_h(void);
  * border border units wide in border_rgb. Drawn before the text. */
 void scr_rect(int x, int y, int w, int h, unsigned long fill, int border,
 	unsigned long border_rgb);
+/* ... one side of a box's border, x, y, w x h, in rgb (0xRRGGBB): side 1
+ * + top, right, bottom, left, its corners cut on the diagonal to where
+ * it meets the sides c0 and c1 wide (left and right of a top or bottom,
+ * top and bottom of a side) */
+void scr_side(int x, int y, int w, int h, unsigned long rgb, int side, int c0,
+	int c1);
 /* A picture (an image of scr_image_new) repeated as a box's background
  * (X11): its copies' top left corners at tx, ty of the pane and every
  * w x h of the picture from there, across and down (rep CSS_BR_*: or
