@@ -62,6 +62,8 @@ struct saved {
 					 * the block's own blank lines) below */
 	long box_minh;			/* height: at least (0: none) */
 	long box_maxh;			/* ... at most (-1: none) */
+	int box_clip;			/* overflow: hidden - 1 + its bottom
+					 * padding (0: what overflows shows) */
 	int box_rin;			/* L->rin before it */
 	int box_cut;			/* the float cut from the width then */
 	unsigned char cb;		/* positioned: absolute ones' containing
@@ -1689,7 +1691,7 @@ static int size_class(int fsz)
  * are of it */
 static void font_look(struct lay *L, int tag_face, const struct css_text *ct)
 {
-	int pc = L->cfsz, pf = L->fsz;
+	int pc = L->cfsz;
 
 	/* a heading's level replaces the one outside; the rest add up */
 	if (tag_face & LF_HMASK) {
@@ -1715,9 +1717,11 @@ static void font_look(struct lay *L, int tag_face, const struct css_text *ct)
 		L->fsz = ct->fsize.v * 3 / 4;
 		L->face = (L->face & ~LF_SMASK) | size_class(L->fsz);
 	} else if (L->m && ct->fsize.u == CSS_U_EM) {
-		/* (of the parent's size: not of a heading's own) */
+		/* (of the parent's size: not of a heading's own; drawn 3/4
+		 * of it, as a size in pixels is - not of the parent's drawn
+		 * size, which may have been made bigger to be read) */
 		L->cfsz = (int)((long)pc * ct->fsize.v / 10);
-		L->fsz = (int)((long)pf * ct->fsize.v / 10);
+		L->fsz = L->cfsz * 3 / 4;
 		L->face = (L->face & ~LF_SMASK) | size_class(L->fsz);
 	}
 	if (L->cfsz < 10)
@@ -1787,6 +1791,7 @@ static void text_look(struct lay *L, int tag, const struct style *s,
 static int dark(unsigned long rgb);
 static void float_flush(struct lay *L);
 static void clear_floats(struct lay *L, const struct css_box *b);
+static int css_table(struct lay *L, nodeid id, int depth, const struct css_box *b);
 static int tiny_box(const struct lay *L, const struct css_box *b);
 struct fitem;
 static void emit_pend(struct lay *L, int cb, const struct cbox *c);
@@ -2133,6 +2138,42 @@ static int lines_read(const struct page *p, unsigned long from)
 	return 0;
 }
 
+/* what lines from on of page p have wholly below y (units below line
+ * from's top) isn't shown: pictures (spacers as wide instead), boxes */
+static void clip_below(struct page *p, unsigned long from, long y)
+{
+	unsigned long k, b;
+	long t = 0;
+
+	if (p->heights == NULL)
+		return;
+	for (k = from; k < p->nlines; k++) {
+		const struct lline *l = &p->lines[k];
+		char *s = p->text + l->off;
+		unsigned i;
+
+		for (i = 0; i + LAYOUT_IMG_BYTES <= l->len; i++) {
+			long n;
+
+			if (s[i] != '\001' || (n = layout_image(p, s + i)) < 0)
+				continue;
+			if (t + p->heights[k].ascent - p->images[n].h >= y) {
+				int w = p->images[n].w;
+
+				s[i] = '\002';
+				s[i + 1] = (char)(2 + w / 900 % 30);
+				s[i + 2] = (char)(2 + w / 30 % 30);
+				s[i + 3] = (char)(2 + w % 30);
+			}
+			i += LAYOUT_IMG_BYTES - 1;
+		}
+		for (b = 0; b < p->nboxes; b++)
+			if (p->boxes[b].line == k && t + p->boxes[b].dy >= y)
+				p->boxes[b].w = 0;
+		t += p->heights[k].height;
+	}
+}
+
 /*
  * Lines from on of page p to take h units (they take more): those below
  * that run over what follows instead (CSS's overflow: visible), drawn
@@ -2236,6 +2277,7 @@ static void box_open(struct lay *L, struct saved *sv, const struct css_box *b,
 		sv->box_in_b = 0;
 		sv->box_minh = 0;
 		sv->box_maxh = -1;
+		sv->box_clip = 0;
 		L->indent = x;
 		L->width = x + w;
 		if (L->width < L->indent + L->em)
@@ -2280,6 +2322,7 @@ static void box_open(struct lay *L, struct saved *sv, const struct css_box *b,
 	sv->box_in_b = bw[2] + pd[2];
 	sv->box_minh = box_min_h(L, b);
 	sv->box_maxh = box_max_h(L, b);
+	sv->box_clip = (b->set2 & CSS_B2_OVF) && b->clip ? 1 + pd[2] : 0;
 	vspace(L, bw[0] + pd[0]);
 	sv->box_minh += bw[0] + pd[0];
 	if (sv->box_maxh >= 0)
@@ -2330,6 +2373,10 @@ static void box_close(struct lay *L, const struct saved *sv)
 	/* taller than it says: what's below that overflows it (only what has
 	 * nothing to read: text pushes on, as readable as it was) */
 	if (sv->box_maxh >= 0 && h > sv->box_maxh && !lines_read(p, sv->box_line)) {
+		/* (overflow: hidden - what's wholly below its padding isn't
+		 * shown) */
+		if (sv->box_clip)
+			clip_below(p, sv->box_line, sv->box_maxh + sv->box_clip - 1);
 		overflow_to(p, sv->box_line, sv->box_maxh);
 		h = sv->box_maxh;
 	}
@@ -2520,8 +2567,10 @@ static int enter(struct lay *L, nodeid id, int depth)
 			bx.set &= ~CSS_B_BG;	/* (the page's: not its box's too) */
 			bx.set2 &= ~CSS_B2_BGI;
 		}
-		if (bx.set & CSS_B_DISP)
-			s.display = bx.disp == CSS_DI_BLOCK ? D_BLOCK
+		/* (a table's, a row's: a block; a cell's: what it was) */
+		if ((bx.set & CSS_B_DISP) && bx.disp != CSS_DI_TABLE_CELL)
+			s.display = bx.disp == CSS_DI_BLOCK || bx.disp == CSS_DI_TABLE
+				|| bx.disp == CSS_DI_TABLE_ROW ? D_BLOCK
 				: bx.disp == CSS_DI_LIST_ITEM ? D_LIST_ITEM : D_INLINE;
 		boxed = (s.display == D_BLOCK || s.display == D_LIST_ITEM)
 			&& !L->cell && !L->pre && box_shows(&bx);
@@ -2553,6 +2602,11 @@ static int enter(struct lay *L, nodeid id, int depth)
 			boxed = 1;
 		}
 	}
+
+	/* a CSS table: a row of cells */
+	if (L->m && (bx.set & CSS_B_DISP) && bx.disp == CSS_DI_TABLE && tag != TAG_TABLE
+		&& css_table(L, id, depth, &bx))
+		return 0;
 
 	/* leaves with a rendering of their own */
 	switch (tag) {
@@ -4749,6 +4803,8 @@ static void float_flush(struct lay *L)
 			ht->over = (unsigned short)(reach < 0 ? 0 : reach > 0xFFFF ? 0xFFFF : reach);
 			if (ht->over > L->p->max_over)
 				L->p->max_over = ht->over;
+			if (ht->ascent > ht->height + ht->over)
+				ht->ascent = (unsigned short)(ht->height + ht->over);
 		}
 	}
 	if (L->fl) {
@@ -4972,6 +5028,227 @@ static nodeid float_run(struct lay *L, nodeid id)
 	return last;
 }
 
+/* --- CSS tables ---------------------------------------------------------- */
+
+#define CTAB_MAX	16		/* cells in a CSS table's row */
+
+/*
+ * Element id, display: table (b its box), laid out as a row of cells: each
+ * child one (a table-cell's box as tall as the row; another element is in
+ * a cell of its own, as tall as it is), the table's box around them as
+ * wide as they are. 1 when it was; 0 when not (rows in it, text, more
+ * than the room): it goes on as a block.
+ */
+static int css_table(struct lay *L, nodeid id, int depth, const struct css_box *b)
+{
+	const struct doc *d = L->d;
+	nodeid nodes[CTAB_MAX], k;
+	unsigned char cellk[CTAB_MAX], autow[CTAB_MAX];
+	struct fitem *it;
+	struct lay *S;
+	struct css_box tb;
+	struct saved *sv;
+	int n = 0, i, avail, x = 0, tm[4], tbw[4], tpd[4], indent = L->indent;
+	int attr = L->attr, face = L->face, fg = L->fg;
+	unsigned short link = L->link;
+	long H = 0;
+
+	if (L->pre || L->cell || L->gdepth >= FLOAT_DEPTH || depth >= MAX_DEPTH - 1)
+		return 0;
+	for (k = d->nodes[id].first; k; k = d->nodes[k].next) {
+		struct css_box cb;
+		struct eattr ea;
+
+		if (d->nodes[k].type == NODE_TEXT) {
+			if (!all_blank(doc_text(d, k)))
+				return 0;
+			continue;
+		}
+		if (d->nodes[k].type != NODE_ELEM || el_hidden(L, k))
+			continue;
+		if (n == CTAB_MAX)
+			return 0;
+		scan_attrs(d, k, &ea);
+		el_box(L, k, &ea, &cb);
+		if (((cb.set & CSS_B_DISP) && cb.disp == CSS_DI_TABLE_ROW)
+			|| ((cb.set & CSS_B_POS) && cb.pos != CSS_PO_STATIC))
+			return 0;
+		cellk[n] = (unsigned char)((cb.set & CSS_B_DISP) && cb.disp == CSS_DI_TABLE_CELL);
+		nodes[n++] = k;
+	}
+	if (n == 0)
+		return 0;
+	box_sides(L, b, L->width - L->indent, tm, tbw, tpd);
+	avail = L->width - L->indent - tm[1] - tm[3] - tbw[1] - tbw[3] - tpd[1] - tpd[3];
+	if (avail < 1 || (it = xmalloc((size_t)n * sizeof *it)) == NULL)
+		return 0;
+	if ((S = xmalloc(sizeof *S)) == NULL) {
+		xfree(it);
+		return 0;
+	}
+	memset(it, 0, (size_t)n * sizeof *it);
+	for (i = 0; i < n; i++) {
+		struct fitem *f = &it[i];
+		struct css_box cb;
+		struct eattr ea;
+		int extra, cw, shrink;
+		unsigned long ln;
+
+		scan_attrs(d, nodes[i], &ea);
+		el_box(L, nodes[i], &ea, &cb);
+		f->fl = CSS_FL_LEFT;
+		box_sides(L, &cb, avail, f->m, f->bw, f->pd);
+		if (cellk[i])
+			f->m[0] = f->m[1] = f->m[2] = f->m[3] = 0;	/* (a cell has none) */
+		f->bg = (cb.set & CSS_B_BG) && cb.bg != CSS_BG_NONE ? cb.bg : LBOX_NONE;
+		f->bgi = bg_pic(L, &cb, f->bw);
+		side_rgbs(L, &cb, f->bc);
+		f->gc.node = nodes[i];
+		extra = f->m[1] + f->m[3] + f->bw[1] + f->bw[3] + f->pd[1] + f->pd[3];
+		shrink = !((cb.set & CSS_B_W) && cb.w.u != CSS_U_AUTO);
+		autow[i] = (unsigned char)shrink;
+		cw = shrink ? avail - x - extra : box_units(L, cb.w, avail);
+		cw = clamp_w(L, &cb, avail, cw);
+		if (cw < 1)
+			cw = 1;
+		f->gc.measure = shrink;
+		if (lay_cell(L, S, &f->gc, cw, 0, 1, NULL) < 0)
+			break;
+		if (shrink) {
+			int w = f->gc.pg.need_w, lw, word;
+
+			for (ln = 0; ln < f->gc.pg.nlines; ln++) {
+				line_widths(L, &f->gc.pg, ln, &lw, &word);
+				if (lw > w)
+					w = lw;
+			}
+			if ((w = clamp_w(L, &cb, avail, w)) < 0)
+				w = 0;
+			cw = w > 0 ? w : 0;
+			f->gc.measure = 0;
+			if (lay_cell(L, S, &f->gc, cw > 0 ? cw : 1, 0, 1, NULL) < 0)
+				break;
+		}
+		f->w = cw;
+		f->h = 0;
+		if (f->gc.pg.heights)
+			for (ln = 0; ln < f->gc.pg.nlines; ln++)
+				f->h += f->gc.pg.heights[ln].height;
+		if (box_min_h(L, &cb) > f->h)
+			f->h = box_min_h(L, &cb);
+		if (box_max_h(L, &cb) >= 0 && f->h > box_max_h(L, &cb)
+			&& !lines_read(&f->gc.pg, 0)) {
+			overflow_to(&f->gc.pg, 0, box_max_h(L, &cb));
+			f->h = box_max_h(L, &cb);
+		}
+		if (f->gc.pg.nlinks
+			&& (f->gc.lmap = xmalloc(f->gc.pg.nlinks * sizeof *f->gc.lmap)) != NULL) {
+			unsigned long q;
+
+			for (q = 0; q < f->gc.pg.nlinks; q++)
+				f->gc.lmap[q] = -1;
+		}
+		f->x = x;
+		f->y = 0;
+		x += cw + extra;
+		if (f->m[0] + f->bw[0] + f->pd[0] + f->h + f->pd[2] + f->bw[2] + f->m[2] > H)
+			H = f->m[0] + f->bw[0] + f->pd[0] + f->h + f->pd[2] + f->bw[2] + f->m[2];
+	}
+	/* as wide as the table says: the cells with no width of their own
+	 * share what's over, as wide as they are */
+	if (i == n && (b->set & CSS_B_W) && b->w.u != CSS_U_AUTO) {
+		int tw = box_units(L, b->w, L->width - L->indent - tm[1] - tm[3])
+			- tbw[1] - tbw[3] - tpd[1] - tpd[3], over, sum = 0, na = 0, j;
+
+		if (tw > avail)
+			tw = avail;
+		for (j = 0; j < n; j++)
+			if (autow[j]) {
+				sum += it[j].w;
+				na++;
+			}
+		if ((over = tw - x) > 0 && na == 0)
+			for (j = 0; j < n; j++)
+				autow[j] = 1, sum += it[j].w, na++;
+		for (j = 0, x = 0, H = 0; over > 0 && j < n; j++) {
+			struct fitem *f = &it[j];
+
+			if (autow[j]) {
+				int add = sum > 0 ? (int)((long)over * f->w / sum) : over / na;
+				unsigned long ln;
+
+				f->w += add;
+				over -= add;
+				sum -= f->w - add;
+				na--;
+				if (lay_cell(L, S, &f->gc, f->w, 0, 1, NULL) < 0) {
+					i = 0;
+					break;
+				}
+				if (f->h < 0)
+					f->h = 0;
+				{
+					long ch = 0;
+
+					if (f->gc.pg.heights)
+						for (ln = 0; ln < f->gc.pg.nlines; ln++)
+							ch += f->gc.pg.heights[ln].height;
+					if (ch > f->h)
+						f->h = ch;
+				}
+			}
+		}
+		for (j = 0, x = 0; i == n && j < n; j++) {
+			struct fitem *f = &it[j];
+
+			f->x = x;
+			x += f->w + f->m[1] + f->m[3] + f->bw[1] + f->bw[3] + f->pd[1] + f->pd[3];
+			if (f->m[0] + f->bw[0] + f->pd[0] + f->h + f->pd[2] + f->bw[2] + f->m[2] > H)
+				H = f->m[0] + f->bw[0] + f->pd[0] + f->h + f->pd[2] + f->bw[2] + f->m[2];
+		}
+	}
+	xfree(S);
+	if (i < n || x > avail) {
+		/* (out of room, or too wide: as blocks) */
+		for (i = 0; i < n; i++) {
+			layout_free(&it[i].gc.pg);
+			xfree(it[i].gc.lmap);
+		}
+		xfree(it);
+		return 0;
+	}
+	/* the cells as tall as the row */
+	for (i = 0; i < n; i++)
+		if (cellk[i])
+			it[i].h = H - it[i].bw[0] - it[i].pd[0] - it[i].pd[2] - it[i].bw[2];
+	/* the table's box: around them */
+	tb = *b;
+	tb.set = (tb.set | CSS_B_W) & ~(CSS_B_MINW | CSS_B_MAXW | CSS_B_H | CSS_B_MINH | CSS_B_MAXH);
+	tb.w.u = CSS_U_PX;
+	tb.w.v = (short)(x > 3000 ? 30000 : x * 10);
+	sv = &L->st[depth];
+	sv->box = 0;
+	sv->boxk = 0;
+	sv->cb = 0;
+	block_break(L, 0);
+	box_open(L, sv, &tb, 1);
+	float_emit(L, it, n, H);
+	box_close(L, sv);
+	L->indent = indent;
+	block_break(L, 0);
+	for (i = 0; i < n; i++) {
+		layout_free(&it[i].gc.pg);
+		xfree(it[i].gc.lmap);
+	}
+	xfree(it);
+	L->attr = attr;
+	L->face = face;
+	L->fg = fg;
+	L->link = link;
+	set_span(L);
+	return 1;
+}
+
 /*
  * A block that clears the float beside the text (b: its box): below it.
  * CSS's clearance: its border goes where it would have (its top margin
@@ -4983,7 +5260,7 @@ static void clear_floats(struct lay *L, const struct css_box *b)
 	long before, after, hyp, pos, neg;
 	int m0;
 
-	if (L->fl == NULL || L->m == NULL || L->p->heights == NULL) {
+	if (L->fl == NULL || L->m == NULL) {
 		float_flush(L);
 		return;
 	}

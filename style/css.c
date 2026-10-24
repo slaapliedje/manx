@@ -1663,7 +1663,7 @@ static int box_mentions(const char *d, int n)
 	for (i = 0; i + 4 < n; i++)
 		switch (d[i]) {
 		case 'm': case 'p': case 'b': case 'w': case 'h': case 'f':
-		case 'c': case 't': case 'l': case 'r': case 'z':
+		case 'c': case 't': case 'l': case 'r': case 'z': case 'd': case 'o':
 			if (starts(d + i, (size_t)(n - i), "margin")
 				|| starts(d + i, (size_t)(n - i), "padding")
 				|| starts(d + i, (size_t)(n - i), "border")
@@ -1678,7 +1678,9 @@ static int box_mentions(const char *d, int n)
 				|| starts(d + i, (size_t)(n - i), "left")
 				|| starts(d + i, (size_t)(n - i), "right")
 				|| starts(d + i, (size_t)(n - i), "bottom")
-				|| starts(d + i, (size_t)(n - i), "z-index"))
+				|| starts(d + i, (size_t)(n - i), "z-index")
+				|| starts(d + i, (size_t)(n - i), "display")
+				|| starts(d + i, (size_t)(n - i), "overflow"))
 				return 1;
 			break;
 		}
@@ -2329,6 +2331,13 @@ static unsigned long box_decl(const char *p, size_t pn, const char *v,
 			return 0;
 		return CSS_B_CLEAR;
 	}
+	if (pn == 8 && starts(p, pn, "overflow")) {
+		/* (hidden, clip: what's outside isn't shown; the others show
+		 * it, or scroll to it - as here, where nothing scrolls) */
+		b->clip = is_kw(v, vn, "hidden") || is_kw(v, vn, "clip");
+		*set2 |= CSS_B2_OVF;
+		return 0;
+	}
 	if (pn == 8 && starts(p, pn, "position")) {
 		if (is_kw(v, vn, "static"))
 			b->pos = CSS_PO_STATIC;
@@ -2382,6 +2391,12 @@ static unsigned long box_decl(const char *p, size_t pn, const char *v,
 			b->disp = CSS_DI_LIST_ITEM;
 		else if (is_kw(v, vn, "inline-block"))
 			b->disp = CSS_DI_INLINE_BLOCK;
+		else if (is_kw(v, vn, "table"))
+			b->disp = CSS_DI_TABLE;
+		else if (is_kw(v, vn, "table-row"))
+			b->disp = CSS_DI_TABLE_ROW;
+		else if (is_kw(v, vn, "table-cell"))
+			b->disp = CSS_DI_TABLE_CELL;
 		else
 			return 0;
 		return CSS_B_DISP;
@@ -3446,8 +3461,10 @@ static void box_take(struct css_box *b, const struct css_box *a, int k)
 			b->bgrep = a->bgrep;
 		else if (k == 10)
 			b->bgfixed = a->bgfixed;
-		else
+		else if (k == 11)
 			memcpy(b->bgpos, a->bgpos, sizeof b->bgpos);
+		else
+			b->clip = a->clip;
 		b->set2 |= 1UL << k;
 		return;
 	}

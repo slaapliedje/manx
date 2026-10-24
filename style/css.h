@@ -109,7 +109,7 @@ int css_inline_list(const char *style);
 /*
  * Boxes: margin, border, padding, width, height (and their min- and
  * max-), float, clear, display, background (colour, image, repeat,
- * attachment, position), position (with top,
+ * attachment, position), overflow (hidden or not), position (with top,
  * right, bottom, left and z-index), for a screen that draws them (css_boxes: 1, the
  * default; a terminal sets it 0 before reading sheets, and then their
  * rules about boxes take no memory and no time).
@@ -143,11 +143,13 @@ extern int css_boxes;
 #define CSS_B2_BGR	0x200UL		/* background-repeat */
 #define CSS_B2_BGA	0x400UL		/* background-attachment */
 #define CSS_B2_BGP	0x800UL		/* background-position */
-#define CSS_B2_NBITS	12
+#define CSS_B2_OVF	0x1000UL	/* overflow */
+#define CSS_B2_NBITS	13
 
 enum { CSS_FL_NONE = 1, CSS_FL_LEFT, CSS_FL_RIGHT, CSS_FL_INHERIT };
 enum { CSS_CL_NONE = 1, CSS_CL_LEFT, CSS_CL_RIGHT, CSS_CL_BOTH };
-enum { CSS_DI_BLOCK = 1, CSS_DI_INLINE, CSS_DI_LIST_ITEM, CSS_DI_INLINE_BLOCK };
+enum { CSS_DI_BLOCK = 1, CSS_DI_INLINE, CSS_DI_LIST_ITEM, CSS_DI_INLINE_BLOCK,
+	CSS_DI_TABLE, CSS_DI_TABLE_ROW, CSS_DI_TABLE_CELL };
 enum { CSS_PO_STATIC = 1, CSS_PO_RELATIVE, CSS_PO_ABSOLUTE, CSS_PO_FIXED,
 	CSS_PO_STICKY };
 
@@ -185,6 +187,7 @@ struct css_box {
 	struct css_len bgpos[2];	/* background-position: x, y (px, em
 					 * or %) */
 	unsigned long bgi;		/* (the sheet's: where bgsrc is kept) */
+	unsigned char clip;		/* overflow: hidden or clip (1) */
 };
 
 /*

@@ -615,8 +615,121 @@ static void check_positioned(void)
 	doc_free(&d);
 }
 
+/* page pg has a box filled bg, a border's side (1 + top...) cut where it
+ * meets the sides c0 and c1 wide? */
+static int has_side(const struct page *pg, unsigned long bg, int side, int c0, int c1)
+{
+	unsigned long i;
+
+	for (i = 0; i < pg->nboxes; i++)
+		if (pg->boxes[i].bg == bg && pg->boxes[i].side == side
+			&& pg->boxes[i].cut[0] == c0 && pg->boxes[i].cut[1] == c1)
+			return 1;
+	return 0;
+}
+
+/* what Acid2 asks of boxes */
+static void check_acid2_boxes(void)
+{
+	struct page pg;
+	struct doc d;
+	int ok;
+
+	/* height: what overflows (no text) runs over what follows; text
+	 * pushes on */
+	check_minmax("overflow: a picture", "<div style='height:20px;background:#f00'>"
+		"<img src=x></div>", 0xff0000UL, -1, -1, 20);
+	check_gap("overflow: what follows", "<div style='height:20px;background:#f00'>"
+		"<img src=x></div><div style='background:#00f'>b</div>", 0xff0000UL, 0xffUL,
+		0, -1, -1);
+	check_minmax("overflow: text pushes on", "<div style='height:5px;background:#f00'>"
+		"text</div>", 0xff0000UL, -1, -1, 12);
+	check_minmax("overflow: max-height", "<div style='max-height:30px;background:#f00'>"
+		"<img src=x></div>", 0xff0000UL, -1, -1, 30);
+	/* clearance: at the float's foot, its margin spent there; or where its
+	 * margin puts it, below that */
+	check_gap("clearance", "<div style='float:left;width:50px;height:40px;background:#f00'>"
+		"</div><div style='clear:both;margin-top:30px;background:#00f'>b</div>",
+		0xff0000UL, 0xffUL, 0, -1, -1);
+	check_gap("clearance less than the margin", "<div style='float:left;width:50px;"
+		"height:40px;background:#f00'></div><div style='clear:both;margin-top:60px;"
+		"background:#00f'>b</div>", 0xff0000UL, 0xffUL, 20, -1, -1);
+	/* a float's negative top margin, nothing in it: above the line */
+	check_gap("float, negative margin", "<div style='margin-bottom:40px;background:#f00'>"
+		"a</div><div style='float:left;margin-top:-20px;width:10px;height:10px;"
+		"background:#00f'></div>", 0xff0000UL, 0xffUL, 20, -1, -1);
+	/* a CSS table: a row of cells, as tall as the tallest, the table
+	 * around them */
+	check_minmax("css table: a cell", "<div style='display:table;background:#0f0'>"
+		"<div style='display:table-cell;width:30px;height:10px;background:#f00'></div>"
+		"<div style='display:table-cell;width:20px;height:25px;background:#00f'></div>"
+		"</div>", 0xff0000UL, 0, 30, 25);
+	check_minmax("css table: the next", "<div style='display:table;background:#0f0'>"
+		"<div style='display:table-cell;width:30px;height:10px;background:#f00'></div>"
+		"<div style='display:table-cell;width:20px;height:25px;background:#00f'></div>"
+		"</div>", 0xffUL, 30, 20, 25);
+	check_minmax("css table: the table", "<div style='display:table;background:#0f0'>"
+		"<div style='display:table-cell;width:30px;height:10px;background:#f00'></div>"
+		"<div style='display:table-cell;width:20px;height:25px;background:#00f'></div>"
+		"</div>", 0xff00UL, 0, 50, 25);
+	check_minmax("css table: as wide as it says", "<div style='display:table;width:100%;"
+		"background:#0f0'><div style='display:table-cell;background:#f00'>ab</div>"
+		"<div style='display:table-cell;background:#00f'>abcdef</div></div>",
+		0xff0000UL, 0, 100, -1);
+	/* borders of two colours meet on the diagonal (the right one meets
+	 * its own colour only: a rectangle) */
+	lay_px("<div style='border:10px solid #f00;border-left:5px solid #00f;width:20px;"
+		"height:20px'></div>", &pg, &d);
+	ok = has_side(&pg, 0xff0000UL, 1, 5, 10) && has_side(&pg, 0xffUL, 4, 10, 10)
+		&& has_side(&pg, 0xff0000UL, 3, 5, 10) && has_side(&pg, 0xff0000UL, 0, 0, 0);
+	runs++;
+	if (!ok) {
+		fails++;
+		printf("FAIL borders mitred\n");
+	}
+	layout_free(&pg);
+	doc_free(&d);
+	/* a picture's padding, border and background (Acid2's eyes) */
+	lay_px("<img src=x style='padding:0 5px 0 3px;border-right:4px solid #f00;"
+		"background:#00f'>", &pg, &d);
+	ok = box_bg(&pg, 0xffUL) && box_bg(&pg, 0xffUL)->w == 32 && box_bg(&pg, 0xffUL)->h == 100
+		&& box_bg(&pg, 0xffUL)->kind == LBOX_INLINE && box_bg(&pg, 0xff0000UL)
+		&& box_bg(&pg, 0xff0000UL)->x == box_bg(&pg, 0xffUL)->x + 28;
+	runs++;
+	if (!ok) {
+		fails++;
+		printf("FAIL picture's box\n");
+	}
+	layout_free(&pg);
+	doc_free(&d);
+	/* drawn as CSS paints: a float over a block after it */
+	lay_px("<div style='float:left;width:20px;height:20px;background:#f00'></div>"
+		"<div style='height:20px;background:#00f'></div>", &pg, &d);
+	ok = box_bg(&pg, 0xff0000UL) && box_bg(&pg, 0xff0000UL)->kind == LBOX_FLOAT
+		&& box_bg(&pg, 0xffUL) && box_bg(&pg, 0xffUL)->kind == LBOX_BLOCK;
+	runs++;
+	if (!ok) {
+		fails++;
+		printf("FAIL float over block\n");
+	}
+	layout_free(&pg);
+	doc_free(&d);
+	/* <object>: a picture, else what's in it */
+	lay_px("<object data=a.png>no</object><object data=b.html>yes</object>", &pg, &d);
+	ok = pg.nimages == 1 && strstr(pg.text, "yes") && !strstr(pg.text, "no");
+	runs++;
+	if (!ok) {
+		fails++;
+		printf("FAIL object: %lu pictures, text %.*s\n", pg.nimages, (int)pg.text_len,
+			pg.text);
+	}
+	layout_free(&pg);
+	doc_free(&d);
+}
+
 int main(void)
 {
+	check_acid2_boxes();
 	check_grid_bands();
 	check_bg_pics();
 	check_acid1_floats();

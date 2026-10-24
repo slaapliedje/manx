@@ -86,6 +86,20 @@ static int img_ascent(const struct page *pg, unsigned long ln, unsigned long k)
 	return pg->heights[ln].ascent;
 }
 
+/* does line ln of p hold only spacers (nothing drawn)? */
+static int spacers(const struct page *p, unsigned long ln)
+{
+	const char *t = p->text + p->lines[ln].off;
+	unsigned long k, n = p->lines[ln].len;
+
+	if (n % LAYOUT_IMG_BYTES)
+		return 0;
+	for (k = 0; k < n; k += LAYOUT_IMG_BYTES)
+		if (layout_spacer_w(t + k) == LAYOUT_NO_SPACER)
+			return 0;
+	return 1;
+}
+
 static char *dump_of(const unsigned char *s, size_t n, int chunked, size_t cap)
 {
 	static struct html_load l;
@@ -129,12 +143,15 @@ static char *dump_of(const unsigned char *s, size_t n, int chunked, size_t cap)
 
 			/* with metrics, every line has a height (an empty
 			 * one, a margin spacer a negative margin took back:
-			 * none) */
+			 * none; one that overflows its box: none, what's on
+			 * it reaching below) and its baseline in that */
 			if (m && pg.nlines && pg.heights == NULL)
 				abort();
 			for (i = 0; m && i < pg.nlines; i++)
-				if ((pg.heights[i].height == 0 && pg.lines[i].len)
-					|| pg.heights[i].ascent > pg.heights[i].height)
+				if ((pg.heights[i].height + pg.heights[i].over == 0
+					&& pg.lines[i].len && !spacers(&pg, i))
+					|| pg.heights[i].ascent > pg.heights[i].height
+					+ pg.heights[i].over)
 					abort();
 
 			/* every line and span within the text */

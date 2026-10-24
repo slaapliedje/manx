@@ -284,6 +284,8 @@ static void box(const char *name, const char *css, const char *body, int tag,
 				(b.off[i].v < 0 ? -b.off[i].v : b.off[i].v) % 10, "-pe%a"[b.off[i].u]);
 	if (b.set & CSS_B_Z)
 		sprintf(got + strlen(got), "z=%d ", b.z);
+	if (b.set2 & CSS_B2_OVF)
+		sprintf(got + strlen(got), "clip=%d ", b.clip);
 	runs++;
 	if (strcmp(got, want) != 0) {
 		fails++;
@@ -435,8 +437,10 @@ int main(void)
 		" p::before{content:'3'} #b::after{content:'4'} p::after{content:'5'}",
 		"<p class=a id=b>x", "2x4|");
 	/* (a terminal reads no rules about boxes: display: block isn't known) */
+	css_boxes = 0;
 	check("::before: block, on a terminal", "div::before{content:'t';display:block}",
 		"<div>x</div>", "tx|");
+	css_boxes = 1;
 	check("pseudo-elements: only last", "p::before span{display:none} p::after.a{display:none}"
 		" p::selection{display:none} p::before::after{display:none}",
 		"<p class=a><span>s</span>", "s|");
@@ -536,6 +540,17 @@ int main(void)
 	box("background: two pictures dropped", "p{background:url(a.png)} p{background:url(b) url(c)}",
 		"<p>x", TAG_P, "bg=ffffffff bi=a.png br=0 ba=0 bp=0.0%,0.0% ");
 	box("important", "p{float:left!important} p.a{float:right}", "<p class=a>x", TAG_P, "fl=2 ");
+	/* Acid2's: float: inherit (the layout's to look up), overflow, the
+	 * table displays */
+	box("float inherit", "em{float:inherit;margin:inherit}", "<p><em>x</em>", TAG_EM, "fl=4 ");
+	box("overflow", "p{overflow:hidden} p.a{overflow:auto}", "<p>x<div style='overflow:clip'>",
+		TAG_P, "clip=1 ");
+	box("overflow visible", "p{overflow:hidden} p.a{overflow:auto}", "<p class=a>x", TAG_P,
+		"clip=0 ");
+	box("display: table", "ul{display:table} li{display:table-cell}", "<ul><li>x</ul>",
+		TAG_UL, "di=5 ");
+	box("display: table-cell", "ul{display:table} li{display:table-cell}", "<ul><li>x</ul>",
+		TAG_LI, "di=7 ");
 	box("display and auto", "p{display:block;margin:0 auto;width:auto}", "<p>x", TAG_P,
 		"m0=0.0p m1=0.0a m2=0.0p m3=0.0a w=0.0a di=1 ");
 	box("nothing", "p{color:red}", "<p>x", TAG_P, "");
