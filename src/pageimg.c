@@ -883,7 +883,7 @@ int pimg_step(const struct page *p, long top, long rows,
 	unsigned long ln, b;
 	int i, r;
 
-	if ((g_n == 0 || (p->images == NULL && p->nlayers == 0)) && g_nb == 0)
+	if (g_n == 0 && g_nb == 0)
 		return PIMG_IDLE;
 	/* which are laid out as images (the others show alt text) */
 	g_gen++;
