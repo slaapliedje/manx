@@ -2003,8 +2003,10 @@ static int enter(struct lay *L, nodeid id, int depth)
 		/* text "visually hidden" shows as the text it is: not its box
 		 * (1 pixel wide, a letter a line) */
 		if ((bx.set & CSS_B_POS) && (bx.pos == CSS_PO_ABSOLUTE
-			|| bx.pos == CSS_PO_FIXED) && tiny_box(L, &bx))
+			|| bx.pos == CSS_PO_FIXED) && tiny_box(L, &bx)) {
 			bx.set &= CSS_B_BG | CSS_B_DISP | CSS_B_LH;
+			bx.set2 = 0;
+		}
 		if (tag == TAG_BODY && L->p->page_bg != LBOX_NONE && !L->html_bg)
 			bx.set &= ~CSS_B_BG;
 		if (bx.set & CSS_B_DISP)

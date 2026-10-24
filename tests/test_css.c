@@ -410,8 +410,8 @@ int main(void)
 		"<p class=b>a</p><p class=c>b</p><p>c</p>", "c|");
 	check("pseudo-classes: not followed", ".x:hover{display:none} .y::before{display:none}",
 		"<p class=x>a</p><p class=y>b</p>", "a||b|");
-	check("siblings: not followed", ".a+.x{display:none} .a~.y{display:none}",
-		"<p class=a>a</p><p class=x>b</p><p class=y>c</p>", "a||b||c|");
+	check("siblings", ".a+.x{display:none} .a~.y{display:none} .a+.z{display:none}",
+		"<p class=a>a</p><p class=x>b</p><p class=y>c</p><p class=z>d</p>", "a||d|");
 	check("unknown tags: not followed", "my-thing{display:none}",
 		"<my-thing>a</my-thing> <other-thing>b</other-thing>", "a b|");
 	check("attribute", "[title]{display:none} p[lang=fr]{display:none}",
@@ -539,6 +539,15 @@ int main(void)
 		"<p>x", TAG_P, "bw0=2.0e bw1=2.0e bw2=2.0e bw3=2.0e bs0=0 bs1=1 bs2=0 bs3=1 bc=000000 ");
 	box("border-color: one not known", "p{border-color:red} p{border-color:var(--x) blue}"
 		" p{border-color:currentColor}", "<p>x", TAG_P, "bc=fffffffe ");
+	box("sibling +", "p+p{width:1px} h1+p{height:2px} div+p{float:left}",
+		"<h1>a</h1><!-- c -->x <p>b", TAG_P, "h=2.0p ");
+	box("sibling ~", "h1~p{width:1px} h2~p{height:2px} p~p{float:left} h1 ~ * > b{clear:left}",
+		"<h1>a</h1><div>x</div><p>b", TAG_P, "w=1.0p ");
+	box("acid2 p + table + p", ".picture p+p{width:1px} .picture p + table + p{height:2px}",
+		"<div class=picture><p><table><tr><td></table><p class=bad>x</div>", TAG_P,
+		"");
+	box("sibling: dropped as a whole", "p{width:1px} + p{width:2px} p+{width:3px} p > + p{width:4px}",
+		"<p>a<p>b", TAG_P, "w=1.0p ");
 	box("background: no colour is transparent", "p{background:red} p{background:url(x.png)}",
 		"<p>x", TAG_P, "bg=ffffffff ");
 	box("background: its parts", "p{background:#fc0 url(x) no-repeat fixed 1px 0 / cover}",

@@ -50,7 +50,8 @@ struct cmp {
 	unsigned char ncls, nattr;
 	unsigned char attr[2];		/* attribute tests: ATTR_* */
 	unsigned char aop[2];		/* 0: present; '=', '~' */
-	unsigned char comb;		/* to the compound on its left: ' ' or '>' */
+	unsigned char comb;		/* to the compound on its left: ' ', '>',
+					 * '+' or '~' */
 };
 
 /* what a rule (or a style="") says of text: 0 where nothing */
@@ -162,6 +163,9 @@ struct css_sheet {
 	 * goes through the tree in order, so the next one's are mostly here */
 	struct elinfo path[PATH_DEPTH];
 	int npath;
+	/* the last element sibling found before one (sib_at, a child of
+	 * sib_par): sib_prev, 0 for none */
+	nodeid sib_par, sib_at, sib_prev;
 	/* what was said of each node, M_* below; 0: not asked */
 	unsigned long *memo;
 	unsigned long memo_n;
@@ -1148,14 +1152,14 @@ static int compile(const char *p, const char *e, struct cmp *out, unsigned long 
 			p++;
 			continue;
 		}
-		if (c == '>') {
-			if (!have)
+		if (c == '>' || c == '+' || c == '~') {
+			if (!have || (comb && comb != ' '))
 				return 0;
-			comb = '>';
+			comb = c;
 			p++;
 			continue;
 		}
-		if (c == '+' || c == '~' || c == '|' || c == ',')
+		if (c == '|' || c == ',')
 			return 0;
 		if (comb) {
 			if (n == SEL_CMPS - 1)
@@ -1275,7 +1279,7 @@ static int compile(const char *p, const char *e, struct cmp *out, unsigned long 
 			return 0;
 		have = 1;
 	}
-	if (!have)
+	if (!have || (comb && comb != ' '))
 		return 0;
 	left[n++] = cur;
 	/* the subject first: out[k].comb joins out[k] to out[k + 1] */
@@ -2765,17 +2769,78 @@ static int cmp_match(const struct cmp *c, const struct doc *d, const struct elin
 	return 1;
 }
 
-/* the compounds from k on, against the ancestors s->path[0..top) */
-static int match_from(const struct css_sheet *s, const struct cmp *c, int k,
-	int n_cmp, const struct doc *d, int top)
+/* the element before n among its parent's children, or 0 (the layout
+ * asks in order, so mostly the one after the last asked about) */
+static nodeid prev_elem(struct css_sheet *s, const struct doc *d, nodeid n)
+{
+	nodeid p = DOC_NODE(d, n)->parent, c, last;
+	int again = 0;
+
+	if (s->sib_par == p && s->sib_at) {
+		c = s->sib_at;
+		last = s->sib_prev;
+	} else {
+		c = DOC_NODE(d, p)->first;
+		last = 0;
+		again = 1;
+	}
+	for (;;) {
+		while (c && c != n) {
+			if (DOC_NODE(d, c)->type == NODE_ELEM)
+				last = c;
+			c = DOC_NODE(d, c)->next;
+		}
+		if (c == n)
+			break;
+		if (again)
+			return 0;
+		c = DOC_NODE(d, p)->first;
+		last = 0;
+		again = 1;
+	}
+	s->sib_par = p;
+	s->sib_at = n;
+	s->sib_prev = last;
+	return last;
+}
+
+/* the compounds from k on, c[k - 1] having matched element el, whose
+ * ancestors are s->path[0..top) */
+static int match_from(struct css_sheet *s, const struct cmp *c, int k,
+	int n_cmp, const struct doc *d, nodeid el, int top)
 {
 	int i;
 
 	if (k == n_cmp)
 		return 1;
+	if (c[k - 1].comb == '+') {
+		struct elinfo e;
+		nodeid b = prev_elem(s, d, el);
+
+		if (b == 0)
+			return 0;
+		el_info(d, b, doc_attr(d, b, ATTR_ID), doc_attr(d, b, ATTR_CLASS), &e);
+		return cmp_match(&c[k], d, &e) && match_from(s, c, k + 1, n_cmp, d, b, top);
+	}
+	if (c[k - 1].comb == '~') {
+		/* (from the first: walking back would cost a walk a step) */
+		nodeid b;
+
+		for (b = DOC_NODE(d, DOC_NODE(d, el)->parent)->first; b && b != el;
+			b = DOC_NODE(d, b)->next) {
+			struct elinfo e;
+
+			if (DOC_NODE(d, b)->type != NODE_ELEM)
+				continue;
+			el_info(d, b, doc_attr(d, b, ATTR_ID), doc_attr(d, b, ATTR_CLASS), &e);
+			if (cmp_match(&c[k], d, &e) && match_from(s, c, k + 1, n_cmp, d, b, top))
+				return 1;
+		}
+		return 0;
+	}
 	for (i = top - 1; i >= 0; i--) {
 		if (cmp_match(&c[k], d, &s->path[i])
-			&& match_from(s, c, k + 1, n_cmp, d, i))
+			&& match_from(s, c, k + 1, n_cmp, d, s->path[i].node, i))
 			return 1;
 		if (c[k - 1].comb == '>')
 			break;		/* (the parent only) */
@@ -2784,12 +2849,12 @@ static int match_from(const struct css_sheet *s, const struct cmp *c, int k,
 }
 
 /* does rule r hold for element e, whose ancestors are s->path[0..top)? */
-static int rule_match(const struct css_sheet *s, const struct rule *r,
+static int rule_match(struct css_sheet *s, const struct rule *r,
 	const struct doc *d, const struct elinfo *e, int top)
 {
 	const struct cmp *c = &s->cmps[r->cmp];
 
-	return cmp_match(&c[0], d, e) && match_from(s, c, 1, r->ncmp, d, top);
+	return cmp_match(&c[0], d, e) && match_from(s, c, 1, r->ncmp, d, e->node, top);
 }
 
 /* is (imp, spec, order) of a above b's? */
@@ -2816,7 +2881,7 @@ struct winners {
 	(w) ? ((w)->t.imp & (bit)) != 0 : 0, w)
 
 /* the rules filed under key bucket b that hold, into the winners */
-static void try_bucket(const struct css_sheet *s, unsigned b, const struct doc *d,
+static void try_bucket(struct css_sheet *s, unsigned b, const struct doc *d,
 	const struct elinfo *e, int top, int vw, struct winners *w)
 {
 	int i;
@@ -2977,6 +3042,7 @@ int css_style(struct css_sheet *s, const struct doc *d, nodeid node,
 			memset(s->memo, 0, s->memo_n * sizeof *s->memo);
 		s->memo_gen = s->gen;
 		s->memo_vw = vw;
+		s->sib_at = 0;
 	}
 	if (s->memo && node < s->memo_n && s->memo[node])
 		return memo_out(s, s->memo[node], t);
