@@ -9,6 +9,7 @@
 #include "doc.h"
 #include "load.h"
 #include "layout.h"
+#include "tags.h"
 
 static int fails, runs;
 
@@ -363,6 +364,159 @@ static void check_minmax(const char *name, const char *html, unsigned long bg,
 	doc_free(&d);
 }
 
+/* page p's layers as "id@line+dy,x" (fixed: "id@win+dy,x", from the
+ * foot: "id@foot-dy,x"), their own in {} after, ";" between */
+static void layers_str(const struct page *p, const struct doc *d, char *out, size_t n)
+{
+	unsigned long i;
+	size_t o = strlen(out);
+
+	for (i = 0; i < p->nlayers && o + 64 < n; i++) {
+		const struct llayer *ly = &p->layers[i];
+		const char *id = doc_attr(d, ly->node, ATTR_ID);
+
+		if (ly->fixed == 1)
+			o += (size_t)sprintf(out + o, "%s@win+%ld,%d", id ? id : "?", ly->dy, ly->x);
+		else if (ly->fixed == 2)
+			o += (size_t)sprintf(out + o, "%s@foot%ld,%d", id ? id : "?", ly->dy, ly->x);
+		else
+			o += (size_t)sprintf(out + o, "%s@%lu+%ld,%d", id ? id : "?", ly->line,
+				ly->dy, ly->x);
+		if (ly->pg.nlayers) {
+			out[o++] = '{';
+			out[o] = '\0';
+			layers_str(&ly->pg, d, out, n);
+			o = strlen(out);
+			out[o++] = '}';
+		}
+		out[o++] = ';';
+		out[o] = '\0';
+	}
+}
+
+static void check_layers(const char *name, const char *html, const char *want)
+{
+	struct page pg;
+	struct doc d;
+	char got[512];
+
+	lay_px(html, &pg, &d);
+	got[0] = '\0';
+	layers_str(&pg, &d, got, sizeof got);
+	runs++;
+	if (strcmp(got, want) != 0) {
+		fails++;
+		printf("FAIL %s\n  want %s\n  got  %s\n", name, want, got);
+	}
+	layout_free(&pg);
+	doc_free(&d);
+}
+
+/* positioned elements: layers where CSS puts them (10 px a byte, lines 12
+ * high, 400 wide) */
+static void check_positioned(void)
+{
+	struct page pg;
+	struct doc d;
+	unsigned long i, k;
+	int ok;
+
+	/* by the padding box of the positioned box around: its border 4 */
+	check_layers("absolute in relative",
+		"<div style='position:relative;border:4px solid;height:100px'>"
+		"<div id=a style='position:absolute;top:5px;left:6px'>a</div>"
+		"<div id=b style='position:absolute;bottom:0;right:0;width:20px'>b</div>"
+		"</div>", "a@0+9,10;b@0+92,376;");
+	/* none around: the page's; where it would have been when not said */
+	check_layers("static position", "<p>abc <span id=s style='position:absolute;left:50px'>"
+		"s</span>", "s@0+0,50;");
+	/* one that says nowhere stays where it is, taking its room */
+	check_layers("not placed", "<p>abc <span id=s style='position:absolute'>s</span>", "");
+	check_layers("fixed", "<div id=f style='position:fixed;top:3px;left:4px'>f</div>"
+		"<div id=g style='position:fixed;bottom:2px;right:0;width:30px'>g</div>",
+		"f@win+3,4;g@foot-14,370;");
+	/* moved: drawn moved, its room kept where it was */
+	check_layers("relative", "<div id=r style='position:relative;top:5px;left:7px'>r</div>"
+		"<div>after</div>", "r@0+5,7;");
+	lay_px("<div id=r style='position:relative;top:5px'>r</div><div>after</div>", &pg, &d);
+	runs++;
+	if (pg.nlines < 2 || pg.heights[0].height != 12 || pg.lines[1].len != 5) {
+		fails++;
+		printf("FAIL relative keeps its room: %lu lines\n", pg.nlines);
+	}
+	layout_free(&pg);
+	doc_free(&d);
+	check_layers("sticky: where it is", "<div style='position:sticky;top:80px'>"
+		"<div id=n style='position:absolute;top:1px;left:2px'>n</div>s</div>",
+		"n@0+1,2;");
+	{
+		/* a fixed box a third of the window tall or more stays in the
+		 * text (a window 120 high: 5 lines are 60) */
+		static struct html_load l;
+		static const struct lmetrics m = { fake_w, fake_h, NULL, 10, NULL, NULL, 120 };
+		static const char html[] = "<div id=t style='position:fixed;top:0'>1<br>2<br>3"
+			"<br>4<br>5</div><div id=s style='position:fixed;top:0'>1</div>";
+		char got[128];
+
+		doc_init(&d, 0);
+		html_load_begin(&l, &d, "utf-8", 0);
+		html_load_feed(&l, (const unsigned char *)html, strlen(html));
+		html_load_end(&l);
+		layout_run_m(&pg, &d, 400, TCS_UTF8, 0, 0, NULL, &m);
+		got[0] = '\0';
+		layers_str(&pg, &d, got, sizeof got);
+		runs++;
+		if (strcmp(got, "s@win+0,0;") != 0 || pg.nlines < 5) {
+			fails++;
+			printf("FAIL tall fixed: %s, %lu lines\n", got, pg.nlines);
+		}
+		layout_free(&pg);
+		doc_free(&d);
+	}
+	/* in a positioned inline one: by where it starts (Debian's dates) */
+	check_layers("in an inline", "<p>Date: <span style='display:inline-block;"
+		"position:relative;width:40px'><span id=m style='display:block;"
+		"position:absolute;left:0;right:0'>Sep</span></span> news",
+		"m@0+0,50;");
+	/* in a moved one: its own layer's */
+	check_layers("nested", "<div id=r style='position:relative;left:10px'>"
+		"<div id=n style='position:absolute;top:1px;left:2px'>n</div>r</div>",
+		"r@0+0,10{n@0+1,2;};");
+	/* shrunk to fit: a right float in it is as wide as it is */
+	lay_px("<div style='position:absolute;top:0;left:0;background:red'>"
+		"<span style='float:right;width:96px;height:12px'></span></div>", &pg, &d);
+	runs++;
+	if (pg.nlayers != 1 || pg.layers[0].pg.nboxes == 0
+		|| pg.layers[0].pg.boxes[0].w != 96 || pg.layers[0].pg.boxes[0].h != 12) {
+		fails++;
+		printf("FAIL shrink to fit a float: %lu layers, %d x %ld\n", pg.nlayers,
+			pg.nlayers ? pg.layers[0].pg.boxes[0].w : 0,
+			pg.nlayers ? pg.layers[0].pg.boxes[0].h : 0);
+	}
+	layout_free(&pg);
+	doc_free(&d);
+	/* text "visually hidden" stays in the text; one in a table's cell
+	 * stays in the cell */
+	check_layers("visually hidden", "<p>a<span style='position:absolute;width:1px;"
+		"overflow:hidden'>b</span>c", "");
+	check_layers("in a cell", "<table><tr><td><div style='position:absolute;top:0'>t"
+		"</div></table>", "");
+	/* a layer's links are the page's, in the order of where they are */
+	lay_px("<p><a href=1>one</a><div style='position:absolute;top:0'><a href=2>two</a>"
+		"</div><p><a href=3>three</a>", &pg, &d);
+	ok = pg.nlinks == 3 && pg.nlayers == 1;
+	for (i = 0; ok && i < pg.layers[0].pg.nspans; i++)
+		if ((k = pg.layers[0].pg.spans[i].link) != 0)
+			ok = strcmp(doc_attr(&d, pg.links[k - 1].node, ATTR_HREF), "2") == 0;
+	runs++;
+	if (!ok) {
+		fails++;
+		printf("FAIL layer links: %lu links, %lu layers\n", pg.nlinks, pg.nlayers);
+	}
+	layout_free(&pg);
+	doc_free(&d);
+}
+
 int main(void)
 {
 	check_grid_bands();
@@ -560,6 +714,7 @@ int main(void)
 		layout_free(&pg);
 		doc_free(&d);
 	}
+	check_positioned();
 	printf("layout: %d/%d passed\n", runs - fails, runs);
 	return fails != 0;
 }

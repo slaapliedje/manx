@@ -1587,7 +1587,7 @@ static int box_mentions(const char *d, int n)
 	for (i = 0; i + 4 < n; i++)
 		switch (d[i]) {
 		case 'm': case 'p': case 'b': case 'w': case 'h': case 'f':
-		case 'c':
+		case 'c': case 't': case 'l': case 'r': case 'z':
 			if (starts(d + i, (size_t)(n - i), "margin")
 				|| starts(d + i, (size_t)(n - i), "padding")
 				|| starts(d + i, (size_t)(n - i), "border")
@@ -1596,7 +1596,13 @@ static int box_mentions(const char *d, int n)
 				|| starts(d + i, (size_t)(n - i), "height")
 				|| starts(d + i, (size_t)(n - i), "float")
 				|| starts(d + i, (size_t)(n - i), "font")
-				|| starts(d + i, (size_t)(n - i), "clear"))
+				|| starts(d + i, (size_t)(n - i), "clear")
+				|| starts(d + i, (size_t)(n - i), "position")
+				|| starts(d + i, (size_t)(n - i), "top")
+				|| starts(d + i, (size_t)(n - i), "left")
+				|| starts(d + i, (size_t)(n - i), "right")
+				|| starts(d + i, (size_t)(n - i), "bottom")
+				|| starts(d + i, (size_t)(n - i), "z-index"))
 				return 1;
 			break;
 		}
@@ -1825,10 +1831,12 @@ static int line_height(const char *v, size_t vn, struct css_len *l)
 		q--;
 	t /= 100;			/* tenths */
 	if (pct) {
-		l->u = CSS_U_EM;
+		l->u = CSS_U_PCT;	/* (of the font's size: as "em") */
 		t /= 100;
-	} else if (q == e || starts(q, (size_t)(e - q), "em"))
+	} else if (q == e)
 		l->u = CSS_U_EM;	/* (a number: times the font's size) */
+	else if (starts(q, (size_t)(e - q), "em"))
+		l->u = CSS_U_PCT;
 	else if (starts(q, (size_t)(e - q), "px"))
 		l->u = CSS_U_PX;
 	else if (starts(q, (size_t)(e - q), "pt")) {
@@ -2013,6 +2021,50 @@ static unsigned long box_decl(const char *p, size_t pn, const char *v,
 		else
 			return 0;
 		return CSS_B_CLEAR;
+	}
+	if (pn == 8 && starts(p, pn, "position")) {
+		if (is_kw(v, vn, "static"))
+			b->pos = CSS_PO_STATIC;
+		else if (is_kw(v, vn, "relative"))
+			b->pos = CSS_PO_RELATIVE;
+		else if (is_kw(v, vn, "sticky") || is_kw(v, vn, "-webkit-sticky"))
+			b->pos = CSS_PO_STICKY;
+		else if (is_kw(v, vn, "absolute"))
+			b->pos = CSS_PO_ABSOLUTE;
+		else if (is_kw(v, vn, "fixed"))
+			b->pos = CSS_PO_FIXED;
+		else
+			return 0;
+		return CSS_B_POS;
+	}
+	for (i = 0; i < 4; i++)
+		if (pn == strlen(sides[i]) && starts(p, pn, sides[i])) {
+			if (!parse_len(v, vn, &l[0]))
+				return 0;
+			b->off[i] = l[0];
+			return CSS_B_OFF(i);
+		}
+	if (pn == 7 && starts(p, pn, "z-index")) {
+		long z = 0;
+		size_t k = 0;
+		int neg = 0;
+
+		if (is_kw(v, vn, "auto")) {
+			b->z = 0;
+			return CSS_B_Z;
+		}
+		if (k < vn && (v[k] == '-' || v[k] == '+'))
+			neg = v[k++] == '-';
+		if (k == vn)
+			return 0;
+		for (; k < vn; k++) {
+			if (v[k] < '0' || v[k] > '9')
+				return 0;
+			if (z < 30000)
+				z = z * 10 + (v[k] - '0');
+		}
+		b->z = (short)(neg ? -z : z);
+		return CSS_B_Z;
 	}
 	if (pn == 7 && starts(p, pn, "display")) {
 		if (vn == 5 && starts(v, vn, "block"))
@@ -2938,6 +2990,12 @@ static void box_take(struct css_box *b, const struct css_box *a, int k)
 		b->minh = a->minh;
 	else if (bit == CSS_B_MAXH)
 		b->maxh = a->maxh;
+	else if (bit == CSS_B_POS)
+		b->pos = a->pos;
+	else if (bit >= CSS_B_OFF(0) && bit <= CSS_B_OFF(3))
+		b->off[k - 26] = a->off[k - 26];
+	else if (bit == CSS_B_Z)
+		b->z = a->z;
 	b->set |= bit;
 }
 

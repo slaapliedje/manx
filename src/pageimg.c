@@ -680,6 +680,47 @@ static int work_on(const struct page *p, long k, int (*poll)(void *ctx, int show
 	return -1;
 }
 
+/* the pictures of page p's layers (positioned elements, theirs too): laid
+ * out as pictures */
+static void layers_mark(const struct page *p)
+{
+	unsigned long i, k;
+
+	for (i = 0; i < p->nlayers; i++) {
+		const struct page *lp = &p->layers[i].pg;
+
+		for (k = 0; k < lp->nimages; k++) {
+			struct pent *e = find(lp->images[k].node);
+
+			if (e)
+				e->gen = g_gen;
+		}
+		layers_mark(lp);
+	}
+}
+
+/* ... and the first of them with work to do (all count as shown: there
+ * are few): as work_on, or -1 */
+static int layers_work(const struct page *p, int (*poll)(void *ctx, int shown),
+	void *ctx)
+{
+	unsigned long i;
+	long k;
+	int r;
+
+	for (i = 0; i < p->nlayers; i++) {
+		const struct page *lp = &p->layers[i].pg;
+		struct pent *e;
+
+		for (k = 0; k < (long)lp->nimages; k++)
+			if (needs(lp, k, &e) && (r = work_on(lp, k, poll, ctx)) >= 0)
+				return r;
+		if ((r = layers_work(lp, poll, ctx)) >= 0)
+			return r;
+	}
+	return -1;
+}
+
 int pimg_step(const struct page *p, long top, long rows,
 	int (*poll)(void *ctx, int shown), void *ctx)
 {
@@ -687,7 +728,7 @@ int pimg_step(const struct page *p, long top, long rows,
 	unsigned long ln;
 	int i, r;
 
-	if (g_n == 0 || p->images == NULL)
+	if (g_n == 0 || (p->images == NULL && p->nlayers == 0))
 		return PIMG_IDLE;
 	/* which are laid out as images (the others show alt text) */
 	g_gen++;
@@ -697,6 +738,7 @@ int pimg_step(const struct page *p, long top, long rows,
 		if (e)
 			e->gen = g_gen;
 	}
+	layers_mark(p);
 	/* those shown */
 	for (k = 0; k < (long)p->nimages; k++) {
 		ln = p->images[k].line;
@@ -704,6 +746,8 @@ int pimg_step(const struct page *p, long top, long rows,
 			&& (r = work_on(p, k, poll, ctx)) >= 0)
 			return r;
 	}
+	if ((r = layers_work(p, poll, ctx)) >= 0)
+		return r;
 	/* those of no known size yet, shown as alt text: once it is known,
 	 * the page is laid out again */
 	for (i = 0; i < g_n; i++)

@@ -59,6 +59,9 @@ struct lmetrics {
 	 * not known and no width and height given: its alt text instead. */
 	int (*image)(void *ctx, nodeid node, int *w, int *h);
 	void *image_ctx;
+	int view_h;			/* the window's height in units (0: not
+					 * known): a fixed box much of it tall is
+					 * left in the text */
 };
 
 /*
@@ -105,6 +108,18 @@ struct lbox {
 	unsigned char border;		/* its width, 0: none */
 };
 
+/*
+ * With metrics, an element positioned (CSS position: absolute, fixed, or
+ * relative and moved) is laid out on a page of its own, a layer, drawn
+ * after the page's own lines and boxes (and its layers, in z order, by
+ * z then by where they are in the document): its first line's top goes
+ * dy below the top of the page's line `line` (fixed: below the window's
+ * top), x across (the window's, fixed), its own layers likewise in it.
+ * Its lines and boxes are in it, not in the page: they take no room, and
+ * aren't scrolled to, searched or selected.
+ */
+struct llayer;
+
 struct page {
 	const struct doc *d;
 	int width;
@@ -133,6 +148,8 @@ struct page {
 	int need_w;			/* (with metrics) as wide as its lines
 					 * need, boxes' right sides (padding,
 					 * border, margin) beside them included */
+	struct llayer *layers;		/* NULL without metrics, or none */
+	unsigned long nlayers, layers_cap;
 	unsigned long page_bg;		/* the page's background (the root's or
 					 * the body's), LBOX_NONE: the screen's */
 	long main_line;			/* where <main> begins, or -1 */
@@ -144,6 +161,16 @@ struct page {
 					 * heading), or -1 */
 	int truncated;			/* the cap was hit: the rest is missing */
 	int partial;			/* stopped at max_lines */
+};
+
+struct llayer {
+	struct page pg;
+	unsigned long line;
+	long dy;
+	int x;
+	short z;
+	unsigned char fixed;
+	nodeid node;			/* the element */
 };
 
 #define LAYOUT_DEFAULT_CAP	(600UL * 1024)

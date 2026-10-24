@@ -252,6 +252,14 @@ static void box(const char *name, const char *css, const char *body, int tag,
 		sprintf(got + strlen(got), "cl=%d ", b.clr);
 	if (b.set & CSS_B_DISP)
 		sprintf(got + strlen(got), "di=%d ", b.disp);
+	if (b.set & CSS_B_POS)
+		sprintf(got + strlen(got), "po=%d ", b.pos);
+	for (i = 0; i < 4; i++)
+		if (b.set & CSS_B_OFF(i))
+			sprintf(got + strlen(got), "of%d=%d.%d%c ", i, b.off[i].v / 10,
+				(b.off[i].v < 0 ? -b.off[i].v : b.off[i].v) % 10, "-pe%a"[b.off[i].u]);
+	if (b.set & CSS_B_Z)
+		sprintf(got + strlen(got), "z=%d ", b.z);
 	runs++;
 	if (strcmp(got, want) != 0) {
 		fails++;
@@ -519,6 +527,10 @@ int main(void)
 		"<p>x", TAG_P, "bg=0000ff ");
 	box("inline: what's dropped", "", "<p style='width:5px;width:6px !ie;"
 		"height:1px;*height:2px;float:leftish'>x", TAG_P, "w=5.0p h=1.0p ");
+	box("position", "p{position:absolute;top:1px;left:auto;bottom:-2em;z-index:-3}",
+		"<p>x", TAG_P, "po=3 of0=1.0p of2=-2.0e of3=0.0a z=-3 ");
+	box("position: what isn't", "p{position:fixed;right:5%} p{position:floating;"
+		"z-index:1.5;top:3}", "<p style='position:sticky'>x", TAG_P, "po=5 of1=5.0% ");
 	box("float: the keyword", "p{float:left} p{float:lefty}", "<p>x", TAG_P, "fl=2 ");
 	{
 		/* line-height: in the box's declarations (the layout inherits it) */

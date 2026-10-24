@@ -105,7 +105,8 @@ int css_inline_list(const char *style);
 
 /*
  * Boxes: margin, border, padding, width, height (and their min- and
- * max-), float, clear, display and background-color, for a screen that draws them (css_boxes: 1, the
+ * max-), float, clear, display, background-color, position (with top,
+ * right, bottom, left and z-index), for a screen that draws them (css_boxes: 1, the
  * default; a terminal sets it 0 before reading sheets, and then their
  * rules about boxes take no memory and no time).
  */
@@ -128,11 +129,16 @@ extern int css_boxes;
 #define CSS_B_MAXW	0x400000UL	/* max-width (auto: none) */
 #define CSS_B_MINH	0x800000UL	/* min-height */
 #define CSS_B_MAXH	0x1000000UL	/* max-height */
-#define CSS_B_NBITS	25
+#define CSS_B_POS	0x2000000UL	/* position */
+#define CSS_B_OFF(i)	(0x4000000UL << (i))	/* top right bottom left */
+#define CSS_B_Z		0x40000000UL	/* z-index (auto: 0) */
+#define CSS_B_NBITS	31
 
 enum { CSS_FL_NONE = 1, CSS_FL_LEFT, CSS_FL_RIGHT };
 enum { CSS_CL_NONE = 1, CSS_CL_LEFT, CSS_CL_RIGHT, CSS_CL_BOTH };
 enum { CSS_DI_BLOCK = 1, CSS_DI_INLINE, CSS_DI_LIST_ITEM, CSS_DI_INLINE_BLOCK };
+enum { CSS_PO_STATIC = 1, CSS_PO_RELATIVE, CSS_PO_ABSOLUTE, CSS_PO_FIXED,
+	CSS_PO_STICKY };
 
 #define CSS_BG_NONE	0xFFFFFFFFUL	/* transparent */
 
@@ -143,10 +149,15 @@ struct css_box {
 					 * CSS_BG_NONE: transparent */
 	unsigned char bstyle;		/* the border is drawn (solid...): 1 */
 	unsigned char fl, clr, disp;	/* CSS_FL_*, CSS_CL_*, CSS_DI_* */
+	unsigned char pos;		/* CSS_PO_* */
+	short z;			/* z-index */
 	struct css_len m[4], p[4], bw[4], w, h;
 	struct css_len minw, maxw, minh, maxh;	/* (max: none is auto) */
-	struct css_len lh;		/* line-height: em (a number, an em: of
-					 * the font's size), px, or auto: normal */
+	struct css_len lh;		/* line-height: em (a number: times the
+					 * font's size), % (an em or a %, in
+					 * tenths of the font's size: a length),
+					 * px, or auto: normal */
+	struct css_len off[4];		/* top, right, bottom, left (auto) */
 };
 
 /*

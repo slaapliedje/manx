@@ -25,11 +25,18 @@
 #define MAX_DEPTH	200
 #define MAX_LISTS	16
 
+/* a containing block: its padding box, its top dy below line's top */
+struct cbox {
+	unsigned long line;
+	long dy, h;
+	int x, w;
+};
+
 struct saved {
 	unsigned char attr, pre, tag, list;
 	unsigned char display, margin, face, nomarker;
 	unsigned char fg, align;
-	short fsz;
+	short fsz, cfsz;
 	struct css_len lh;
 	unsigned long para_mark, para_line;	/* <p>: where it began */
 	unsigned short link;
@@ -48,7 +55,29 @@ struct saved {
 	long box_minh;			/* height: at least (0: none) */
 	int box_rin;			/* L->rin before it */
 	int box_cut;			/* the float cut from the width then */
+	unsigned char cb;		/* positioned: absolute ones' containing
+					 * block (1: a block's box, 2: an
+					 * inline's, where it starts) */
+	int cb_prev;			/* L->cb_top before it */
+	struct cbox *cb_in;		/* 2: where (from L->cbs) */
 };
+
+/* an absolutely positioned (or fixed) element, its containing block not
+ * ended yet: where it would have been (its static position), and the look
+ * of what's around it there */
+struct pend {
+	nodeid node;
+	int cb;				/* its containing block's depth in st[],
+					 * -1: the page's */
+	unsigned long line;		/* static position: that line's top */
+	int x;
+	unsigned char fixed;
+	unsigned char attr, face, fg, nomarker;
+	short fsz, cfsz;
+	struct css_len lh;
+};
+
+
 
 struct list {
 	unsigned char ordered, type;	/* type: '1', 'a', 'A', 'i', 'I' */
@@ -67,7 +96,10 @@ struct lay {
 	struct css_len lh;		/* the line height (with metrics; u
 					 * CSS_U_NONE: the font's own) */
 	int fsz;			/* the font's size, tenths of a unit (with
-					 * metrics): CSS's em */
+					 * metrics): the text's em */
+	int cfsz;			/* ... as CSS says it, tenths of a CSS
+					 * pixel: the em of lengths (fonts are
+					 * drawn 3/4 of it, lengths as they are) */
 	int face;			/* LF_* */
 	int width;
 	int vw;				/* the window's width for @media: pixels,
@@ -139,6 +171,16 @@ struct lay {
 					 * moves their top down (it collapses
 					 * through) */
 	int ntop_pend;
+	/* positioned elements (with metrics) */
+	int measure;			/* (a cell's: see struct gcell) */
+	int layers_ok;			/* laid out as layers here (not in a
+					 * grid's cell or a float: in the flow) */
+	int cb_top;			/* the innermost containing block's depth
+					 * in st[], -1: the page */
+	struct pend *pend;		/* absolute ones waiting for theirs' end */
+	int npend, pend_cap;
+	struct cbox cbs[16];		/* inline containing blocks open */
+	int ncbs;
 	long gap;			/* (with metrics) the margins' height just
 					 * above: blank lines and margin spacers
 					 * since the last line of anything else */
@@ -150,7 +192,12 @@ struct lay {
 
 static size_t used(const struct page *p)
 {
-	return p->text_cap + p->lines_cap * sizeof(struct lline)
+	size_t n = p->layers_cap * sizeof(struct llayer);
+	unsigned long i;
+
+	for (i = 0; i < p->nlayers; i++)
+		n += used(&p->layers[i].pg);
+	return n + p->text_cap + p->lines_cap * sizeof(struct lline)
 		+ p->heights_cap * sizeof(struct lheight)
 		+ p->spans_cap * sizeof(struct lspan)
 		+ p->links_cap * sizeof(struct llink)
@@ -214,6 +261,8 @@ static int space_w(const struct lay *L)
 	return text_w(L, " ", 1, 1);
 }
 
+static long rdiv(long n, long d);
+
 /* the open line is as tall as the current look, at least */
 static void note_height(struct lay *L)
 {
@@ -222,10 +271,11 @@ static void note_height(struct lay *L)
 	if (L->m == NULL)
 		return;
 	h = L->m->height(L->m->ctx, L->attr, L->face, &a);
-	if (L->lh.u == CSS_U_EM || L->lh.u == CSS_U_PX) {
+	if (L->lh.u == CSS_U_EM || L->lh.u == CSS_U_PCT || L->lh.u == CSS_U_PX) {
 		/* CSS's line height: the difference half above, half below */
 		long lh = L->lh.u == CSS_U_EM ? (long)L->lh.v * L->fsz / 100
-			: L->lh.v * 3 / 40;
+			: L->lh.u == CSS_U_PCT ? (long)L->lh.v * L->cfsz / 100
+			: rdiv(L->lh.v, 10);
 
 		if (lh < 1)
 			lh = 1;
@@ -1478,12 +1528,18 @@ static void text_look(struct lay *L, int tag, const struct style *s,
 	if (L->m && ct->fsize.u == CSS_U_PX) {
 		/* a size in CSS pixels: the browsers' usual 16 is the
 		 * screen's 12 */
+		L->cfsz = ct->fsize.v;
 		L->fsz = ct->fsize.v * 3 / 4;
 		L->face = (L->face & ~LF_SMASK) | size_class(L->fsz);
 	} else if (L->m && ct->fsize.u == CSS_U_EM) {
+		L->cfsz = (int)((long)L->cfsz * ct->fsize.v / 10);
 		L->fsz = (int)((long)L->fsz * ct->fsize.v / 10);
 		L->face = (L->face & ~LF_SMASK) | size_class(L->fsz);
 	}
+	if (L->cfsz < 10)
+		L->cfsz = 10;
+	else if (L->cfsz > 9600)
+		L->cfsz = 9600;
 	/* (no smaller than 10 pixels: less can't be read in the screen's
 	 * fonts - browsers have a least size too) */
 	if (L->fsz < 100) {
@@ -1524,7 +1580,11 @@ static void text_look(struct lay *L, int tag, const struct style *s,
 
 static int dark(unsigned long rgb);
 static void float_flush(struct lay *L);
+static int tiny_box(const struct lay *L, const struct css_box *b);
 struct fitem;
+static void emit_pend(struct lay *L, int cb, const struct cbox *c);
+static int positioned(struct lay *L, nodeid id, const struct css_box *b,
+	int block);
 
 /* what the sheet and style="" say of element id's box (only where boxes
  * are drawn): 1 if anything */
@@ -1560,7 +1620,7 @@ static int box_units(const struct lay *L, struct css_len l, int of)
 		v = rdiv(l.v, 10);
 		break;
 	case CSS_U_EM:
-		v = rdiv((long)l.v * L->fsz, 100);
+		v = rdiv((long)l.v * L->cfsz, 100);
 		break;
 	case CSS_U_PCT:
 		/* rounded: Acid1's 10.638% of 470 is 50, not 49 */
@@ -1847,6 +1907,18 @@ static void box_close(struct lay *L, const struct saved *sv)
 	L->width = sv->box_width + sv->box_cut - L->fl_cut;
 	L->rin = sv->box_rin;
 	L->in_box--;
+	if (sv->cb) {
+		/* absolute ones in it: by its padding box, its height known */
+		struct cbox c;
+
+		c.line = lb->line;
+		c.dy = lb->dy + lb[1].h;
+		c.x = lb->x + lb[4].w;
+		c.w = lb->w - lb[4].w - lb[2].w;
+		c.h = h - lb[1].h - lb[3].h;
+		L->cb_top = sv->cb_prev;
+		emit_pend(L, (int)(sv - L->st), &c);
+	}
 	if (sv->box_m_b >= 0)
 		margin(L, sv->box_m_b);
 }
@@ -1862,7 +1934,7 @@ static int enter(struct lay *L, nodeid id, int depth)
 	struct css_text ct;
 	struct css_box bx;
 	const char *v;
-	int tag = n->tag, cssf = 0, boxed, lh_new;
+	int tag = n->tag, cssf = 0, boxed, lh_new, pos_cb = 0;
 
 	if (n->data)
 		scan_attrs(d, id, &ea);
@@ -1896,6 +1968,11 @@ static int enter(struct lay *L, nodeid id, int depth)
 	}
 	if (L->m && tag != TAG_HTML && tag != TAG_TABLE && n->type == NODE_ELEM
 		&& el_box(L, id, &ea, &bx)) {
+		/* text "visually hidden" shows as the text it is: not its box
+		 * (1 pixel wide, a letter a line) */
+		if ((bx.set & CSS_B_POS) && (bx.pos == CSS_PO_ABSOLUTE
+			|| bx.pos == CSS_PO_FIXED) && tiny_box(L, &bx))
+			bx.set &= CSS_B_BG | CSS_B_BCOLOR | CSS_B_DISP | CSS_B_LH;
 		if (tag == TAG_BODY && L->p->page_bg != LBOX_NONE && !L->html_bg)
 			bx.set &= ~CSS_B_BG;
 		if (bx.set & CSS_B_DISP)
@@ -1915,6 +1992,22 @@ static int enter(struct lay *L, nodeid id, int depth)
 			s.margin = 0;
 	}
 	lh_new = (bx.set & CSS_B_LH) != 0;
+	/* positioned (where there are layers): absolute and fixed ones wait
+	 * for their containing block's end, one moved (relative, with top,
+	 * left...) is a layer over the room it keeps; any other (a block) is
+	 * the containing block of absolute ones in it (sticky: one that
+	 * moves only as the page scrolls past it: here, where it is) */
+	if (L->layers_ok && (bx.set & CSS_B_POS) && bx.pos != CSS_PO_STATIC
+		&& !L->pre && !L->cell && tag != TAG_BODY && depth < MAX_DEPTH - 1) {
+		int block = s.display == D_BLOCK || s.display == D_LIST_ITEM;
+
+		if (positioned(L, id, &bx, block))
+			return 0;
+		if (block) {
+			pos_cb = 1;
+			boxed = 1;
+		}
+	}
 
 	/* leaves with a rendering of their own */
 	switch (tag) {
@@ -2023,9 +2116,11 @@ static int enter(struct lay *L, nodeid id, int depth)
 	sv->fg = (unsigned char)L->fg;
 	sv->align = (unsigned char)L->align;
 	sv->fsz = (short)L->fsz;
+	sv->cfsz = (short)L->cfsz;
 	sv->lh = L->lh;
 	sv->box = 0;
 	sv->boxk = 0;
+	sv->cb = 0;
 	/* list-style: inherited, the element's own style="" last */
 	if (ea.style && css_inline_list(ea.style))
 		cssf = (cssf & ~(CSS_NO_MARKER | CSS_MARKER)) | css_inline_list(ea.style);
@@ -2069,6 +2164,28 @@ static int enter(struct lay *L, nodeid id, int depth)
 		L->cell = 0;		/* a table in a cell: its own rows */
 	if (boxed)
 		box_open(L, sv, &bx, boxed == 1);
+	if (pos_cb && sv->boxk == 1 && sv->box) {
+		sv->cb = 1;
+		sv->cb_prev = L->cb_top;
+		L->cb_top = depth;
+	} else if (L->layers_ok && (bx.set & CSS_B_POS) && bx.pos != CSS_PO_STATIC
+		&& !pos_cb && L->ncbs < 16) {
+		/* an inline one: by where it starts, as wide and tall as it
+		 * says (else as what's around it) */
+		struct cbox *c = &L->cbs[L->ncbs++];
+
+		c->line = here_line(L);
+		c->dy = 0;
+		c->x = L->line_open ? L->col : L->indent;
+		c->w = (bx.set & CSS_B_W) && bx.w.u != CSS_U_AUTO
+			? box_units(L, bx.w, L->width - L->indent) : L->width - c->x;
+		c->h = (bx.set & CSS_B_H) && bx.h.u != CSS_U_AUTO
+			&& bx.h.u != CSS_U_PCT ? box_units(L, bx.h, 0) : 0;
+		sv->cb = 2;
+		sv->cb_in = c;
+		sv->cb_prev = L->cb_top;
+		L->cb_top = depth;
+	}
 	/* (after the break: where the element's content will start) */
 	if (ea.id || (tag == TAG_A && ea.name))
 		add_anchor(L, id);
@@ -2093,9 +2210,12 @@ static int enter(struct lay *L, nodeid id, int depth)
 		if (L->m && (L->face & LF_SMASK)) {
 			/* in text the page sized: as much bigger than it */
 			L->fsz = L->fsz * hsz[h] / 120;
+			L->cfsz = L->cfsz * hsz[h] / 120;
 			L->face = (L->face & ~LF_SMASK) | size_class(L->fsz);
-		} else if (L->m)
+		} else if (L->m) {
 			L->fsz = hsz[h];
+			L->cfsz = hsz[h] * 4 / 3;
+		}
 	}
 	L->face |= s.face & (LF_MONO | LF_ITALIC);
 	if (tag == TAG_UL || tag == TAG_OL || tag == TAG_MENU || tag == TAG_DIR) {
@@ -2193,6 +2313,7 @@ static void leave(struct lay *L, nodeid id, int depth)
 	L->pre = sv->pre;
 	L->face = sv->face;
 	L->fsz = sv->fsz;
+	L->cfsz = sv->cfsz;
 	L->lh = sv->lh;
 	L->fg = sv->fg;
 	L->align = sv->align;
@@ -2208,6 +2329,14 @@ static void leave(struct lay *L, nodeid id, int depth)
 		L->nlists--;
 	if (sv->boxk)
 		box_close(L, sv);
+	if (sv->cb == 2) {
+		/* (absolute ones in an inline one) */
+		struct cbox c = *sv->cb_in;
+
+		L->ncbs--;
+		L->cb_top = sv->cb_prev;
+		emit_pend(L, depth, &c);
+	}
 	switch (s.display) {
 	case D_BLOCK:
 		block_break(L, s.margin > 0 && L->nlists
@@ -2309,6 +2438,8 @@ struct gcell {
 	int at_width;			/* laid at its width (lines centred as asked) */
 	int laid_w;			/* the width pg was laid out at */
 	int frame;			/* it frames a page (see FRAME_MIN_EM) */
+	int measure;			/* laid out to measure: right floats go
+					 * left (their width is what counts) */
 	struct page pg;
 	int *lmap;			/* its links' numbers in the page, -1 */
 	unsigned long bg;		/* its background (or its row's), LBOX_NONE */
@@ -2653,9 +2784,11 @@ static void line_widths(const struct lay *L, const struct page *tp, unsigned lon
 
 /* lay cell gc out into its page, width wide, as a block's content, with
  * S (a struct lay of the grid's, reused for each cell); max_lines: stop
- * there (0: all of it) */
+ * there (0: all of it); pad: NULL, or the page is a layer (positioned
+ * elements in it are its layers), its content this far inside its
+ * padding box (top, right, bottom, left) */
 static int lay_cell(struct lay *L, struct lay *S, struct gcell *gc, int width,
-	unsigned long max_lines, int at_width)
+	unsigned long max_lines, int at_width, const int *pad)
 {
 	struct page *pg = &gc->pg;
 	size_t have = used(L->p), room = L->p->byte_cap > have ? L->p->byte_cap - have : 0;
@@ -2678,6 +2811,9 @@ static int lay_cell(struct lay *L, struct lay *S, struct gcell *gc, int width,
 	memset(S, 0, offsetof(struct lay, st));
 	S->small = 1;
 	S->gdepth = L->gdepth + 1;
+	S->layers_ok = pad != NULL;
+	S->measure = gc->measure;
+	S->cb_top = -1;
 	S->max_lines = max_lines;
 	S->at_width = at_width;
 	S->p = pg;
@@ -2686,6 +2822,7 @@ static int lay_cell(struct lay *L, struct lay *S, struct gcell *gc, int width,
 	S->m = L->m;
 	S->em = L->em;
 	S->fsz = L->fsz;
+	S->cfsz = L->cfsz;
 	S->lh = L->lh;
 	S->width = width;
 	S->base_w = width;
@@ -2723,8 +2860,10 @@ static int lay_cell(struct lay *L, struct lay *S, struct gcell *gc, int width,
 			static const short hsz[4] = { 120, 180, 140, 120 };
 
 			S->face = (S->face & ~LF_HMASK) | (s.face & LF_HMASK);
-			if (ct.fsize.u == CSS_U_NONE)
+			if (ct.fsize.u == CSS_U_NONE) {
 				S->fsz = hsz[s.face & LF_HMASK];
+				S->cfsz = S->fsz * 4 / 3;
+			}
 		}
 		if (al == NULL && row && L->d->nodes[row].tag == TAG_TR)
 			al = doc_attr(L->d, row, ATTR_ALIGN);
@@ -2737,10 +2876,25 @@ static int lay_cell(struct lay *L, struct lay *S, struct gcell *gc, int width,
 	end_line(S);
 	float_flush(S);
 	/* (no blank lines at its end; a box's spacer stays: its height is
-	 * the box's, and its ascent 0) */
-	while (pg->nlines && pg->lines[pg->nlines - 1].len == 0
+	 * the box's, and its ascent 0. A layer keeps all: as a block of its
+	 * own, it's as tall as its floats' rows too) */
+	while (!pad && pg->nlines && pg->lines[pg->nlines - 1].len == 0
 		&& !(pg->heights && pg->heights[pg->nlines - 1].ascent == 0))
 		pg->nlines--;
+	if (pad) {
+		/* (absolute ones in it: by its padding box) */
+		struct cbox c;
+
+		c.line = 0;
+		c.dy = -pad[0];
+		c.x = -pad[3];
+		c.w = width + pad[1] + pad[3];
+		c.h = lines_h(S, 0) + pad[0] + pad[2];
+		emit_pend(S, -2, &c);
+	}
+	xfree(S->pend);
+	S->pend = NULL;
+	S->npend = S->pend_cap = 0;
 	gc->aligned = S->aligned;
 	return pg->truncated ? -1 : 0;
 }
@@ -2760,7 +2914,7 @@ static int grid_widths(struct lay *L, struct lay *S, struct grid *g, int avail, 
 		/* (a cell framing a page is measured by its first lines: the
 		 * widest is all of avail, the longest word no wider than
 		 * FRAME_WORD_EM; laying all of it out twice costs a 68030) */
-		if (lay_cell(L, S, gc, avail, gc->frame ? FRAME_MEASURE : 0, 0) < 0)
+		if (lay_cell(L, S, gc, avail, gc->frame ? FRAME_MEASURE : 0, 0, NULL) < 0)
 			return -1;
 		if (gc->pg.nlines > GRID_CELL_LINES) {
 			if (!frame_room(L, avail))
@@ -3438,7 +3592,7 @@ static int grid_table(struct lay *L, nodeid id)
 
 		if ((gc->maxw > w || (gc->rule && gc->laid_w != w) || gc->pg.partial
 			|| (gc->aligned && !gc->at_width))
-			&& lay_cell(L, S, gc, w, 0, 1) < 0) {
+			&& lay_cell(L, S, gc, w, 0, 1, NULL) < 0) {
 			xfree(S);
 			grid_free(&g);
 			return 0;
@@ -3597,6 +3751,31 @@ struct fitem {
 	long y;				/* ... and top */
 };
 
+/* does box b say where it goes: any of top, right, bottom, left? */
+static int placed(const struct css_box *b)
+{
+	int i;
+
+	for (i = 0; i < 4; i++)
+		if ((b->set & CSS_B_OFF(i)) && b->off[i].u != CSS_U_AUTO
+			&& b->off[i].u != CSS_U_NONE)
+			return 1;
+	return 0;
+}
+
+/*
+ * Is box b absolute or fixed, laid out as a layer here (out of the flow,
+ * floating or not)? Not one that says nowhere (top, left... all auto):
+ * where it would be anyway, it takes its room there, as the menus and
+ * pop-ups such are, placed and shown by scripts, read better so.
+ */
+static int out_of_flow(const struct lay *L, const struct css_box *b)
+{
+	return L->layers_ok && (b->set & CSS_B_POS)
+		&& (b->pos == CSS_PO_ABSOLUTE || b->pos == CSS_PO_FIXED)
+		&& !tiny_box(L, b) && placed(b);
+}
+
 /* is element id floated (and shown)? its box into *b */
 static int float_of(struct lay *L, nodeid id, struct css_box *b)
 {
@@ -3604,7 +3783,7 @@ static int float_of(struct lay *L, nodeid id, struct css_box *b)
 
 	scan_attrs(L->d, id, &ea);
 	if (!el_box(L, id, &ea, b) || !(b->set & CSS_B_FLOAT)
-		|| (b->fl != CSS_FL_LEFT && b->fl != CSS_FL_RIGHT))
+		|| (b->fl != CSS_FL_LEFT && b->fl != CSS_FL_RIGHT) || out_of_flow(L, b))
 		return 0;
 	return !el_hidden(L, id);
 }
@@ -3628,7 +3807,7 @@ static int only_floats(struct lay *L, nodeid id)
 	int any = 0;
 
 	scan_attrs(d, id, &ea);
-	if (el_box(L, id, &ea, &b) && box_shows(&b))
+	if (el_box(L, id, &ea, &b) && (box_shows(&b) || out_of_flow(L, &b)))
 		return 0;
 	for (k = d->nodes[id].first; k; k = d->nodes[k].next) {
 		if (d->nodes[k].type == NODE_TEXT) {
@@ -3745,6 +3924,8 @@ static void float_emit(struct lay *L, struct fitem *it, int n, long H)
 				long bht = f->bw[0] + f->pd[0] + f->h + f->pd[2] + f->bw[2];
 
 				add_box(L, base, by, bx, bwid, bht, f->bg, 0, 0);
+				if (bx + bwid + f->m[1] + L->rin > p->need_w)
+					p->need_w = bx + bwid + f->m[1] + L->rin;
 				add_box(L, base, by, bx, bwid, f->bw[0], f->bc, 0, 0);
 				add_box(L, base, by + bht - f->bw[2], bx, bwid, f->bw[2], f->bc, 0, 0);
 				add_box(L, base, by, bx, f->bw[3], bht, f->bc, 0, 0);
@@ -3943,7 +4124,7 @@ static void fl_start(struct lay *L, struct fitem *f)
 	long by, bht;
 
 	L->fl = f;
-	L->fl_right = f->fl == CSS_FL_RIGHT;
+	L->fl_right = f->fl == CSS_FL_RIGHT && !L->measure;
 	f->x = L->fl_right ? L->width - ow : L->indent;
 	if (f->x < L->indent)
 		f->x = L->indent;
@@ -3954,6 +4135,8 @@ static void fl_start(struct lay *L, struct fitem *f)
 	/* its boxes: on the next line, reaching down (five, even those
 	 * with nothing to draw: fl_end may stretch them) */
 	L->fl_box = p->nboxes;
+	if (bx + bwid + f->m[1] + L->rin > p->need_w)
+		p->need_w = bx + bwid + f->m[1] + L->rin;
 	add_box_any(L, p->nlines, by, bx, bwid, bht, f->bg);
 	add_box_any(L, p->nlines, by, bx, bwid, f->bw[0], f->bc);
 	add_box_any(L, p->nlines, by + bht - f->bw[2], bx, bwid, f->bw[2], f->bc);
@@ -4020,7 +4203,7 @@ static nodeid float_run(struct lay *L, nodeid id)
 		cw = clamp_w(L, &b, avail, cw);
 		if (cw < L->em)
 			cw = L->em;
-		if (lay_cell(L, S, &f->gc, cw, 0, 1) < 0) {
+		if (lay_cell(L, S, &f->gc, cw, 0, 1, NULL) < 0) {
 			layout_free(&f->gc.pg);	/* (out of room: as far as here) */
 			break;
 		}
@@ -4036,7 +4219,7 @@ static nodeid float_run(struct lay *L, nodeid id)
 			/* (no narrower than min-width says) */
 			if (w > 0 && (w = clamp_w(L, &b, avail, w)) < cw) {
 				cw = w;
-				if (lay_cell(L, S, &f->gc, cw, 0, 1) < 0) {
+				if (lay_cell(L, S, &f->gc, cw, 0, 1, NULL) < 0) {
 					layout_free(&f->gc.pg);
 					break;
 				}
@@ -4065,6 +4248,8 @@ static nodeid float_run(struct lay *L, nodeid id)
 		/* its place: beside the others in the row, or a row below */
 		ow = cw + extra;
 		/* (2 units to spare: ems and percentages round) */
+		if (L->measure)
+			f->fl = CSS_FL_LEFT;
 		if ((f->fl == CSS_FL_LEFT ? lx + ow > rx + 2 : rx - ow < lx - 2)
 			&& (lx > 0 || rx < avail)) {
 			row_y += row_h;
@@ -4112,6 +4297,537 @@ static nodeid float_run(struct lay *L, nodeid id)
 	return last;
 }
 
+/* --- positioned elements: layers --------------------------------------- */
+
+/* a box 1 unit wide or less: text "visually hidden" for screen readers
+ * (width: 1px; overflow: hidden...), which stays in the text (see css.c:
+ * there's no icon here to stand for it) */
+static int tiny_box(const struct lay *L, const struct css_box *b)
+{
+	return (b->set & CSS_B_W) && b->w.u != CSS_U_AUTO && b->w.u != CSS_U_PCT
+		&& box_units(L, b->w, 0) <= 1;
+}
+
+/* the top, right, bottom and left a box says (has[i]: said, not auto), in
+ * units of a containing block w x h */
+static void offsets(const struct lay *L, const struct css_box *b, int w, long h,
+	int *off, int *has)
+{
+	int i;
+
+	for (i = 0; i < 4; i++) {
+		has[i] = (b->set & CSS_B_OFF(i)) && b->off[i].u != CSS_U_AUTO
+			&& b->off[i].u != CSS_U_NONE;
+		off[i] = has[i] ? box_units(L, b->off[i], i % 2 ? w : (int)h) : 0;
+	}
+}
+
+/* the look an element laid out on its own page starts from: L's now */
+static void look_save(const struct lay *L, struct pend *pe)
+{
+	pe->attr = (unsigned char)L->attr;
+	pe->face = (unsigned char)L->face;
+	pe->fg = (unsigned char)L->fg;
+	pe->nomarker = (unsigned char)L->nomarker;
+	pe->fsz = (short)L->fsz;
+	pe->cfsz = (short)L->cfsz;
+	pe->lh = L->lh;
+}
+
+static void look_swap(struct lay *L, struct pend *pe)
+{
+	struct pend t = *pe;
+
+	look_save(L, &t);
+	L->attr = pe->attr;
+	L->face = pe->face;
+	L->fg = pe->fg;
+	L->nomarker = pe->nomarker;
+	L->fsz = pe->fsz;
+	L->cfsz = pe->cfsz;
+	L->lh = pe->lh;
+	*pe = t;
+}
+
+/* page pg's own background and border, under what's in it (its content's
+ * top left is its origin) */
+static void layer_boxes(struct page *pg, const int *bw, const int *pd, int w,
+	long h, unsigned long bg, unsigned long bc)
+{
+	struct lbox *b;
+	int bx = -(bw[3] + pd[3]), bwid = bw[3] + pd[3] + w + pd[1] + bw[1], i;
+	long by = -(bw[0] + pd[0]), bht = bw[0] + pd[0] + h + pd[2] + bw[2];
+
+	b = xrealloc(pg->boxes, (pg->nboxes + 5) * sizeof *b);
+	if (b == NULL)
+		return;
+	memmove(b + 5, b, pg->nboxes * sizeof *b);
+	memset(b, 0, 5 * sizeof *b);
+	for (i = 0; i < 5; i++) {
+		b[i].bg = i ? bc : bg;
+		b[i].border_rgb = LBOX_NONE;
+		b[i].x = bx;
+		b[i].dy = by;
+		b[i].w = bwid;
+		b[i].h = bht;
+	}
+	b[1].h = bw[0];
+	b[2].dy = by + bht - bw[2];
+	b[2].h = bw[2];
+	b[3].w = bw[3];
+	b[4].x = bx + bwid - bw[1];
+	b[4].w = bw[1];
+	pg->boxes = b;
+	pg->nboxes += 5;
+	pg->boxes_cap = pg->nboxes;
+}
+
+/* how far page pg reaches: across (*w, if more), its lines (boxes: need_w
+ * has those that say how wide they are, and floats; a block's is as wide
+ * as it's let be); down (*h, if more), its lines and its boxes */
+static void page_extent(const struct lay *L, const struct page *pg, int *w, long *h)
+{
+	unsigned long ln;
+	long y = 0, *tops;
+	int lw, word;
+
+	tops = xmalloc((pg->nlines + 1) * sizeof *tops);
+	for (ln = 0; ln < pg->nlines; ln++) {
+		if (tops)
+			tops[ln] = y;
+		if (pg->heights)
+			y += pg->heights[ln].height;
+		if (w) {
+			line_widths(L, pg, ln, &lw, &word);
+			if (lw > *w)
+				*w = lw;
+		}
+	}
+	if (tops)
+		tops[pg->nlines] = y;
+	if (h && y > *h)
+		*h = y;
+	for (ln = 0; ln < pg->nboxes; ln++) {
+		const struct lbox *b = &pg->boxes[ln];
+
+		if (h && tops && b->line <= pg->nlines
+			&& tops[b->line] + b->dy + b->h > *h)
+			*h = tops[b->line] + b->dy + b->h;
+	}
+	xfree(tops);
+}
+
+/* the colours of page pg's spans (and its layers', already its own) as
+ * pal has them, into page p's palette: the screen has the page's */
+static void layer_colors(struct page *pg, const unsigned long *pal, struct page *p)
+{
+	unsigned long i;
+
+	for (i = 0; i < pg->nspans; i++)
+		if (pg->spans[i].color && pal)
+			pg->spans[i].color = (unsigned char)page_color(p,
+				pal[pg->spans[i].color - 1]);
+	for (i = 0; i < pg->nlayers; i++)
+		layer_colors(&pg->layers[i].pg, pal, p);
+}
+
+/*
+ * Element pe->node on a page of its own, a layer of L's page: absolute
+ * (or fixed) in containing block cb, or (rel) relative, moved by its
+ * offsets from where it is in the flow (cb: the room there, its top on
+ * line cb->line).
+ */
+static void lay_layer(struct lay *L, struct pend *pe, const struct cbox *cb,
+	int rel)
+{
+	struct page *p = L->p;
+	struct css_box b;
+	struct eattr ea;
+	struct gcell gc;
+	struct lay *S;
+	struct llayer *ly;
+	int m[4], bw[4], pd[4], off[4], has[4], i, cw, said, shrink, ext_w;
+	unsigned long ln, bg;
+	long h, ext_h, dy;
+	int x;
+
+	look_swap(L, pe);
+	scan_attrs(L->d, pe->node, &ea);
+	el_box(L, pe->node, &ea, &b);
+	box_sides(L, &b, cb->w, m, bw, pd);
+	if (rel)
+		for (i = 0; i < 4; i++)
+			if (m[i] < 0)
+				m[i] = 0;	/* (as box_open has them) */
+	offsets(L, &b, cb->w, rel ? 0 : cb->h, off, has);
+	bg = (b.set & CSS_B_BG) && b.bg != CSS_BG_NONE ? b.bg : LBOX_NONE;
+	if (bg != LBOX_NONE && dark(bg))
+		L->attr |= SA_ONDARK;
+	ext_w = m[1] + m[3] + bw[1] + bw[3] + pd[1] + pd[3];
+	said = (b.set & CSS_B_W) && b.w.u != CSS_U_AUTO;
+	shrink = 0;
+	if (said)
+		cw = box_units(L, b.w, cb->w);
+	else if (rel || (has[1] && has[3]))
+		cw = cb->w - (rel ? 0 : off[1] + off[3]) - ext_w;
+	else {
+		/* shrunk to fit, in the room from where it starts */
+		cw = (has[3] ? cb->w - off[3] : has[1] ? cb->w - off[1]
+			: cb->x + cb->w - pe->x) - ext_w;
+		shrink = 1;
+	}
+	cw = clamp_w(L, &b, cb->w, cw);
+	if (cw < 1)
+		cw = 1;
+	S = xmalloc(sizeof *S);
+	memset(&gc, 0, sizeof gc);
+	gc.node = pe->node;
+	gc.measure = shrink;
+	/* (measuring: lines aren't centred or put right, see lay_cell) */
+	if (S == NULL || lay_cell(L, S, &gc, cw, 0, !shrink, pd) < 0) {
+		layout_free(&gc.pg);
+		xfree(S);
+		look_swap(L, pe);
+		return;
+	}
+	if (shrink) {
+		/* as wide as its widest line or box (right floats were put
+		 * left to measure), then laid out again at that */
+		int w = gc.pg.need_w;
+
+		page_extent(L, &gc.pg, &w, NULL);
+		if ((w = clamp_w(L, &b, cb->w, w)) < 1)
+			w = 1;
+		if (w < cw)
+			cw = w;
+		gc.measure = 0;
+		if (lay_cell(L, S, &gc, cw, 0, 1, pd) < 0) {
+			layout_free(&gc.pg);
+			xfree(S);
+			look_swap(L, pe);
+			return;
+		}
+	}
+	xfree(S);
+	/* its height: as it says, or as tall as what's in it (its floats
+	 * too: it's a block of its own), or (top and bottom both said)
+	 * what's between them */
+	h = 0;
+	page_extent(L, &gc.pg, NULL, &h);
+	if (gc.pg.nlines && gc.pg.gap_line == gc.pg.nlines && h >= gc.pg.gap)
+		h -= gc.pg.gap;		/* (its floats' bottom margins) */
+	ext_h = m[0] + bw[0] + pd[0] + pd[2] + bw[2] + m[2];
+	if ((b.set & CSS_B_H) && b.h.u != CSS_U_AUTO && (b.h.u != CSS_U_PCT || !rel))
+		h = box_units(L, b.h, (int)cb->h);
+	else if (!rel && has[0] && has[2])
+		h = cb->h - off[0] - off[2] - ext_h;
+	if ((b.set & CSS_B_MAXH) && b.maxh.u != CSS_U_AUTO
+		&& h > box_units(L, b.maxh, (int)cb->h))
+		h = box_units(L, b.maxh, (int)cb->h);
+	if ((b.set & CSS_B_MINH) && b.minh.u != CSS_U_AUTO
+		&& h < box_units(L, b.minh, (int)cb->h))
+		h = box_units(L, b.minh, (int)cb->h);
+	if (h < 0)
+		h = 0;
+	layer_boxes(&gc.pg, bw, pd, cw, h, bg,
+		(b.set & CSS_B_BCOLOR) ? b.bcolor : 0);
+	/* where its border box goes */
+	ln = cb->line;
+	if (rel) {
+		dy = cb->dy + m[0] + (has[0] ? off[0] : has[2] ? -off[2] : 0);
+		x = cb->x + m[3] + (has[3] ? off[3] : has[1] ? -off[1] : 0);
+	} else {
+		if (has[0])
+			dy = cb->dy + off[0] + m[0];
+		else if (has[2])
+			dy = cb->dy + cb->h - off[2] - m[2] - (bw[0] + pd[0] + h + pd[2] + bw[2]);
+		else {
+			ln = pe->line;		/* (where it would have been) */
+			dy = m[0];
+		}
+		if (has[3])
+			x = cb->x + off[3] + m[3];
+		else if (has[1])
+			x = cb->x + cb->w - off[1] - m[1] - (bw[3] + pd[3] + cw + pd[1] + bw[1]);
+		else
+			x = pe->x + m[3];
+	}
+	if (GROW(L, layers, layers_cap, p->nlayers + 1, 4) < 0) {
+		layout_free(&gc.pg);
+		look_swap(L, pe);
+		return;
+	}
+	layer_colors(&gc.pg, gc.pg.palette, p);
+	ly = &p->layers[p->nlayers++];
+	memset(ly, 0, sizeof *ly);
+	ly->pg = gc.pg;
+	ly->node = pe->node;
+	ly->z = (b.set & CSS_B_Z) ? b.z : 0;
+	ly->line = ln;
+	ly->dy = dy + bw[0] + pd[0];
+	ly->x = x + bw[3] + pd[3];
+	if (pe->fixed && (has[0] || has[2])) {
+		/* the window's: below its top, or (1 + 1) up from its foot */
+		ly->fixed = has[0] ? 1 : 2;
+		ly->line = 0;
+		if (!has[0])
+			ly->dy = -(off[2] + m[2] + bw[2] + pd[2] + h);
+	}
+	xfree(gc.lmap);
+	look_swap(L, pe);
+}
+
+/* the absolute (and fixed) ones waiting for containing block cb (-1: the
+ * page's; -2: any, the page's end), laid out in c */
+static void emit_pend(struct lay *L, int cb, const struct cbox *c)
+{
+	int i, k = 0;
+
+	for (i = 0; i < L->npend; i++) {
+		struct pend pe = L->pend[i];
+
+		if (cb != -2 && pe.cb != cb) {
+			L->pend[k++] = pe;
+			continue;
+		}
+		if (pe.fixed) {
+			/* (fixed: in the window, as wide as it) */
+			struct cbox w;
+
+			w.line = c->line;
+			w.dy = 0;
+			w.x = 0;
+			w.w = L->vw;
+			w.h = 0;
+			lay_layer(L, &pe, &w, 0);
+		} else
+			lay_layer(L, &pe, c, 0);
+	}
+	L->npend = k;
+}
+
+/*
+ * Does fixed element id (box b) fit the window: no more than a third of
+ * its height (known: with the window's)? One that doesn't, kept there,
+ * would hide the page under it as it scrolls: a menu or a panel that
+ * scripts or a click would open and close, a <details> not folded.
+ */
+static int fixed_fits(struct lay *L, nodeid id, const struct css_box *b)
+{
+	struct gcell gc;
+	struct lay *S;
+	int m[4], bw[4], pd[4], w;
+	long h = 0;
+
+	if (L->m == NULL || L->m->view_h <= 0 || (S = xmalloc(sizeof *S)) == NULL)
+		return 1;
+	box_sides(L, b, L->vw, m, bw, pd);
+	w = (b->set & CSS_B_W) && b->w.u != CSS_U_AUTO ? box_units(L, b->w, L->vw)
+		: L->vw - m[1] - m[3] - bw[1] - bw[3] - pd[1] - pd[3];
+	memset(&gc, 0, sizeof gc);
+	gc.node = id;
+	if (lay_cell(L, S, &gc, w > 1 ? w : 1, 0, 1, NULL) == 0)
+		page_extent(L, &gc.pg, NULL, &h);
+	layout_free(&gc.pg);
+	xfree(S);
+	return h + bw[0] + pd[0] + pd[2] + bw[2] <= L->m->view_h / 3;
+}
+
+/*
+ * Positioned element id (box b) as enter() meets it: an absolute or fixed
+ * one waits for its containing block's end; a block moved by top, left...
+ * (relative) is laid out now, as a layer over the room it keeps. 1 when
+ * it's taken care of so, 0 when it goes in the flow (a containing block
+ * at most).
+ */
+static int positioned(struct lay *L, nodeid id, const struct css_box *b,
+	int block)
+{
+	struct pend pe;
+
+	memset(&pe, 0, sizeof pe);
+	pe.node = id;
+	look_save(L, &pe);
+	if (b->pos == CSS_PO_ABSOLUTE || b->pos == CSS_PO_FIXED) {
+		if (!out_of_flow(L, b))
+			return 0;
+		if (b->pos == CSS_PO_FIXED && !fixed_fits(L, id, b))
+			return 0;
+		if (L->npend == L->pend_cap) {
+			int n = L->pend_cap ? L->pend_cap * 2 : 8;
+			struct pend *q = xrealloc(L->pend, (size_t)n * sizeof *q);
+
+			if (q == NULL)
+				return 0;
+			L->pend = q;
+			L->pend_cap = n;
+		}
+		pe.cb = L->cb_top;
+		pe.fixed = b->pos == CSS_PO_FIXED;
+		/* its static position: a block's on the next line, an inline's
+		 * where the text has got to; in an inline containing block,
+		 * where that starts */
+		if (L->cb_top >= 0 && L->st[L->cb_top].cb == 2) {
+			pe.line = L->st[L->cb_top].cb_in->line;
+			pe.x = L->st[L->cb_top].cb_in->x;
+		} else if (block || !L->line_open) {
+			pe.line = here_line(L) + (L->line_open ? 1 : 0);
+			pe.x = L->indent;
+		} else {
+			pe.line = here_line(L);
+			pe.x = L->col;
+		}
+		L->pend[L->npend++] = pe;
+		return 1;
+	}
+	if (b->pos == CSS_PO_RELATIVE && block) {
+		int off[4], has[4], i, moved = 0;
+		struct cbox c;
+		unsigned long k;
+
+		offsets(L, b, L->width - L->indent, 0, off, has);
+		for (i = 0; i < 4; i++)
+			moved |= has[i] && off[i] != 0;
+		if (!moved)
+			return 0;
+		/* in the flow: its margins and the room it takes; drawn moved */
+		float_flush(L);
+		block_break(L, 0);
+		flush_blank(L);
+		c.line = L->p->nlines;
+		c.dy = 0;
+		c.x = L->indent;
+		c.w = L->width - L->indent;
+		c.h = 0;
+		k = L->p->nlayers;
+		lay_layer(L, &pe, &c, 1);
+		if (k < L->p->nlayers && L->p->layers[k].pg.nboxes >= 5) {
+			/* the room it keeps: its border box (its first box, see
+			 * layer_boxes), its margins around; its top there */
+			int m[4], bw[4], pd[4];
+			long bh = L->p->layers[k].pg.boxes[0].h;
+
+			box_sides(L, b, c.w, m, bw, pd);
+			if (m[0] > 0) {
+				margin(L, m[0]);
+				L->p->layers[k].dy -= m[0];
+			}
+			flush_blank(L);
+			L->p->layers[k].line = L->p->nlines;
+			vspace(L, (int)bh);
+			if (m[2] > 0)
+				margin(L, m[2]);
+		}
+		return 1;
+	}
+	return 0;
+}
+
+/* a link of the page or of a layer, as the page's list will have it */
+struct lref {
+	struct page *pg;		/* whose */
+	unsigned long k;		/* its index there */
+	unsigned long line;		/* where it is in the page */
+};
+
+/* the links of pg's layers (and theirs), at line (their top layer's) */
+static unsigned long layer_links(struct page *pg, struct lref *r, unsigned long n,
+	long line)
+{
+	unsigned long i, k;
+
+	for (i = 0; i < pg->nlayers; i++) {
+		struct llayer *ly = &pg->layers[i];
+		unsigned long at = line >= 0 ? (unsigned long)line
+			: ly->fixed ? 0 : ly->line;
+
+		for (k = 0; k < ly->pg.nlinks; k++) {
+			r[n].pg = &ly->pg;
+			r[n].k = k;
+			r[n++].line = at;
+		}
+		n = layer_links(&ly->pg, r, n, (long)at);
+	}
+	return n;
+}
+
+static unsigned long count_links(const struct page *pg)
+{
+	unsigned long i, n = 0;
+
+	for (i = 0; i < pg->nlayers; i++)
+		n += pg->layers[i].pg.nlinks + count_links(&pg->layers[i].pg);
+	return n;
+}
+
+/* page pg's spans' links (1-based, its own) as map has them; its layers'
+ * by theirs */
+static void renumber(struct page *pg, struct lref *r, unsigned long n)
+{
+	unsigned long i, *map;
+
+	if (pg->nlinks && (map = xmalloc(pg->nlinks * sizeof *map)) != NULL) {
+		for (i = 0; i < n; i++)
+			if (r[i].pg == pg)
+				map[r[i].k] = i;
+		for (i = 0; i < pg->nspans; i++)
+			if (pg->spans[i].link)
+				pg->spans[i].link = (unsigned short)(map[pg->spans[i].link - 1] + 1);
+		xfree(map);
+	}
+	for (i = 0; i < pg->nlayers; i++)
+		renumber(&pg->layers[i].pg, r, n);
+}
+
+/*
+ * The layers' links into the page's list, in the order of the lines they
+ * are at (a layer's: the line its top layer hangs from), so that they're
+ * chosen and followed as any other; the spans' links renumbered.
+ */
+static void merge_links(struct lay *L)
+{
+	struct page *p = L->p;
+	unsigned long n = count_links(p), m, i, j, k;
+	struct lref *r, *t;
+	struct llink *nl;
+
+	if (n == 0 || p->nlinks + n > 0xFFFE)
+		return;
+	m = p->nlinks + n;
+	r = xmalloc(m * sizeof *r);
+	t = xmalloc(m * sizeof *t);
+	nl = xmalloc(m * sizeof *nl);
+	if (r == NULL || t == NULL || nl == NULL) {
+		xfree(r);
+		xfree(t);
+		xfree(nl);
+		return;
+	}
+	for (i = 0; i < p->nlinks; i++) {
+		r[i].pg = p;
+		r[i].k = i;
+		r[i].line = p->links[i].line;
+	}
+	layer_links(p, r + p->nlinks, 0, -1);
+	/* by line, the page's first on a line they share (stable: the
+	 * page's are in order, and the layers' are few) */
+	for (k = 0; k < m; k++) {
+		for (j = k; j > 0 && t[j - 1].line > r[k].line; j--)
+			t[j] = t[j - 1];
+		t[j] = r[k];
+	}
+	for (k = 0; k < m; k++) {
+		nl[k] = t[k].pg->links[t[k].k];
+		nl[k].line = t[k].line;
+	}
+	renumber(p, t, m);
+	xfree(p->links);
+	p->links = nl;
+	p->nlinks = p->links_cap = m;
+	xfree(r);
+	xfree(t);
+}
+
 int layout_run(struct page *p, const struct doc *d, int width,
 	enum term_cs cs, unsigned long max_lines, size_t byte_cap,
 	const struct forms *fs)
@@ -4143,17 +4859,34 @@ int layout_run_m(struct page *p, const struct doc *d, int width,
 	L->m = m;
 	L->em = m && m->em > 0 ? m->em : 1;
 	L->fsz = 120;			/* (the screen's usual 12 pixels) */
+	L->cfsz = 160;			/* (a browser's usual 16) */
 	L->width = p->width;
 	L->base_w = p->width;
 	L->vw = m ? p->width : p->width * 8;
 	L->max_lines = max_lines;
 	L->heading_line = -1;
+	L->layers_ok = m != NULL;
+	L->cb_top = -1;
 	set_span(L);
 	if (d->nnodes > 1)
 		walk(L, 1, 0);
 	end_line(L);
 	float_flush(L);
 	fl_end(L);
+	if (L->npend) {
+		/* (absolute ones with no positioned box around: the page's) */
+		struct cbox c;
+
+		c.line = 0;
+		c.dy = 0;
+		c.x = 0;
+		c.w = p->width;
+		c.h = lines_h(L, 0);
+		emit_pend(L, -2, &c);
+	}
+	xfree(L->pend);
+	if (p->nlayers)
+		merge_links(L);
 	/* (boxes reserved that had nothing to draw in the end: gone) */
 	{
 		unsigned long i, k = 0;
@@ -4182,6 +4915,9 @@ void layout_free(struct page *p)
 	xfree(p->boxes);
 	xfree(p->tops);
 	xfree(p->palette);
+	while (p->nlayers)
+		layout_free(&p->layers[--p->nlayers].pg);
+	xfree(p->layers);
 	memset(p, 0, sizeof *p);
 }
 

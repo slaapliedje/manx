@@ -249,21 +249,20 @@ static void draw_line(int row, long ln)
 
 /* how wide n bytes at s are in span sp's look: text in its font, or the
  * images the bytes stand for */
-static int run_w(const struct lspan *sp, const char *s, int n)
+static int run_w(const struct page *p, const struct lspan *sp, const char *s, int n)
 {
 	const struct lmetrics *m = scr_metrics();
 
 	if (sp->face & LF_IMAGE)
-		return layout_images_w(&g_page, s, n);
+		return layout_images_w(p, s, n);
 	return m->width(m->ctx, sp->attr, sp->face, s, n);
 }
 
 /* the images n bytes at s stand for, x across, sitting on the baseline
  * base */
-static void draw_images(int x, int base, const char *s, int n, int attr)
+static void draw_images(const struct page *p, int x, int base, const char *s, int n,
+	int attr)
 {
-	const struct page *p = &g_page;
-
 	for (; n >= LAYOUT_IMG_BYTES; s += LAYOUT_IMG_BYTES, n -= LAYOUT_IMG_BYTES) {
 		long k = layout_image(p, s);
 
@@ -298,20 +297,20 @@ static int text_w_px(const struct lline *l, unsigned long s, unsigned long off,
 		sp = &p->spans[s];
 		if (s + 1 < p->nspans && p->spans[s + 1].off < end)
 			next = p->spans[s + 1].off;
-		w += run_w(sp, p->text + off, (int)(next - off));
+		w += run_w(p, sp, p->text + off, (int)(next - off));
 		off = next;
 	}
 	return w;
 }
 
-/* line ln of the page in fonts, its top at y in the pane */
-static void draw_line_px(int y, long ln)
+/* line ln of page p (the page, or a layer of it) in fonts, its top at y
+ * in the pane, x0 across */
+static void draw_line_px(const struct page *p, int x0, int y, long ln)
 {
-	const struct page *p = &g_page;
 	const struct lline *l = &p->lines[ln];
 	const struct lheight *lh = &p->heights[ln];
 	unsigned long off = l->off, end = l->off + l->len, s = l->span;
-	int x = l->indent;
+	int x = x0 + l->indent;
 
 	while (off < end) {
 		unsigned long next = end;
@@ -328,17 +327,17 @@ static void draw_line_px(int y, long ln)
 		a = sp->asc ? sp->asc : lh->ascent;
 
 		if (sp->face & LF_IMAGE)
-			draw_images(x, y + a, p->text + off, (int)(next - off),
+			draw_images(p, x, y + a, p->text + off, (int)(next - off),
 				cell_attr(sp->attr, sp->link));	/* (pictures: no colour) */
 		else
 			scr_text(x, y, a, p->text + off, (int)(next - off),
 				cell_attr(sp->attr & (sp->face & (LF_ITALIC | LF_HMASK) ?
 				~SA_UNDER : 0xFF), sp->link) | CA_FG(sp->color), sp->face);
-		x += run_w(sp, p->text + off, (int)(next - off));
+		x += run_w(p, sp, p->text + off, (int)(next - off));
 		off = next;
 	}
 	/* a find match on this line */
-	if (ln == g_find_line && g_find[0]) {
+	if (p == &g_page && ln == g_find_line && g_find[0]) {
 		unsigned long mo = (unsigned long)g_find_off;
 		size_t k = strlen(g_find);
 
@@ -350,6 +349,84 @@ static void draw_line_px(int y, long ln)
 				p->text + mo, (int)k, CA_MARK | CA_REV, p->spans[ms].face);
 		}
 	}
+}
+
+/* the top of line ln of page p, below its first's (its foot, past the
+ * last) */
+static long line_top(struct page *p, unsigned long ln)
+{
+	const long *t = layout_tops(p);
+
+	if (t == NULL)
+		return 0;
+	return t[ln < p->nlines ? ln : p->nlines];
+}
+
+/* page p's layers in the order they're drawn: by z, the document's among
+ * equals (NULL: none, or no memory) */
+static long *layer_order(const struct page *p)
+{
+	unsigned long i, k;
+	long *ord;
+
+	if (p->nlayers == 0 || (ord = xmalloc(p->nlayers * sizeof *ord)) == NULL)
+		return NULL;
+	for (i = 0; i < p->nlayers; i++) {
+		/* (insertion: there are few) */
+		for (k = i; k > 0 && p->layers[ord[k - 1]].z > p->layers[i].z; k--)
+			ord[k] = ord[k - 1];
+		ord[k] = (long)i;
+	}
+	return ord;
+}
+
+/* where layer ly of page p goes in the pane: its line 0's top (p's at y0,
+ * x0 across), and across; h: the pane's height */
+static long layer_y(struct page *p, const struct llayer *ly, long y0, int h)
+{
+	if (ly->fixed == 1)
+		return ly->dy;
+	if (ly->fixed == 2)
+		return h + ly->dy;
+	return y0 + line_top(p, ly->line) + ly->dy;
+}
+
+/* page p's layers (positioned elements), its line 0's top at y0 in the
+ * pane, x0 across, in z order, each one's boxes, then its lines, then its
+ * own layers; h: the pane's height */
+static void draw_layers(struct page *p, int x0, long y0, int h)
+{
+	unsigned long i, n = p->nlayers;
+	long *ord = layer_order(p);
+
+	if (ord == NULL)
+		return;
+	for (i = 0; i < n; i++) {
+		struct llayer *ly = &p->layers[ord[i]];
+		struct page *lp = &ly->pg;
+		long ly0 = layer_y(p, ly, y0, h), top;
+		int lx = (ly->fixed ? 0 : x0) + ly->x;
+		unsigned long b, ln;
+
+		for (b = 0; b < lp->nboxes; b++) {
+			const struct lbox *bx = &lp->boxes[b];
+			long by = ly0 + line_top(lp, bx->line) + bx->dy;
+
+			if (by < h && by + bx->h > 0)
+				scr_rect(lx + bx->x, (int)by, bx->w, (int)bx->h, bx->bg,
+					bx->border, bx->border_rgb);
+		}
+		if (lp->heights)
+			for (ln = 0; ln < lp->nlines; ln++) {
+				top = ly0 + line_top(lp, ln);
+				if (top >= h)
+					break;
+				if (top + lp->heights[ln].height + lp->heights[ln].over > 0)
+					draw_line_px(lp, lx, (int)top, (long)ln);
+			}
+		draw_layers(lp, lx, ly0, h);
+	}
+	xfree(ord);
 }
 
 /* what the status line says about a selected form field */
@@ -492,12 +569,15 @@ static void draw(int full)
 				;
 			for (; ln < g_top; ln++)
 				if (tops[ln + 1] + g_page.heights[ln].over > y0)
-					draw_line_px((int)(tops[ln] - y0), ln);
+					draw_line_px(&g_page, 0, (int)(tops[ln] - y0), ln);
 		}
 		for (ln = g_top; ln < (long)g_page.nlines && y < h; ln++) {
-			draw_line_px(y, ln);
+			draw_line_px(&g_page, 0, y, ln);
 			y += g_page.heights[ln].height;
 		}
+		/* positioned elements, over it all */
+		if (tops)
+			draw_layers(&g_page, 0, -tops[g_top], h);
 	} else if (g_have_page)
 		for (i = 0; i < rows; i++) {
 			long ln = g_top + i;
@@ -537,6 +617,7 @@ static const struct lmetrics *page_metrics(void)
 	g_lm = *m;
 	g_lm.image = g_images && scr_pixels() ? image_size : NULL;
 	g_lm.image_ctx = NULL;
+	g_lm.view_h = scr_pane_h();
 	return &g_lm;
 }
 
@@ -2193,11 +2274,11 @@ static long link_at(int row, int col)
 	return -1;
 }
 
-/* the link (0-based) of line ln at x across, yr below the line's top (a
- * line above, its tall content reaching down: only what does), or -1 */
-static long link_on_line(long ln, int x, long yr)
+/* the link (0-based) of line ln of page p (the page, or a layer) at x
+ * across it, yr below the line's top (a line above, its tall content
+ * reaching down: only what does), or -1 */
+static long link_on_line(const struct page *p, long ln, int x, long yr)
 {
-	const struct page *p = &g_page;
 	const struct lline *l = &p->lines[ln];
 	unsigned long off = l->off, end = l->off + l->len, s = l->span;
 	int c = l->indent;
@@ -2211,7 +2292,7 @@ static long link_on_line(long ln, int x, long yr)
 		sp = &p->spans[s];
 		if (s + 1 < p->nspans && p->spans[s + 1].off < end)
 			next = p->spans[s + 1].off;
-		w = run_w(sp, p->text + off, (int)(next - off));
+		w = run_w(p, sp, p->text + off, (int)(next - off));
 		if (x >= c && x < c + w) {
 			/* (a descender's worth below its baseline) */
 			if (yr >= p->heights[ln].height
@@ -2225,6 +2306,34 @@ static long link_on_line(long ln, int x, long yr)
 	return -1;
 }
 
+/* the link (0-based) under x, y of the pane in page p's layers, the top
+ * one first (p's line 0's top at y0, x0 across; h: the pane's height),
+ * or -1 */
+static long layer_link_at(struct page *p, int x0, long y0, int x, int y, int h)
+{
+	long *ord = layer_order(p), k = -1, i;
+
+	if (ord == NULL)
+		return -1;
+	for (i = (long)p->nlayers - 1; i >= 0 && k < 0; i--) {
+		struct llayer *ly = &p->layers[ord[i]];
+		struct page *lp = &ly->pg;
+		long ly0 = layer_y(p, ly, y0, h), top;
+		int lx = (ly->fixed ? 0 : x0) + ly->x;
+		unsigned long ln;
+
+		if ((k = layer_link_at(lp, lx, ly0, x, y, h)) >= 0 || lp->heights == NULL)
+			continue;
+		for (ln = 0; ln < lp->nlines && k < 0; ln++) {
+			top = ly0 + line_top(lp, ln);
+			if (y >= top && y < top + lp->heights[ln].height + lp->heights[ln].over)
+				k = link_on_line(lp, (long)ln, x - lx, y - top);
+		}
+	}
+	xfree(ord);
+	return k;
+}
+
 /* the link (0-based) under x, y of the pane, in fonts; or -1 */
 static long link_at_px(int x, int y)
 {
@@ -2235,6 +2344,10 @@ static long link_at_px(int x, int y)
 
 	if (!g_have_page || !p->heights || x < 0 || y < 0)
 		return -1;
+	/* (positioned elements: over the rest) */
+	if (p->nlayers && (tops = layout_tops(&g_page)) != NULL
+		&& (k = layer_link_at(&g_page, 0, -tops[g_top], x, y, scr_pane_h())) >= 0)
+		return k;
 	for (ln = g_top; ln < (long)p->nlines; ln++) {
 		if (y < ly + p->heights[ln].height)
 			break;
@@ -2242,7 +2355,7 @@ static long link_at_px(int x, int y)
 	}
 	if (ln >= (long)p->nlines)
 		return -1;
-	if ((k = link_on_line(ln, x, y - ly)) >= 0)
+	if ((k = link_on_line(p, ln, x, y - ly)) >= 0)
 		return k;
 	/* a tall cell's line (a picture) reaching down from a band above */
 	if (p->max_over > 0 && (tops = layout_tops(&g_page)) != NULL) {
@@ -2250,7 +2363,7 @@ static long link_at_px(int x, int y)
 
 		for (l2 = ln - 1; l2 >= 0 && ya - tops[l2 + 1] < p->max_over; l2--)
 			if (ya < tops[l2 + 1] + p->heights[l2].over
-				&& (k = link_on_line(l2, x, ya - tops[l2])) >= 0)
+				&& (k = link_on_line(p, l2, x, ya - tops[l2])) >= 0)
 				return k;
 	}
 	return -1;
