@@ -215,7 +215,8 @@ void pimg_begin(const struct doc *d, const struct url *base, const char *page_ur
 	g_local = strncmp(g_referer, "file:", 5) == 0;
 	for (id = 2; id < d->nnodes; id++)
 		if (d->nodes[id].type == NODE_ELEM
-			&& (d->nodes[id].tag == TAG_IMG || d->nodes[id].tag == TAG_IMAGE))
+			&& (d->nodes[id].tag == TAG_IMG || d->nodes[id].tag == TAG_IMAGE
+			|| doc_object_image(d, (nodeid)id)))
 			n++;
 	if (n == 0)
 		return;
@@ -228,8 +229,18 @@ void pimg_begin(const struct doc *d, const struct url *base, const char *page_ur
 		struct pent *e;
 		const char *src;
 
-		if (d->nodes[id].type != NODE_ELEM
-			|| (d->nodes[id].tag != TAG_IMG && d->nodes[id].tag != TAG_IMAGE))
+		if (d->nodes[id].type != NODE_ELEM)
+			continue;
+		if (d->nodes[id].tag == TAG_OBJECT) {
+			/* (an <object> showing a picture: as an <img>) */
+			if ((src = doc_object_image(d, (nodeid)id)) == NULL)
+				continue;
+			e = &g_e[g_n++];
+			e->node = (nodeid)id;
+			e->src = src;
+			continue;
+		}
+		if (d->nodes[id].tag != TAG_IMG && d->nodes[id].tag != TAG_IMAGE)
 			continue;
 		e = &g_e[g_n++];
 		e->node = (nodeid)id;
@@ -698,6 +709,13 @@ static int dec_row(void *ctx, int y, const unsigned char *px, const unsigned cha
 	return 0;
 }
 
+static void dec_alpha(void *ctx, int y, const unsigned char *rgba)
+{
+	struct decoding *g = ctx;
+
+	scr_image_alpha(g->e->scr, y, rgba);
+}
+
 static int decode_one(struct pent *e, int w, int h,
 	int (*poll)(void *ctx, int shown), void *ctx)
 {
@@ -718,6 +736,7 @@ static int decode_one(struct pent *e, int w, int h,
 	o.want_h = h;
 	o.size = dec_size;
 	o.row = dec_row;
+	o.alpha = dec_alpha;
 	o.ctx = &g;
 	px_sink(&o, &s);
 	/* (a JPEG keeps its whole file: room for that and its state) */

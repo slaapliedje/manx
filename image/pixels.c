@@ -8,9 +8,10 @@
  * its source rows arrive. An interlaced GIF's come out of order: then each
  * target row is the one source row ys(t), sent as soon as that comes.
  *
- * Transparency is all or nothing (it becomes an X mask): a target pixel
- * is shown when at least half of the source pixels it covers are, in the
- * average colour of those.
+ * Transparency becomes an X mask: a target pixel is shown when the source
+ * pixels it covers are half opaque or more (their average alpha), in their
+ * average colour, weighted by alpha. A row with pixels in between goes to
+ * the caller as RGBA too, to be blended.
  *
  * Colours with fewer than 8 bits a channel (a colour cube, greys, 5- or
  * 6-bit TrueColor) are dithered with an 8x8 ordered (Bayer) matrix. That
@@ -54,8 +55,10 @@ struct px_state {
 	int rows;		/* and how many source rows are in acc */
 	int next_y;		/* the source row expected next */
 	long *xs;		/* tw + 1 */
-	unsigned long *acc;	/* tw * 4: r, g, b of the pixels shown, and
-				 * how many were */
+	unsigned long *acc;	/* tw * 4: r, g, b (masked: times alpha >>
+				 * ashift), and the alpha (masked) or the
+				 * count */
+	int ashift;		/* (so many pixels averaged can't overflow) */
 	unsigned char *line;	/* a target row, RGBA */
 	unsigned long *pv;	/* its pixel values */
 	unsigned char *px, *mask;
@@ -165,10 +168,17 @@ static int send(struct px_out *o, struct px_state *st, int t, const unsigned cha
 	int x, w = st->tw;
 
 	if (st->masked) {
+		int part = 0;
+
 		memset(st->mask, 0, ((size_t)w + 7) / 8);
-		for (x = 0; x < w; x++)
+		for (x = 0; x < w; x++) {
 			if (line[x * 4 + 3] >= 128)
 				st->mask[x >> 3] |= (unsigned char)(f->bit_msb ? 0x80 >> (x & 7) : 1 << (x & 7));
+			if (line[x * 4 + 3] && line[x * 4 + 3] < 255)
+				part = 1;
+		}
+		if (part && o->alpha)
+			o->alpha(o->ctx, t, line);
 	}
 	switch (f->kind) {
 	case PX_TRUE:
@@ -258,8 +268,17 @@ static void gather(struct px_state *st, const unsigned char *rgba)
 		long i = st->xs[x], e = st->xs[x + 1] > i ? st->xs[x + 1] : i + 1;
 		const unsigned char *p = rgba + i * 4;
 
-		for (; i < e; i++, p += 4)
-			if (!st->masked || p[3] >= 128) {
+		if (st->masked)
+			for (; i < e; i++, p += 4) {
+				unsigned k = p[3] >> st->ashift;
+
+				a[0] += p[0] * k;
+				a[1] += p[1] * k;
+				a[2] += p[2] * k;
+				a[3] += p[3];
+			}
+		else
+			for (; i < e; i++, p += 4) {
 				a[0] += p[0];
 				a[1] += p[1];
 				a[2] += p[2];
@@ -279,7 +298,20 @@ static void average(struct px_state *st, int rows)
 		long nx = st->xs[x + 1] > st->xs[x] ? st->xs[x + 1] - st->xs[x] : 1;
 		unsigned long n = a[3];
 
-		if (n == 0 || n * 2 < (unsigned long)(nx * rows)) {
+		if (st->masked) {
+			/* (alpha: the average; colour: by alpha) */
+			unsigned long al = avg(n, (unsigned long)(nx * rows));
+			unsigned long wsum = n >> st->ashift;
+
+			l[3] = (unsigned char)(al > 255 ? 255 : al);
+			if (wsum == 0)
+				l[0] = l[1] = l[2] = 0;
+			else {
+				l[0] = (unsigned char)((a[0] + wsum / 2) / wsum);
+				l[1] = (unsigned char)((a[1] + wsum / 2) / wsum);
+				l[2] = (unsigned char)((a[2] + wsum / 2) / wsum);
+			}
+		} else if (n == 0 || n * 2 < (unsigned long)(nx * rows)) {
 			l[0] = l[1] = l[2] = l[3] = 0;
 		} else {
 			l[0] = (unsigned char)avg(a[0], n);
@@ -422,6 +454,14 @@ static int on_size(void *ctx, struct img_info *in, int *shift)
 		return -1;
 	for (x = 0; x <= tw; x++)
 		st->xs[x] = (long)x * st->sw / tw;
+	{
+		/* (r times alpha, over the most pixels averaged, in 32 bits) */
+		unsigned long n = (unsigned long)((st->sw + tw - 1) / tw + 1)
+			* (unsigned long)((st->sh + th - 1) / th + 1);
+
+		while (st->ashift < 8 && n > (0xFFFFFFFFUL / 255 >> (8 - st->ashift)) / 255)
+			st->ashift++;
+	}
 	memset(st->acc, 0, (size_t)tw * 4 * sizeof *st->acc);
 	tables(st, o->fmt);
 	return o->size(o->ctx, (int)tw, (int)th, st->masked);

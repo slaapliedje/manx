@@ -69,6 +69,10 @@ void doc_attr_end(struct doc *d);
  */
 const char *doc_srcset_pick(const char *ss, int target, size_t *len);
 
+/* The picture an <object> id shows (its data=: a PNG, GIF or JPEG, by its
+ * type= or its name), or NULL: it shows what's in it instead. */
+const char *doc_object_image(const struct doc *d, nodeid id);
+
 /* Take a node (and what's inside) out of its parent's children; its
  * space stays used until the document is freed. */
 void doc_unlink(struct doc *d, nodeid id);

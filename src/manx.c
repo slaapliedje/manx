@@ -438,11 +438,11 @@ static void draw_layers(struct page *p, int x0, long y0, int h)
 		int lx = (ly->fixed ? 0 : x0) + ly->x;
 		unsigned long b, ln;
 
-		for (b = 0; b < lp->nboxes; b++) {
-			const struct lbox *bx = &lp->boxes[b];
+		for (b = 0; b < lp->nboxes * LBOX_KINDS; b++) {
+			const struct lbox *bx = &lp->boxes[b % lp->nboxes];
 			long by = ly0 + line_top(lp, bx->line) + bx->dy;
 
-			if (by < h && by + bx->h > 0) {
+			if (bx->kind == b / lp->nboxes && by < h && by + bx->h > 0) {
 				scr_rect(lx + bx->x, (int)by, bx->w, (int)bx->h, bx->bg,
 					bx->border, bx->border_rgb);
 				draw_bg_pic(bx->bgi, lx + bx->x, by, bx->w, bx->h, 0);
@@ -592,11 +592,12 @@ static void draw(int full)
 					g_page.page_bg, 0, 0);
 			if (g_page.page_bgi)
 				draw_bg_pic(g_page.page_bgi, 0, -y0, scr_pane_w(), ph, PANE_OUT);
-			for (b = 0; b < g_page.nboxes; b++) {
-				const struct lbox *bx = &g_page.boxes[b];
+			/* (blocks', then floats', then inline boxes') */
+			for (b = 0; b < g_page.nboxes * LBOX_KINDS; b++) {
+				const struct lbox *bx = &g_page.boxes[b % g_page.nboxes];
 				long by;
 
-				if (bx->line > g_page.nlines)
+				if (bx->line > g_page.nlines || bx->kind != b / g_page.nboxes)
 					continue;
 				by = tops[bx->line] - y0 + bx->dy;
 				if (by < h && by + bx->h > 0) {

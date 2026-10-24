@@ -96,7 +96,7 @@ struct lanchor {
 /*
  * With metrics, a box under the text: a table's or a cell's background
  * and border, its top dy below the top of line `line`, x across, w x h.
- * Drawn in order, before the text.
+ * Drawn before the text, by kind, in order.
  */
 #define LBOX_NONE	0xFFFFFFFFUL	/* no fill, no border colour */
 struct lbox {
@@ -109,7 +109,13 @@ struct lbox {
 	unsigned short bgi;		/* its background picture: the page's
 					 * (the top one's) bgimgs[bgi - 1]; 0:
 					 * none */
+	unsigned char kind;		/* LBOX_BLOCK...: what it is the box of,
+					 * which says when it's drawn */
 };
+
+/* the boxes are drawn blocks' first, then floats', then inline ones' (as
+ * CSS paints them), each kind in order */
+enum { LBOX_BLOCK, LBOX_FLOAT, LBOX_INLINE, LBOX_KINDS };
 
 /*
  * With metrics, a box's background picture (CSS background-image): drawn

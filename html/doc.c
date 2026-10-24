@@ -297,6 +297,43 @@ const char *doc_srcset_pick(const char *ss, int target, size_t *len)
 	return bx;
 }
 
+static int ends_ci(const char *s, size_t n, const char *suf)
+{
+	size_t k = strlen(suf), i;
+
+	if (n < k)
+		return 0;
+	for (i = 0; i < k; i++) {
+		char c = s[n - k + i];
+
+		if (c >= 'A' && c <= 'Z')
+			c = (char)(c - 'A' + 'a');
+		if (c != suf[i])
+			return 0;
+	}
+	return 1;
+}
+
+const char *doc_object_image(const struct doc *d, nodeid id)
+{
+	const char *v = doc_attr(d, id, ATTR_DATA), *t = doc_attr(d, id, ATTR_TYPE);
+	size_t n;
+
+	if (d->nodes[id].tag != TAG_OBJECT || v == NULL || *v == '\0')
+		return NULL;
+	if (t && *t)
+		return strncmp(t, "image/png", 9) == 0 || strncmp(t, "image/gif", 9) == 0
+			|| strncmp(t, "image/jpeg", 10) == 0 || strncmp(t, "image/jpg", 9) == 0
+			? v : NULL;
+	if (strncmp(v, "data:", 5) == 0)
+		return strncmp(v + 5, "image/png", 9) == 0 || strncmp(v + 5, "image/gif", 9) == 0
+			|| strncmp(v + 5, "image/jpeg", 10) == 0 || strncmp(v + 5, "image/jpg", 9) == 0
+			? v : NULL;
+	n = strcspn(v, "?#");
+	return ends_ci(v, n, ".png") || ends_ci(v, n, ".gif") || ends_ci(v, n, ".jpg")
+		|| ends_ci(v, n, ".jpeg") ? v : NULL;
+}
+
 void doc_attr_add(struct doc *d, int attr, const char *value)
 {
 	size_t n = strlen(value);

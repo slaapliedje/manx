@@ -49,6 +49,9 @@ struct px_out {
 	 * 0, or -1 to stop */
 	int (*row)(void *ctx, int y, const unsigned char *px,
 		const unsigned char *mask);
+	/* (may be NULL) row y again, before it, as RGBA: only a row with
+	 * pixels neither shown nor not (alpha between: to blend) */
+	void (*alpha)(void *ctx, int y, const unsigned char *rgba);
 	void *ctx;
 	struct px_state *st;	/* (its own) */
 };

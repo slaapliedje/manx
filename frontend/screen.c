@@ -936,6 +936,13 @@ void *scr_image_new(int w, int h, int masked)
 	return NULL;
 }
 
+void scr_image_alpha(void *img, int y, const unsigned char *rgba)
+{
+	(void)img;
+	(void)y;
+	(void)rgba;
+}
+
 void scr_image_row(void *img, int y, const unsigned char *px,
 	const unsigned char *mask)
 {

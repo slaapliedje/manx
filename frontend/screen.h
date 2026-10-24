@@ -156,6 +156,10 @@ void scr_image_row(void *img, int y, const unsigned char *px,
 	const unsigned char *mask);
 void scr_image_draw(void *img, int x, int y, int w, int h, int attr);
 void scr_image_free(void *img);
+/* Row y of an image again as RGBA, after scr_image_row: its pixels
+ * partly transparent are blended with what's under them (a small
+ * image's; others' stay all or nothing). */
+void scr_image_alpha(void *img, int y, const unsigned char *rgba);
 
 /* Leave the screen for a moment (e.g. to show a long message) and come
  * back. */

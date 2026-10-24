@@ -1249,7 +1249,11 @@ struct ximg {
 	int new0, new1;			/* rows put since it was last painted
 					 * (new0 > new1: none) */
 	XImage *row, *mrow;		/* a row of each: data pointed in */
+	unsigned char *rgba;		/* w x h, RGBA: rows to blend (NULL: none) */
+	unsigned char *blend;		/* h: row y is in rgba */
 };
+
+#define XIMG_BLEND_MAX	(256L * 1024)	/* pixels: no bigger image blends */
 
 /* an image's place on the window freed under it (scr_image_free): never
  * the same as a new one's, and painted as a frame */
@@ -1485,6 +1489,8 @@ void scr_image_free(void *img)
 		XDestroyImage(im->row);		/* (data: none of its own) */
 	if (im->mrow)
 		XDestroyImage(im->mrow);
+	xfree(im->rgba);
+	xfree(im->blend);
 	xfree(im);
 }
 
@@ -1555,6 +1561,27 @@ void scr_image_row(void *img, int y, const unsigned char *px,
 		im->new0 = y;
 	if (y > im->new1)
 		im->new1 = y;
+}
+
+void scr_image_alpha(void *img, int y, const unsigned char *rgba)
+{
+	struct ximg *im = img;
+
+	if (im == NULL || y < 0 || y >= im->h || (long)im->w * im->h > XIMG_BLEND_MAX)
+		return;
+	if (im->rgba == NULL) {
+		im->rgba = xmalloc((size_t)im->w * (size_t)im->h * 4);
+		im->blend = xmalloc((size_t)im->h);
+		if (im->rgba == NULL || im->blend == NULL) {
+			xfree(im->rgba);
+			xfree(im->blend);
+			im->rgba = im->blend = NULL;
+			return;
+		}
+		memset(im->blend, 0, (size_t)im->h);
+	}
+	memcpy(im->rgba + (size_t)y * (size_t)im->w * 4, rgba, (size_t)im->w * 4);
+	im->blend[y] = 1;
 }
 
 void scr_image_draw(void *img, int x, int y, int w, int h, int attr)
@@ -1653,6 +1680,96 @@ static void clip_none(void)
 	band_on = 0;
 }
 
+/* the colour of a window pixel, 0xRRGGBB */
+static unsigned long pixel_rgb(unsigned long px)
+{
+	static unsigned long *cmap;
+	static int ncmap = -1;
+	const struct px_format *f = scr_pixels();
+	int i;
+
+	if (f && f->kind == PX_TRUE) {
+		unsigned long rgb = 0;
+
+		for (i = 0; i < 3; i++) {
+			unsigned long m = f->mask[i], v;
+			int shift = 0, bits = 0;
+
+			while (m && !(m >> shift & 1))
+				shift++;
+			while (shift + bits < 32 && (m >> (shift + bits) & 1))
+				bits++;
+			v = bits ? (px & m) >> shift : 0;
+			v = bits >= 8 ? v >> (bits - 8) : bits ? v * 255 / ((1UL << bits) - 1) : 0;
+			rgb = rgb << 8 | (v & 255);
+		}
+		return rgb;
+	}
+	/* (a colormap: read once) */
+	if (ncmap < 0) {
+		int s = DefaultScreen(dpy), n = DefaultVisual(dpy, s)->map_entries;
+		XColor *c;
+
+		ncmap = 0;
+		if (n > 0 && n <= 256 && (c = xmalloc((size_t)n * sizeof *c)) != NULL) {
+			if ((cmap = xmalloc((size_t)n * sizeof *cmap)) != NULL) {
+				for (i = 0; i < n; i++)
+					c[i].pixel = (unsigned long)i;
+				XQueryColors(dpy, DefaultColormap(dpy, s), c, n);
+				for (i = 0; i < n; i++)
+					cmap[i] = (unsigned long)(c[i].red >> 8) << 16
+						| (unsigned long)(c[i].green >> 8) << 8 | (c[i].blue >> 8);
+				ncmap = n;
+			}
+			xfree(c);
+		}
+	}
+	return px < (unsigned long)ncmap ? cmap[px] : 0;
+}
+
+/* rows y0 to y1 - 1 of an image, its RGBA blended with what the window
+ * has there (x, y: the image's top left on the window): 0 if it can't */
+static int blend_rows(const struct ximg *im, int x, int y, int w, int y0, int y1)
+{
+	XImage *xi;
+	int i, j;
+
+	x_error = 0;
+	xi = XGetImage(dpy, win, x, y + y0, (unsigned)w, (unsigned)(y1 - y0), AllPlanes,
+		ZPixmap);
+	if (xi == NULL || x_error) {
+		if (xi)
+			XDestroyImage(xi);
+		return 0;
+	}
+	for (j = y0; j < y1; j++) {
+		const unsigned char *s = im->rgba + (size_t)j * (size_t)im->w * 4;
+
+		for (i = 0; i < w; i++, s += 4) {
+			unsigned long px, bg;
+			unsigned a = s[3];
+
+			if (a == 0)
+				continue;
+			if (a == 255)
+				px = (unsigned long)s[0] << 16 | (unsigned long)s[1] << 8 | s[2];
+			else {
+				bg = pixel_rgb(XGetPixel(xi, i, j - y0));
+				px = ((s[0] * a + (bg >> 16 & 255) * (255 - a) + 127) / 255) << 16
+					| ((s[1] * a + (bg >> 8 & 255) * (255 - a) + 127) / 255) << 8
+					| ((s[2] * a + (bg & 255) * (255 - a) + 127) / 255);
+			}
+			if (rgb_pixel(px, &bg))
+				XPutPixel(xi, i, j - y0, bg);
+		}
+	}
+	XPutImage(dpy, win, gc, xi, 0, 0, x, y + y0, (unsigned)w, (unsigned)(y1 - y0));
+	XDestroyImage(xi);
+	return 1;
+}
+
+static void copy_mask_rows(const struct idraw *d, int x, int y, int w, int y0, int y1);
+
 /* rows y0 to y1 - 1 of an image (those inside the pane), onto the window */
 static void copy_rows(const struct idraw *d, int y0, int y1)
 {
@@ -1672,6 +1789,26 @@ static void copy_rows(const struct idraw *d, int y0, int y1)
 		w = pane_x() + pane_wpx() - x;
 	if (y0 >= y1 || w <= 0)
 		return;
+	if (d->im->rgba) {
+		/* (rows to blend, each run of them; the others copied) */
+		int a = y0, b;
+
+		while (a < y1) {
+			for (b = a; b < y1 && d->im->blend[b] == d->im->blend[a]; b++)
+				;
+			if (!d->im->blend[a] || !blend_rows(d->im, x, y, w, a, b))
+				copy_mask_rows(d, x, y, w, a, b);
+			a = b;
+		}
+		return;
+	}
+	copy_mask_rows(d, x, y, w, y0, y1);
+}
+
+/* ... rows y0 to y1 - 1 of it, at x, y on the window, w wide: copied
+ * through its mask */
+static void copy_mask_rows(const struct idraw *d, int x, int y, int w, int y0, int y1)
+{
 	if (d->im->mask) {
 		XSetClipMask(dpy, gc, d->im->mask);
 		XSetClipOrigin(dpy, gc, x, y);

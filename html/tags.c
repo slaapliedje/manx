@@ -69,7 +69,7 @@ static const struct tagdef tags[TAG_COUNT] = {
 static const char *const attrs[ATTR_COUNT] = {
 	"", "accept-charset", "action", "align", "alt", "aria-hidden",
 	"background", "bgcolor", "border", "bordercolor", "cellpadding", "cellspacing", "charset", "checked",
-	"class", "color", "cols", "colspan", "content", "data-src", "data-srcset", "datetime", "dir",
+	"class", "color", "cols", "colspan", "content", "data", "data-src", "data-srcset", "datetime", "dir",
 	"disabled", "enctype", "face", "for", "height", "hidden", "href",
 	"http-equiv", "id", "label", "lang", "maxlength", "media", "method",
 	"multiple",
