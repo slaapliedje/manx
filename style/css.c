@@ -21,6 +21,7 @@
 #include "os.h"
 #include "tags.h"
 #include "css.h"
+#include "utf8.h"
 
 #define MAX_RULES	3072		/* rules kept, at most */
 #define MAX_TEXT_RULES	1536		/* ... of them about text only: a big
@@ -41,6 +42,7 @@
 #define NBUCKET		1024
 #define MEDIA_ALTS	4
 #define MAX_BOX_DECLS	1536		/* rules' declarations about boxes */
+#define CPOOL_MAX	32768		/* content: values, all rules */
 
 struct cmp {
 	unsigned long id;		/* #id's hash; 0: none */
@@ -52,6 +54,7 @@ struct cmp {
 	unsigned char aop[2];		/* 0: present; '=', '~' */
 	unsigned char comb;		/* to the compound on its left: ' ', '>',
 					 * '+' or '~' */
+	unsigned char pseudo;		/* (the subject's) ::before 1, ::after 2 */
 };
 
 /* what a rule (or a style="") says of text: 0 where nothing */
@@ -82,6 +85,9 @@ struct rule {
 	struct tdecl t;			/* the look of text */
 	int box;			/* its box: s->boxes[box], -1: none */
 	int next;			/* the next rule in its bucket, -1 */
+	unsigned long cont;		/* content: s->cpool + cont - 1; 0: none */
+	unsigned char cont_imp;
+	unsigned char pseudo;		/* about its ::before (1), ::after (2) */
 };
 
 /* what a rule says of the box, and which of it is !important */
@@ -144,6 +150,9 @@ struct css_sheet {
 	int ncmps, cmps_cap;
 	struct bdecl *boxes;
 	int nboxes, boxes_cap;
+	char *cpool;			/* content: values, NUL-ended */
+	unsigned long cpool_n, cpool_cap;
+	int want;			/* matching for a ::before (1), ::after (2) */
 	struct media media[MAX_MEDIA];
 	int nmedia;
 	int bucket[NBUCKET];
@@ -278,6 +287,7 @@ void css_free(struct css_sheet *s)
 	xfree(s->rules);
 	xfree(s->cmps);
 	xfree(s->boxes);
+	xfree(s->cpool);
 	xfree(s->vars);
 	xfree(s->memo);
 	xfree(s);
@@ -1146,6 +1156,9 @@ static int compile(const char *p, const char *e, struct cmp *out, unsigned long 
 	while (p < e) {
 		int c = (unsigned char)*p;
 
+		/* (a pseudo-element ends the selector) */
+		if (cur.pseudo && !is_space(c))
+			return 0;
 		if (is_space(c)) {
 			if (have && !comb)
 				comb = ' ';
@@ -1173,15 +1186,25 @@ static int compile(const char *p, const char *e, struct cmp *out, unsigned long 
 		if (c == '*') {
 			p++;
 		} else if (c == ':') {
-			/* :root, :link; any other state, or a pseudo-element,
-			 * isn't followed */
-			int k;
+			/* :root, :link, ::before and ::after; any other state,
+			 * or pseudo-element, isn't followed */
+			int k, two;
 
 			p++;
+			if ((two = p < e && *p == ':') != 0)
+				p++;
 			if ((k = read_name(&p, e, name, sizeof name)) < 0)
 				return 0;
 			for (i = 0; i < k; i++)
 				name[i] = (char)lower((unsigned char)name[i]);
+			if (strcmp(name, "before") == 0 || strcmp(name, "after") == 0) {
+				cur.pseudo = name[0] == 'b' ? 1 : 2;
+				*spec += 1;
+				have = 1;
+				continue;
+			}
+			if (two)
+				return 0;
 			if (strcmp(name, "root") == 0) {
 				if (cur.tag && cur.tag != TAG_HTML)
 					return 0;
@@ -1329,6 +1352,8 @@ static int mentions(const char *d, int n)
 		case 'o':
 			if ((d[i - 1] == 'c' && d[i + 1] == 'l' && d[i + 2] == 'o'
 				&& d[i + 3] == 'r')
+				|| (d[i - 1] == 'c' && d[i + 1] == 'n' && d[i + 2] == 't'
+				&& d[i + 3] == 'e')
 				|| (d[i - 1] == 'f' && d[i + 1] == 'n' && d[i + 2] == 't'))
 				return 1;
 			break;
@@ -2257,7 +2282,10 @@ static void end_rule(struct css_sheet *s)
 	unsigned short media = cur_media(s);
 	struct tdecl t;
 	struct bdecl bd;
-	int boxes, box = -1;
+	int boxes, box = -1, cont_imp = 0;
+	const char *cv = NULL;
+	size_t cvn = 0;
+	unsigned long cont = 0;
 
 	if (s->plong || s->plen == 0)
 		return;
@@ -2321,7 +2349,14 @@ static void end_rule(struct css_sheet *s)
 		}
 		if (text_decl(s, p, pn, v, vn, imp, &t))
 			continue;
-		if (pn == 7 && starts(p, pn, "display")) {
+		if (pn == 7 && starts(p, pn, "content")) {
+			/* (kept as it is: attr() is the element's) */
+			if (imp || !cont_imp) {
+				cv = v;
+				cvn = vn;
+				cont_imp = imp;
+			}
+		} else if (pn == 7 && starts(p, pn, "display")) {
 			if (is_kw(v, vn, "none"))
 				disp = CSS_HIDE;
 			else if (display_ok(v, vn) || starts(v, vn, "var("))
@@ -2366,10 +2401,29 @@ static void end_rule(struct css_sheet *s)
 			box = s->nboxes++;
 		}
 	}
+	if (cv && s->cpool_n + cvn + 1 <= CPOOL_MAX) {
+		if (s->cpool_n + cvn + 1 > s->cpool_cap) {
+			unsigned long c = s->cpool_cap ? s->cpool_cap * 2 : 1024;
+			char *q;
+
+			while (c < s->cpool_n + cvn + 1)
+				c *= 2;
+			if ((q = xrealloc(s->cpool, c)) != NULL) {
+				s->cpool = q;
+				s->cpool_cap = c;
+			}
+		}
+		if (s->cpool_n + cvn + 1 <= s->cpool_cap) {
+			memcpy(s->cpool + s->cpool_n, cv, cvn);
+			s->cpool[s->cpool_n + cvn] = '\0';
+			cont = s->cpool_n + 1;
+			s->cpool_n += cvn + 1;
+		}
+	}
 	if (!disp && !vis && !ls && !t.fg && !t.fw && !t.fs && !t.td && !t.ta
-		&& !t.fz && box < 0)
+		&& !t.fz && box < 0 && !cont)
 		return;
-	if (!disp && !vis && !ls && box < 0 && s->ntext >= MAX_TEXT_RULES)
+	if (!disp && !vis && !ls && box < 0 && !cont && s->ntext >= MAX_TEXT_RULES)
 		return;
 	/* the selectors */
 	for (p = s->pre; p < s->pre + s->plen; p = e + 1) {
@@ -2427,10 +2481,13 @@ static void end_rule(struct css_sheet *s)
 		r->ls_imp = (unsigned char)ls_imp;
 		r->t = t;
 		r->box = box;
+		r->cont = cont;
+		r->cont_imp = (unsigned char)cont_imp;
+		r->pseudo = sel[0].pseudo;
 		b = (int)bucket_of(&sel[0]);
 		r->next = s->bucket[b];
 		s->bucket[b] = s->nrules++;
-		if (!disp && !vis && !ls && box < 0)
+		if (!disp && !vis && !ls && box < 0 && !cont)
 			s->ntext++;
 		s->ncmps += n;
 		s->gen++;
@@ -2874,6 +2931,9 @@ struct winners {
 	const struct rule *disp, *vis, *ls, *fg, *fw, *fs, *td, *ta, *fz;
 	const struct rule *box[BOX_NBITS];	/* each box property's */
 	int boxed;			/* some rule said something of the box */
+	const struct rule *cont;	/* content's */
+	int pseudo;			/* rules about its ::before (1), ::after
+					 * (2) hold */
 };
 
 /* does r's say on the text property with bit beat w's? */
@@ -2889,8 +2949,18 @@ static void try_bucket(struct css_sheet *s, unsigned b, const struct doc *d,
 	for (i = s->bucket[b]; i >= 0; i = s->rules[i].next) {
 		const struct rule *r = &s->rules[i];
 
+		if (r->pseudo != s->want) {
+			/* (another's: only whether one giving content holds -
+			 * without, there's none) */
+			if (r->pseudo && r->cont && !s->want && !(w->pseudo & r->pseudo)
+				&& media_ok(s, r->media, vw) && rule_match(s, r, d, e, top))
+				w->pseudo |= r->pseudo;
+			continue;
+		}
 		if (!media_ok(s, r->media, vw) || !rule_match(s, r, d, e, top))
 			continue;
+		if (r->cont && beats(r->cont_imp, r, w->cont ? w->cont->cont_imp : 0, w->cont))
+			w->cont = r;
 		if (r->disp && beats(r->disp_imp, r, w->disp ? w->disp->disp_imp : 0, w->disp))
 			w->disp = r;
 		if (r->vis && beats(r->vis_imp, r, w->vis ? w->vis->vis_imp : 0, w->vis))
@@ -2959,6 +3029,8 @@ static int set_path(struct css_sheet *s, const struct doc *d, nodeid node)
 #define M_FG(m)		((int)((m) >> 16 & 255))	/* palette index, FG_DEFAULT */
 #define M_BOXED		0x1000UL	/* rules about its box hold */
 #define M_FZ(m)		((int)((m) >> 24 & 255))	/* font size: fsz[k - 1] */
+#define M_BEFORE	0x2000UL	/* rules about its ::before hold */
+#define M_AFTER		0x4000UL	/* ... its ::after */
 
 /* a memo as the caller wants it */
 static int memo_out(const struct css_sheet *s, unsigned long m, struct css_text *t)
@@ -2975,7 +3047,30 @@ static int memo_out(const struct css_sheet *s, unsigned long m, struct css_text 
 		if (M_FZ(m))
 			t->fsize = s->fsz[M_FZ(m) - 1];
 	}
-	return M_DISP(m);
+	return M_DISP(m) | (m & M_BEFORE ? CSS_BEFORE : 0) | (m & M_AFTER ? CSS_AFTER : 0);
+}
+
+/* the winners' say on the text, as a memo */
+static unsigned long win_memo(const struct css_sheet *s, const struct winners *w,
+	int k)
+{
+	int fg = 0;
+
+	if (w->fg) {
+		fg = w->fg->t.fg;
+		if (fg == FG_VAR && (fg = var_fg(s, w->fg->t.fvar, 0)) == 0)
+			fg = w->fg->t.ffb;
+	}
+	return (unsigned long)(k + 1)
+		| (unsigned long)(w->fw ? w->fw->t.fw : 0) << 4
+		| (unsigned long)(w->fs ? w->fs->t.fs : 0) << 6
+		| (unsigned long)(w->td ? w->td->t.td : 0) << 8
+		| (unsigned long)(w->ta ? w->ta->t.ta : 0) << 10
+		| (unsigned long)(w->boxed ? M_BOXED : 0)
+		| (unsigned long)(w->pseudo & 1 ? M_BEFORE : 0)
+		| (unsigned long)(w->pseudo & 2 ? M_AFTER : 0)
+		| (unsigned long)fg << 16
+		| (unsigned long)(w->fz ? w->fz->t.fz : 0) << 24;
 }
 
 /* every rule that holds for node, into *w (its elinfo into *me) */
@@ -3021,7 +3116,7 @@ int css_style(struct css_sheet *s, const struct doc *d, nodeid node,
 	struct winners w;
 	struct elinfo me;
 	unsigned long m;
-	int k, fg = 0;
+	int k;
 
 	if (t)
 		memset(t, 0, sizeof *t);
@@ -3057,19 +3152,7 @@ int css_style(struct css_sheet *s, const struct doc *d, nodeid node,
 		if (w.ls)
 			k |= w.ls->ls == CSS_HIDE ? CSS_NO_MARKER : CSS_MARKER;
 	}
-	if (w.fg) {
-		fg = w.fg->t.fg;
-		if (fg == FG_VAR && (fg = var_fg(s, w.fg->t.fvar, 0)) == 0)
-			fg = w.fg->t.ffb;
-	}
-	m = (unsigned long)(k + 1)
-		| (unsigned long)(w.fw ? w.fw->t.fw : 0) << 4
-		| (unsigned long)(w.fs ? w.fs->t.fs : 0) << 6
-		| (unsigned long)(w.td ? w.td->t.td : 0) << 8
-		| (unsigned long)(w.ta ? w.ta->t.ta : 0) << 10
-		| (unsigned long)(w.boxed ? M_BOXED : 0)
-		| (unsigned long)fg << 16
-		| (unsigned long)(w.fz ? w.fz->t.fz : 0) << 24;
+	m = win_memo(s, &w, k);
 	if (s->memo && node < s->memo_n)
 		s->memo[node] = m;
 	/* its children's turn next: it is their parent */
@@ -3153,6 +3236,140 @@ int css_box(struct css_sheet *s, const struct doc *d, nodeid node,
 	if (!w.boxed)
 		return 0;
 	for (k = 0; k < BOX_NBITS; k++)
+		if (w.box[k])
+			box_take(b, &s->boxes[w.box[k]->box].b, k);
+	return 1;
+}
+
+/* a content value for element node into out (n bytes, NUL-ended): its
+ * length, or -1 for none (none, normal, or nothing known) */
+static int content_text(const char *v, const struct doc *d, nodeid node,
+	char *out, size_t n)
+{
+	const char *e = v + strlen(v);
+	size_t o = 0;
+	int any = 0;
+
+	if (n == 0)
+		return -1;
+	while (v < e) {
+		const char *w = v;
+		char buf[8];
+		size_t k;
+
+		if (is_space((unsigned char)*v)) {
+			v++;
+			continue;
+		}
+		if (*v == '"' || *v == '\'') {
+			char q = *v++;
+
+			while (v < e && *v != q) {
+				unsigned long cp = (unsigned char)*v++;
+
+				if (cp == '\\' && v < e) {
+					int h, hk = 0;
+
+					cp = 0;
+					while (hk < 6 && v < e && (h = hexval((unsigned char)*v)) >= 0) {
+						cp = cp * 16 + (unsigned long)h;
+						v++;
+						hk++;
+					}
+					if (hk) {
+						if (v < e && is_space((unsigned char)*v))
+							v++;
+					} else if (*v == '\n') {
+						v++;
+						continue;
+					} else
+						cp = (unsigned char)*v++;
+				}
+				if (cp >= 0x80 && (unsigned char)v[-1] >= 0x80 && cp < 0x100) {
+					/* (raw UTF-8 bytes: as they are) */
+					buf[0] = (char)cp;
+					k = 1;
+				} else
+					k = (size_t)utf8_put(buf, cp ? cp : 0xFFFD);
+				if (o + k < n) {
+					memcpy(out + o, buf, k);
+					o += k;
+				}
+			}
+			if (v < e)
+				v++;
+			any = 1;
+			continue;
+		}
+		while (v < e && !is_space((unsigned char)*v)) {
+			if (*v == '(') {
+				v = arg_end(v + 1, e);
+				if (v < e)
+					v++;
+				break;
+			}
+			v++;
+		}
+		k = (size_t)(v - w);
+		if (starts(w, k, "attr(") && w[k - 1] == ')') {
+			char name[32];
+			size_t i, j = 0;
+			const char *a;
+
+			for (i = 5; i < k - 1 && j + 1 < sizeof name; i++)
+				if (!is_space((unsigned char)w[i]))
+					name[j++] = (char)lower((unsigned char)w[i]);
+			name[j] = '\0';
+			a = doc_attr(d, node, attr_lookup(name));
+			if (a && o + strlen(a) < n) {
+				memcpy(out + o, a, strlen(a));
+				o += strlen(a);
+			}
+			any = 1;
+		} else if (is_kw(w, k, "open-quote") || is_kw(w, k, "close-quote")) {
+			k = (size_t)utf8_put(buf, w[0] == 'o' || w[0] == 'O' ? 0x201C : 0x201D);
+			if (o + k < n) {
+				memcpy(out + o, buf, k);
+				o += k;
+			}
+			any = 1;
+		} else if (is_kw(w, k, "no-open-quote") || is_kw(w, k, "no-close-quote")
+			|| starts(w, k, "counter(") || starts(w, k, "counters(")
+			|| starts(w, k, "url(") || starts(w, k, "image-set("))
+			any = 1;		/* (nothing shown for it here) */
+		else if (k == 1 && *w == '/')
+			break;			/* (the alt text after: not shown) */
+		else
+			return -1;		/* none, normal, inherit, var()... */
+	}
+	out[o] = '\0';
+	return any ? (int)o : -1;
+}
+
+int css_pseudo(struct css_sheet *s, const struct doc *d, nodeid node,
+	const char *id, const char *cls, int vw, int which, struct css_text *t,
+	struct css_box *b, char *out, size_t n)
+{
+	struct winners w;
+	struct elinfo me;
+	int k, len;
+
+	if (t)
+		memset(t, 0, sizeof *t);
+	if (s == NULL || s->nrules == 0 || node == 0 || node >= d->nnodes
+		|| (which != 1 && which != 2))
+		return 0;
+	s->want = which;
+	match_all(s, d, node, id, cls, vw, &me, &w);
+	s->want = 0;
+	/* (its children's ancestors are as css_style left them) */
+	if (s->npath < PATH_DEPTH)
+		s->path[s->npath++] = me;
+	if (w.cont == NULL || (w.disp && w.disp->disp == CSS_HIDE)
+		|| (len = content_text(s->cpool + w.cont->cont - 1, d, node, out, n)) < 0)
+		return 0;
+	(void)memo_out(s, win_memo(s, &w, 0), t);
+	for (k = 0; b && k < BOX_NBITS; k++)
 		if (w.box[k])
 			box_take(b, &s->boxes[w.box[k]->box].b, k);
 	return 1;

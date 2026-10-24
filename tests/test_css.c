@@ -410,6 +410,23 @@ int main(void)
 		"<p class=b>a</p><p class=c>b</p><p>c</p>", "c|");
 	check("pseudo-classes: not followed", ".x:hover{display:none} .y::before{display:none}",
 		"<p class=x>a</p><p class=y>b</p>", "a||b|");
+	check("::before, ::after", "p::before{content:'> '} p:after{content:\" <\"}"
+		" .n::before{content:none} .q::after{content:open-quote attr(title) '\\2014'}",
+		"<p>a</p><p class=n>b</p><p class=q title=t>c</p>",
+		"> a <||b <||> c\"t--|");
+	check("::before: not without content, hidden, icons", "i::before{color:red}"
+		" b::before{content:'x';display:none} u::before{content:'\\f101'}"
+		" s::before{content:'\\f101 y'}", "<p><i>a</i> <b>b</b> <u>c</u> <s>d</s>",
+		"a b c yd|");
+	check("::before: a cascade of its own", "p::before{content:'1'} .a::before{content:'2'}"
+		" p::before{content:'3'} #b::after{content:'4'} p::after{content:'5'}",
+		"<p class=a id=b>x", "2x4|");
+	/* (a terminal reads no rules about boxes: display: block isn't known) */
+	check("::before: block, on a terminal", "div::before{content:'t';display:block}",
+		"<div>x</div>", "tx|");
+	check("pseudo-elements: only last", "p::before span{display:none} p::after.a{display:none}"
+		" p::selection{display:none} p::before::after{display:none}",
+		"<p class=a><span>s</span>", "s|");
 	check("siblings", ".a+.x{display:none} .a~.y{display:none} .a+.z{display:none}",
 		"<p class=a>a</p><p class=x>b</p><p class=y>c</p><p class=z>d</p>", "a||d|");
 	check("unknown tags: not followed", "my-thing{display:none}",

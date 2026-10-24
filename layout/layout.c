@@ -60,6 +60,7 @@ struct saved {
 					 * inline's, where it starts) */
 	int cb_prev;			/* L->cb_top before it */
 	struct cbox *cb_in;		/* 2: where (from L->cbs) */
+	unsigned char after;		/* it has an ::after (CSS) */
 };
 
 /* an absolutely positioned (or fixed) element, its containing block not
@@ -1860,6 +1861,11 @@ static void box_open(struct lay *L, struct saved *sv, const struct css_box *b,
 	sv->box_width = L->width;
 	sv->box_cut = L->fl_cut;
 	sv->box_m_b = b->set & CSS_B_M(2) ? m[2] : NO_MB;
+	/* (no room for its boxes: margins only) */
+	if (draw && GROW(L, boxes, boxes_cap, p->nboxes + 5, 16) < 0) {
+		draw = 0;
+		sv->boxk = 2;
+	}
 	if (!draw) {
 		/* margins only: the lines go in by them */
 		sv->box_line = p->nlines;
@@ -1874,8 +1880,6 @@ static void box_open(struct lay *L, struct saved *sv, const struct css_box *b,
 	}
 	/* the background, then each side's border: filled in at the end */
 	first = p->nboxes;
-	if (GROW(L, boxes, boxes_cap, p->nboxes + 5, 16) < 0)
-		return;
 	for (i = 0; i < 5; i++) {
 		struct lbox *lb = &p->boxes[p->nboxes++];
 
@@ -1996,6 +2000,88 @@ static void box_close(struct lay *L, const struct saved *sv)
 	}
 	if (sv->box_m_b != NO_MB)
 		margin(L, sv->box_m_b);
+}
+
+/* text s without the private use area's characters (an icon font's
+ * pictures, nothing in the screen's fonts), into out (n bytes) */
+static void no_icons(const char *s, char *out, size_t n)
+{
+	size_t o = 0;
+
+	while (*s && o + 1 < n) {
+		const unsigned char *u = (const unsigned char *)s;
+
+		/* U+E000..U+F8FF: EE 80 80 .. EF A3 BF */
+		if ((u[0] == 0xEE || (u[0] == 0xEF && u[1] >= 0x80 && u[1] <= 0xA3))
+			&& u[1] && u[2]) {
+			s += 3;
+			continue;
+		}
+		out[o++] = *s++;
+	}
+	out[o] = '\0';
+}
+
+/* element id's ::before (which: 1) or ::after (2), laid out where it goes
+ * (its saved state: the element's children's, at depth + 1) */
+static void pseudo_el(struct lay *L, nodeid id, int depth, int which)
+{
+	char buf[256], text[256];
+	struct css_text ct;
+	struct css_box bx;
+	struct style s;
+	struct saved *sv;
+	int a = L->attr, f = L->face, fg = L->fg, fsz = L->fsz, cfsz = L->cfsz;
+	int ind = L->indent, block, boxed = 0;
+
+	if (depth + 1 >= MAX_DEPTH || L->d->sheet == NULL)
+		return;
+	memset(&bx, 0, sizeof bx);
+	if (!css_pseudo(L->d->sheet, L->d, id, doc_attr(L->d, id, ATTR_ID),
+		doc_attr(L->d, id, ATTR_CLASS), L->vw, which, &ct, &bx, buf, sizeof buf))
+		return;
+	/* (one placed apart, absolute or fixed: a decoration, not text) */
+	if ((bx.set & CSS_B_POS) && (bx.pos == CSS_PO_ABSOLUTE || bx.pos == CSS_PO_FIXED))
+		return;
+	no_icons(buf, text, sizeof text);
+	if ((bx.set & CSS_B_CLEAR) && bx.clr != CSS_CL_NONE)
+		float_flush(L);		/* (a "clearfix") */
+	block = (bx.set & CSS_B_DISP) && (bx.disp == CSS_DI_BLOCK
+		|| bx.disp == CSS_DI_LIST_ITEM);
+	if (block && L->m && !L->cell && !L->pre)
+		boxed = box_shows(&bx) ? 1 : (bx.set & (CSS_B_M(0) | CSS_B_M(1)
+			| CSS_B_M(2) | CSS_B_M(3))) ? 2 : 0;
+	if (!*text && !boxed)
+		return;
+	sv = &L->st[depth + 1];
+	sv->box = 0;
+	sv->boxk = 0;
+	sv->cb = 0;
+	if (block)
+		block_break(L, 0);
+	style_for(TAG_SPAN, NULL, NULL, NULL, &s);
+	s.display = block ? D_BLOCK : D_INLINE;
+	if (boxed) {
+		if (ct.fg & CSS_RGB_SET)
+			L->fg = page_color(L->p, ct.fg & 0xFFFFFFUL);
+		else if (ct.fg & CSS_RGB_DEFAULT)
+			L->fg = 0;
+		box_open(L, sv, &bx, boxed == 1);
+	}
+	text_look(L, TAG_SPAN, &s, &ct, NULL);
+	set_span(L);
+	put_text(L, text);
+	L->attr = a;
+	L->face = f;
+	L->fg = fg;
+	L->fsz = fsz;
+	L->cfsz = cfsz;
+	if (sv->boxk)
+		box_close(L, sv);
+	L->indent = ind;
+	if (block)
+		block_break(L, 0);
+	set_span(L);
 }
 
 /* enter element id at depth: 1 when its children are to be laid out */
@@ -2341,6 +2427,9 @@ static int enter(struct lay *L, nodeid id, int depth)
 		put_text(L, "[");
 	}
 	set_span(L);
+	sv->after = (cssf & CSS_AFTER) != 0;
+	if (cssf & CSS_BEFORE)
+		pseudo_el(L, id, depth, 1);
 	return 1;
 }
 
@@ -2356,6 +2445,8 @@ static void leave(struct lay *L, nodeid id, int depth)
 	sv = &L->st[depth];
 	s.display = sv->display;
 	s.margin = sv->margin;
+	if (sv->after)
+		pseudo_el(L, id, depth, 2);
 	if (tag == TAG_Q)
 		put_text(L, "\"");
 	if (tag == TAG_BUTTON)
@@ -3893,6 +3984,23 @@ static int only_floats(struct lay *L, nodeid id)
 	scan_attrs(d, id, &ea);
 	if (el_box(L, id, &ea, &b) && (box_shows(&b) || out_of_flow(L, &b)))
 		return 0;
+	if (L->d->sheet) {
+		/* (its ::before or ::after has text, or clears its floats - a
+		 * "clearfix": not only floats) */
+		int f = css_display(L->d->sheet, d, id, ea.id, ea.cls, L->vw), w;
+
+		for (w = 1; w <= 2; w++) {
+			char buf[64];
+			struct css_text ct;
+
+			memset(&b, 0, sizeof b);
+			if ((f & (w == 1 ? CSS_BEFORE : CSS_AFTER))
+				&& css_pseudo(L->d->sheet, d, id, ea.id, ea.cls, L->vw, w, &ct,
+				&b, buf, sizeof buf) && (buf[0] || ((b.set & CSS_B_CLEAR)
+				&& b.clr != CSS_CL_NONE)))
+				return 0;
+		}
+	}
 	for (k = d->nodes[id].first; k; k = d->nodes[k].next) {
 		if (d->nodes[k].type == NODE_TEXT) {
 			if (!all_blank(doc_text(d, k)))

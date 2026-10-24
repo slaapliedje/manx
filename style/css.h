@@ -26,6 +26,8 @@ enum { CSS_UNSET = 0, CSS_SHOW, CSS_HIDE };
 #define CSS_HIDDEN	1	/* display:none or visibility:hidden */
 #define CSS_NO_MARKER	2	/* list-style: none (inherited) */
 #define CSS_MARKER	4	/* list-style: a marker again */
+#define CSS_BEFORE	8	/* rules about its ::before hold (css_pseudo) */
+#define CSS_AFTER	16	/* ... its ::after */
 
 struct css_sheet;
 
@@ -176,6 +178,18 @@ int css_box(struct css_sheet *s, const struct doc *d, nodeid node,
 
 /* What an inline style="" says of the box, over *b. */
 void css_inline_box(const char *style, struct css_box *b);
+
+/*
+ * Element node's ::before (which: 1) or ::after (2), asked when css_style
+ * said CSS_BEFORE or CSS_AFTER of it: 1 when there is one, its content
+ * (UTF-8, its strings and attr()s) in out (n bytes, NUL-ended), its text's
+ * look in *t (what isn't said: the element's) and what is said of its box
+ * over *b (with css_boxes); 0 when there is none (no content, or none,
+ * or display: none).
+ */
+int css_pseudo(struct css_sheet *s, const struct doc *d, nodeid node,
+	const char *id, const char *cls, int vw, int which, struct css_text *t,
+	struct css_box *b, char *out, size_t n);
 
 /* How many rules the sheet kept (tests, the = page). */
 unsigned long css_rules(const struct css_sheet *s);

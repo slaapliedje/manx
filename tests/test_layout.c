@@ -582,6 +582,14 @@ int main(void)
 	check_gap("margins: a row's sides", "<div style='margin:0;padding:0 20px;"
 		"background:#f00'><div style='margin:0 -20px;background:#00f'>b</div></div>"
 		"<p>x", 0xff0000UL, 0xffUL, -12, 0, 400);
+	/* ::before as a block: its box (Acid2's nose: borders, no height) */
+	check_minmax("::before, a block", "<style>div::before{content:'';display:block;"
+		"border:10px solid #f00;border-top:0;height:0;width:30px}</style><div>x</div>",
+		0xff0000UL, 40, 10, 10);
+	check_gap("::after, clearfix", "<style>.c::after{content:'';display:table;clear:both}"
+		"</style><div class=c><div style='float:left;height:50px;width:10px;"
+		"background:#f00'></div></div><div style='background:#00f'>b</div>",
+		0xff0000UL, 0xffUL, 0, -1, -1);
 	/* foreign elements close themselves: what follows is the page's */
 	check("svg/ and math/", "<p>before</p><svg/><p>after</p><math/><p>end</p>",
 		40, TCS_ASCII, "before\n\nafter\n\nend\n");
