@@ -25,6 +25,20 @@ int pimg_size(nodeid node, int *w, int *h)
 	return 0;
 }
 
+void pimg_bgs(struct page *p)
+{
+	(void)p;
+}
+
+void *pimg_bg_screen(const struct page *p, unsigned k, int *w, int *h)
+{
+	(void)p;
+	(void)k;
+	(void)w;
+	(void)h;
+	return NULL;
+}
+
 void *pimg_screen(const struct page *p, long k)
 {
 	(void)p;

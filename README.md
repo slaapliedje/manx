@@ -77,10 +77,13 @@ Aztec C built a good share of the Amiga's and the Atari ST's software.
   controls. GIF, PNG and JPEG (baseline and progressive) decoded on the
   68030 as they arrive, scaled and dithered to the display (24-bit,
   8-bit colour cube, black and white). On the ATW800 card, scrolling moves
-  the window's pixels with the card's 2D engine.
+  the window's pixels with the card's 2D engine. CSS boxes are drawn:
+  margins, borders, backgrounds (colours, and pictures repeated or placed,
+  `<body background=>` too), floats, positioned elements, `::before` and
+  `::after`.
 
-What it doesn't do: JavaScript, CSS layout (columns, positions,
-backgrounds, font sizes), SVG and WebP pictures.
+What it doesn't do: JavaScript, much of CSS layout (flexbox, grid, CSS
+tables, overflow, background sizes and gradients), SVG and WebP pictures.
 
 ## On the TT030 (68030, 32 MHz)
 

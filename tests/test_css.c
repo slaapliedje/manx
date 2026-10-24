@@ -241,6 +241,19 @@ static void box(const char *name, const char *css, const char *body, int tag,
 		for (i = 0; i < 4; i++)
 			if (b.set2 & CSS_B2_BC(i))
 				sprintf(got + strlen(got), "bc%d=%06lx ", i, b.bcolor[i]);
+	if (b.set2 & CSS_B2_BGI)
+		sprintf(got + strlen(got), "bi=%.*s ", b.bgsrc ? (int)b.bgsrc_n : 1,
+			b.bgsrc ? b.bgsrc : "-");
+	if (b.set2 & CSS_B2_BGR)
+		sprintf(got + strlen(got), "br=%d ", b.bgrep);
+	if (b.set2 & CSS_B2_BGA)
+		sprintf(got + strlen(got), "ba=%d ", b.bgfixed);
+	if (b.set2 & CSS_B2_BGP)
+		sprintf(got + strlen(got), "bp=%d.%d%c,%d.%d%c ", b.bgpos[0].v / 10,
+			(b.bgpos[0].v < 0 ? -b.bgpos[0].v : b.bgpos[0].v) % 10,
+			"-pe%a"[b.bgpos[0].u], b.bgpos[1].v / 10,
+			(b.bgpos[1].v < 0 ? -b.bgpos[1].v : b.bgpos[1].v) % 10,
+			"-pe%a"[b.bgpos[1].u]);
 	if (b.set & CSS_B_W)
 		sprintf(got + strlen(got), "w=%d.%d%c ", b.w.v / 10, b.w.v % 10, "-pe%a"[b.w.u]);
 	if (b.set & CSS_B_H)
@@ -505,7 +518,23 @@ int main(void)
 		"<blockquote>x</blockquote>", TAG_BLOCKQUOTE,
 		"bw0=1.0e bw1=1.5e bw2=2.0e bw3=0.5e bs=1 ");
 	box("inline beats sheet", "p{width:10em;clear:left}", "<p style='width:50%;clear:both;"
-		"background:url(x.png) #fc0 no-repeat'>x", TAG_P, "bg=ffcc00 w=50.0% cl=4 ");
+		"background:url(x.png) #fc0 no-repeat'>x", TAG_P, "bg=ffcc00 bi=x.png br=3 ba=0 "
+		"bp=0.0%,0.0% w=50.0% cl=4 ");
+	box("background shorthand", "div{background:url( \"a b.png\" ) repeat-x fixed right bottom}",
+		"<div>x</div>", TAG_DIV, "bg=ffffffff bi=a b.png br=1 ba=1 bp=100.0%,100.0% ");
+	box("background longhands", "p{background:red url(a.png)} p.a{background-image:none;"
+		"background-position:10px top;background-repeat:no-repeat repeat}",
+		"<p class=a>x", TAG_P, "bg=ff0000 bi=- br=2 ba=0 bp=10.0p,0.0% ");
+	box("background-position keywords", "p{background-position:top right}"
+		" p.a{background-attachment:fixed} p.b{background-position:bottom}",
+		"<p class='a b'>x", TAG_P, "ba=1 bp=50.0%,100.0% ");
+	box("background-image: the first url()", "p{background-image:linear-gradient(red,blue),"
+		"url('c.gif')} p{background-repeat:repeat-y, no-repeat}", "<p>x", TAG_P,
+		"bi=c.gif br=2 ");
+	box("background shorthand: color later", "p{background:url(a.png)} p{background-color:red}",
+		"<p>x", TAG_P, "bg=ff0000 bi=a.png br=0 ba=0 bp=0.0%,0.0% ");
+	box("background: two pictures dropped", "p{background:url(a.png)} p{background:url(b) url(c)}",
+		"<p>x", TAG_P, "bg=ffffffff bi=a.png br=0 ba=0 bp=0.0%,0.0% ");
 	box("important", "p{float:left!important} p.a{float:right}", "<p class=a>x", TAG_P, "fl=2 ");
 	box("display and auto", "p{display:block;margin:0 auto;width:auto}", "<p>x", TAG_P,
 		"m0=0.0p m1=0.0a m2=0.0p m3=0.0a w=0.0a di=1 ");
@@ -528,7 +557,8 @@ int main(void)
 		".parser { border: 5em solid red ! error; }"
 		".parser { background: red pink; }",
 		"<div class=parser>x</div>", TAG_DIV, "bg=ffff00 m0=0.0p m1=5.0e m2=1.0e "
-		"m3=5.0e p0=0.0p p1=1.0e p2=0.0p p3=1.0e w=2.0e h=1.0e ");
+		"m3=5.0e p0=0.0p p1=1.0e p2=0.0p p3=1.0e bi=- br=0 ba=0 bp=0.0%,0.0% "
+		"w=2.0e h=1.0e ");
 	box("names", "p{*zoom:1;m\\61rgin:1px;-x-:2px;9a:1px}", "<p>x", TAG_P,
 		"m0=1.0p m1=1.0p m2=1.0p m3=1.0p ");
 	box("! important spaced, !ie", "p{width:1px ! IMPORTANT} p{width:2px} "
@@ -566,13 +596,14 @@ int main(void)
 	box("sibling: dropped as a whole", "p{width:1px} + p{width:2px} p+{width:3px} p > + p{width:4px}",
 		"<p>a<p>b", TAG_P, "w=1.0p ");
 	box("background: no colour is transparent", "p{background:red} p{background:url(x.png)}",
-		"<p>x", TAG_P, "bg=ffffffff ");
+		"<p>x", TAG_P, "bg=ffffffff bi=x.png br=0 ba=0 bp=0.0%,0.0% ");
 	box("background: its parts", "p{background:#fc0 url(x) no-repeat fixed 1px 0 / cover}",
-		"<p>x", TAG_P, "bg=ffcc00 ");
+		"<p>x", TAG_P, "bg=ffcc00 bi=x br=3 ba=1 bp=1.0p,0.0p ");
 	box("background: not one", "p{background:red} p{background:url(x) blah}"
-		" p{background-color:red blue}", "<p>x", TAG_P, "bg=ff0000 ");
+		" p{background-color:red blue}", "<p>x", TAG_P, "bg=ff0000 bi=- br=0 ba=0 "
+		"bp=0.0%,0.0% ");
 	box("background: last layer's colour", "p{background:url(a) red, url(b) #00f}",
-		"<p>x", TAG_P, "bg=0000ff ");
+		"<p>x", TAG_P, "bg=0000ff bi=b br=0 ba=0 bp=0.0%,0.0% ");
 	box("inline: what's dropped", "", "<p style='width:5px;width:6px !ie;"
 		"height:1px;*height:2px;float:leftish'>x", TAG_P, "w=5.0p h=1.0p ");
 	box("position", "p{position:absolute;top:1px;left:auto;bottom:-2em;z-index:-3}",

@@ -896,6 +896,19 @@ void scr_text(int x, int y, int ascent, const char *s, int n, int attr,
 	scr_put(1 + y, x, s, n, attr);
 }
 
+/* nor pictures under it */
+void scr_tile(int x, int y, int w, int h, void *img, int tx, int ty, int rep)
+{
+	(void)x;
+	(void)y;
+	(void)w;
+	(void)h;
+	(void)img;
+	(void)tx;
+	(void)ty;
+	(void)rep;
+}
+
 /* nor boxes under the text */
 void scr_rect(int x, int y, int w, int h, unsigned long fill, int border,
 	unsigned long border_rgb)

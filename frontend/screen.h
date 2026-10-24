@@ -127,6 +127,11 @@ int scr_pane_h(void);
  * border border units wide in border_rgb. Drawn before the text. */
 void scr_rect(int x, int y, int w, int h, unsigned long fill, int border,
 	unsigned long border_rgb);
+/* A picture (an image of scr_image_new) repeated as a box's background
+ * (X11): its copies' top left corners at tx, ty of the pane and every
+ * w x h of the picture from there, across and down (rep CSS_BR_*: or
+ * only one row, column, copy), inside x, y, w x h. */
+void scr_tile(int x, int y, int w, int h, void *img, int tx, int ty, int rep);
 /* page text at x, y (the top of its line, whose baseline is ascent
  * below): attr CA_*, face LF_* */
 void scr_text(int x, int y, int ascent, const char *s, int n, int attr,

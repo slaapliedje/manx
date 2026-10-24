@@ -5,9 +5,10 @@
  * those that say something about these are kept (not text "visually
  * hidden" for screen readers: without icons, Manx's readers need it).
  * Selectors: tag, *, #id, .class, [attr], [attr=v], [attr~=v] for the
- * attributes Manx keeps, :root and :link, combined, with descendant and
- * child combinators. A rule with anything else (other pseudo-classes,
- * sibling combinators, unknown tags) is dropped: in doubt, content shows
+ * attributes Manx keeps, :root and :link, combined, with descendant,
+ * child and sibling (+, ~) combinators, and ::before and ::after at the
+ * end. A rule with anything else (other pseudo-classes and -elements,
+ * unknown tags) is dropped: in doubt, content shows
  * as it would without the sheet. @media width conditions are checked
  * against the window's width at each layout. The cascade is followed for
  * each property: !important, then specificity, then order. Colours may
@@ -107,7 +108,8 @@ int css_inline_list(const char *style);
 
 /*
  * Boxes: margin, border, padding, width, height (and their min- and
- * max-), float, clear, display, background-color, position (with top,
+ * max-), float, clear, display, background (colour, image, repeat,
+ * attachment, position), position (with top,
  * right, bottom, left and z-index), for a screen that draws them (css_boxes: 1, the
  * default; a terminal sets it 0 before reading sheets, and then their
  * rules about boxes take no memory and no time).
@@ -137,13 +139,19 @@ extern int css_boxes;
 /* ... and of set2: */
 #define CSS_B2_BS(i)	(0x01UL << (i))	/* border style: top right bottom left */
 #define CSS_B2_BC(i)	(0x10UL << (i))	/* border colour */
-#define CSS_B2_NBITS	8
+#define CSS_B2_BGI	0x100UL		/* background-image */
+#define CSS_B2_BGR	0x200UL		/* background-repeat */
+#define CSS_B2_BGA	0x400UL		/* background-attachment */
+#define CSS_B2_BGP	0x800UL		/* background-position */
+#define CSS_B2_NBITS	12
 
 enum { CSS_FL_NONE = 1, CSS_FL_LEFT, CSS_FL_RIGHT };
 enum { CSS_CL_NONE = 1, CSS_CL_LEFT, CSS_CL_RIGHT, CSS_CL_BOTH };
 enum { CSS_DI_BLOCK = 1, CSS_DI_INLINE, CSS_DI_LIST_ITEM, CSS_DI_INLINE_BLOCK };
 enum { CSS_PO_STATIC = 1, CSS_PO_RELATIVE, CSS_PO_ABSOLUTE, CSS_PO_FIXED,
 	CSS_PO_STICKY };
+
+enum { CSS_BR_REPEAT, CSS_BR_X, CSS_BR_Y, CSS_BR_NONE };	/* background-repeat */
 
 #define CSS_BG_NONE	0xFFFFFFFFUL	/* transparent */
 #define CSS_BG_CURRENT	0xFFFFFFFEUL	/* currentcolor (a border's) */
@@ -167,6 +175,16 @@ struct css_box {
 					 * tenths of the font's size: a length),
 					 * px, or auto: normal */
 	struct css_len off[4];		/* top, right, bottom, left (auto) */
+	/* background-image: the url()'s URL, bgsrc_n bytes (NULL: none),
+	 * good until the sheet is read further; relative to bgbase (its
+	 * sheet's URL; NULL: the page's) */
+	const char *bgsrc, *bgbase;
+	unsigned short bgsrc_n;
+	unsigned char bgrep;		/* CSS_BR_* */
+	unsigned char bgfixed;		/* background-attachment: fixed */
+	struct css_len bgpos[2];	/* background-position: x, y (px, em
+					 * or %) */
+	unsigned long bgi;		/* (the sheet's: where bgsrc is kept) */
 };
 
 /*
@@ -175,6 +193,10 @@ struct css_box {
  */
 int css_box(struct css_sheet *s, const struct doc *d, nodeid node,
 	const char *id, const char *cls, int vw, struct css_box *b);
+
+/* The URL the sheet's text from now on (until css_begin) came from:
+ * its url()s are relative to it. */
+void css_base(struct css_sheet *s, const char *url);
 
 /* What an inline style="" says of the box, over *b. */
 void css_inline_box(const char *style, struct css_box *b);

@@ -29,6 +29,14 @@ void pimg_end(void);
 /* <img> node's own size, if known: 1, else 0. */
 int pimg_size(nodeid node, int *w, int *h);
 
+/* After each layout of the page: its boxes' background pictures
+ * (p->bgimgs, its layers' boxes' too), to fetch and decode. */
+void pimg_bgs(struct page *p);
+
+/* Background picture k (lbox.bgi) of top page p as the screen has it, at
+ * its own size *w x *h, or NULL (not yet, or never). */
+void *pimg_bg_screen(const struct page *p, unsigned k, int *w, int *h);
+
 /* p->images[k] as the screen has it at its size there, or NULL. */
 void *pimg_screen(const struct page *p, long k);
 

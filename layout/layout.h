@@ -106,6 +106,30 @@ struct lbox {
 	unsigned long bg;		/* 0xRRGGBB, or LBOX_NONE */
 	unsigned long border_rgb;
 	unsigned char border;		/* its width, 0: none */
+	unsigned short bgi;		/* its background picture: the page's
+					 * (the top one's) bgimgs[bgi - 1]; 0:
+					 * none */
+};
+
+/*
+ * With metrics, a box's background picture (CSS background-image): drawn
+ * over its fill, under its border, clipped to its border box; placed in
+ * its padding box (in[] in from the border box's sides: top right
+ * bottom left), or the window's (fixed), by pos, and repeated across
+ * (rep CSS_BR_*). Each page's boxes' are in the top page's bgimgs, its
+ * layers' and their cells' too.
+ */
+#define LAYOUT_MAX_BGIMGS	1024
+struct lbgimg {
+	char *src;			/* the url() as it is */
+	char *base;			/* what it is relative to (its style
+					 * sheet's URL), NULL: the page's */
+	int pos[2];			/* x, y: units, or (pct) % in tenths
+					 * of the area less the picture */
+	unsigned char pct[2];
+	unsigned char rep, fixed;
+	unsigned short in[4];
+	int ent;			/* (the screen's own: pageimg) */
 };
 
 /*
@@ -152,6 +176,10 @@ struct page {
 	unsigned long nlayers, layers_cap;
 	unsigned long page_bg;		/* the page's background (the root's or
 					 * the body's), LBOX_NONE: the screen's */
+	unsigned short page_bgi;	/* ... its picture (as lbox.bgi): over
+					 * the whole page */
+	struct lbgimg *bgimgs;		/* the boxes' pictures (lbox.bgi) */
+	unsigned long nbgimgs, bgimgs_cap;
 	long main_line;			/* where <main> begins, or -1 */
 	unsigned long gap_line;		/* the line count when a float run */
 	long gap;			/* ended the page, and how much of its

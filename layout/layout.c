@@ -89,6 +89,7 @@ struct list {
 
 struct lay {
 	struct page *p;
+	struct page *root;		/* the top page (its bgimgs) */
 	const struct doc *d;
 	const struct forms *fs;
 	const struct lmetrics *m;	/* NULL: terminal columns */
@@ -167,7 +168,9 @@ struct lay {
 	int fl_level;			/* the boxes open when it started */
 	unsigned long fl_box;		/* its boxes: p->boxes[fl_box...] */
 	long fl_top;			/* its content's top, below its own */
-	int html_bg;			/* the root had a background */
+	int html_bg;			/* the root (or the body) had a
+					 * background: the page's */
+	int body_bg;			/* ... the body */
 	struct saved *top_pend[8];	/* boxes open with nothing above their
 					 * content (no border, no padding) and
 					 * nothing in them yet: a margin next
@@ -1632,6 +1635,19 @@ static int el_box(struct lay *L, nodeid id, const struct eattr *ea,
 	memset(b, 0, sizeof *b);
 	if (L->m == NULL || !css_boxes)
 		return 0;
+	if (L->d->nodes[id].tag == TAG_BODY) {
+		/* <body bgcolor= background=>: as CSS, below any it has */
+		const char *v = doc_attr(L->d, id, ATTR_BGCOLOR);
+
+		if (css_attr_color(v, &b->bg))
+			b->set |= CSS_B_BG;
+		if ((v = doc_attr(L->d, id, ATTR_BACKGROUND)) != NULL && *v) {
+			b->bgsrc = v;
+			b->bgsrc_n = (unsigned short)strlen(v);
+			b->bgpos[0].u = b->bgpos[1].u = CSS_U_PCT;
+			b->set2 |= CSS_B2_BGI;
+		}
+	}
 	if (L->d->sheet) {
 		/* (css_style first: it remembers whether to ask at all) */
 		css_style(L->d->sheet, L->d, id, ea->id, ea->cls, L->vw, NULL);
@@ -1639,7 +1655,7 @@ static int el_box(struct lay *L, nodeid id, const struct eattr *ea,
 	}
 	if (ea->style)
 		css_inline_box(ea->style, b);
-	return b->set != 0;
+	return b->set != 0 || b->set2 != 0;
 }
 
 /* n/d to the nearest (d > 0) */
@@ -1722,12 +1738,84 @@ static void box_sides(const struct lay *L, const struct css_box *b, int of,
 	}
 }
 
+/* does box b have a background picture? */
+static int has_pic(const struct css_box *b)
+{
+	return (b->set2 & CSS_B2_BGI) && b->bgsrc && b->bgsrc_n;
+}
+
+/* n bytes at s, a copy (NULL: none, or no memory) */
+static char *dup_n(const char *s, size_t n)
+{
+	char *r;
+
+	if (s == NULL || (r = xmalloc(n + 1)) == NULL)
+		return NULL;
+	memcpy(r, s, n);
+	r[n] = '\0';
+	return r;
+}
+
+/* box b's background picture, its border bw[4] wide (NULL: none), into
+ * the top page's: its lbox.bgi, or 0 */
+static unsigned short bg_pic(struct lay *L, const struct css_box *b, const int *bw)
+{
+	struct page *r = L->root;
+	struct lbgimg g, *q;
+	unsigned long i;
+	int k;
+
+	if (L->m == NULL || !has_pic(b) || r->nbgimgs >= LAYOUT_MAX_BGIMGS)
+		return 0;
+	memset(&g, 0, sizeof g);
+	for (k = 0; k < 2; k++) {
+		if (b->bgpos[k].u == CSS_U_PCT || b->bgpos[k].u == CSS_U_NONE) {
+			g.pct[k] = 1;
+			g.pos[k] = b->bgpos[k].v;
+		} else
+			g.pos[k] = box_units(L, b->bgpos[k], 0);
+	}
+	g.rep = b->bgrep;
+	g.fixed = b->bgfixed;
+	for (k = 0; k < 4; k++)
+		g.in[k] = (unsigned short)(bw ? bw[k] : 0);
+	g.ent = -1;
+	/* (the same as one just before: that one, as a list's items have) */
+	for (i = r->nbgimgs; i > 0 && i + 16 > r->nbgimgs; i--) {
+		q = &r->bgimgs[i - 1];
+		if (memcmp(q->pos, g.pos, sizeof g.pos) == 0
+			&& memcmp(q->pct, g.pct, sizeof g.pct) == 0 && q->rep == g.rep
+			&& q->fixed == g.fixed && memcmp(q->in, g.in, sizeof g.in) == 0
+			&& strlen(q->src) == b->bgsrc_n
+			&& memcmp(q->src, b->bgsrc, b->bgsrc_n) == 0
+			&& (q->base == NULL) == (b->bgbase == NULL)
+			&& (q->base == NULL || strcmp(q->base, b->bgbase) == 0))
+			return (unsigned short)i;
+	}
+	if (r->nbgimgs == r->bgimgs_cap) {
+		unsigned long c = r->bgimgs_cap ? r->bgimgs_cap * 2 : 16;
+
+		if ((q = xrealloc(r->bgimgs, c * sizeof *q)) == NULL)
+			return 0;
+		r->bgimgs = q;
+		r->bgimgs_cap = c;
+	}
+	if ((g.src = dup_n(b->bgsrc, b->bgsrc_n)) == NULL)
+		return 0;
+	if (b->bgbase && (g.base = dup_n(b->bgbase, strlen(b->bgbase))) == NULL) {
+		xfree(g.src);
+		return 0;
+	}
+	r->bgimgs[r->nbgimgs++] = g;
+	return (unsigned short)r->nbgimgs;
+}
+
 /* does the box show (a background, a border, padding, a size)? */
 static int box_shows(const struct css_box *b)
 {
 	int i;
 
-	if ((b->set & CSS_B_BG) && b->bg != CSS_BG_NONE)
+	if (((b->set & CSS_B_BG) && b->bg != CSS_BG_NONE) || has_pic(b))
 		return 1;
 	for (i = 0; i < 4; i++) {
 		if (side_drawn(b, i) && (!(b->set & CSS_B_BW(i)) || b->bw[i].v > 0))
@@ -1895,6 +1983,7 @@ static void box_open(struct lay *L, struct saved *sv, const struct css_box *b,
 		if (dark(b->bg))
 			L->attr |= SA_ONDARK;
 	}
+	p->boxes[first].bgi = bg_pic(L, b, bw);
 	/* (sides: top, right, bottom, left; their heights come later) */
 	for (i = 0; i < 4; i++) {
 		struct lbox *lb = &p->boxes[first + 1 + i];
@@ -1963,7 +2052,7 @@ static void box_close(struct lay *L, const struct saved *sv)
 		 * bottom padding is beside them, not below (CSS1: it is
 		 * no taller than its text; Acid1's dl) */
 		if (p->heights && p->nlines && p->gap_line == p->nlines
-			&& lb->bg == LBOX_NONE && lb[1].w == 0 && lb[2].w == 0
+			&& lb->bg == LBOX_NONE && lb->bgi == 0 && lb[1].w == 0 && lb[2].w == 0
 			&& lb[3].w == 0 && lb[4].w == 0)
 			in_b = in_b > p->heights[p->nlines - 1].height
 				? in_b - p->heights[p->nlines - 1].height : 0;
@@ -2115,17 +2204,18 @@ static int enter(struct lay *L, nodeid id, int depth)
 		css_inline_text(L->d->sheet, ea.style, &ct);
 	boxed = 0;
 	bx.set = 0;
-	if (L->m && !L->small && (tag == TAG_HTML || tag == TAG_BODY)
-		&& el_box(L, id, &ea, &bx) && (bx.set & CSS_B_BG) && bx.bg != CSS_BG_NONE
-		&& (tag == TAG_HTML || L->p->page_bg == LBOX_NONE)) {
+	if (L->m && !L->small && (tag == TAG_HTML || (tag == TAG_BODY && !L->html_bg))
+		&& el_box(L, id, &ea, &bx)
+		&& (((bx.set & CSS_B_BG) && bx.bg != CSS_BG_NONE) || has_pic(&bx))) {
 		/* the root's background (else the body's) is the page's */
-		L->p->page_bg = bx.bg;
-		if (tag == TAG_HTML)
-			L->html_bg = 1;
-		if (dark(bx.bg))
-			L->attr |= SA_ONDARK;
-		if (tag == TAG_BODY)
-			bx.set &= ~CSS_B_BG;	/* (not its box's too) */
+		if ((bx.set & CSS_B_BG) && bx.bg != CSS_BG_NONE) {
+			L->p->page_bg = bx.bg;
+			if (dark(bx.bg))
+				L->attr |= SA_ONDARK;
+		}
+		L->p->page_bgi = bg_pic(L, &bx, NULL);
+		L->html_bg = 1;
+		L->body_bg = tag == TAG_BODY;
 	}
 	if (L->m && tag != TAG_HTML && tag != TAG_TABLE && n->type == NODE_ELEM
 		&& el_box(L, id, &ea, &bx)) {
@@ -2136,8 +2226,10 @@ static int enter(struct lay *L, nodeid id, int depth)
 			bx.set &= CSS_B_BG | CSS_B_DISP | CSS_B_LH;
 			bx.set2 = 0;
 		}
-		if (tag == TAG_BODY && L->p->page_bg != LBOX_NONE && !L->html_bg)
-			bx.set &= ~CSS_B_BG;
+		if (tag == TAG_BODY && L->body_bg) {
+			bx.set &= ~CSS_B_BG;	/* (the page's: not its box's too) */
+			bx.set2 &= ~CSS_B2_BGI;
+		}
 		if (bx.set & CSS_B_DISP)
 			s.display = bx.disp == CSS_DI_BLOCK ? D_BLOCK
 				: bx.disp == CSS_DI_LIST_ITEM ? D_LIST_ITEM : D_INLINE;
@@ -2991,6 +3083,7 @@ static int lay_cell(struct lay *L, struct lay *S, struct gcell *gc, int width,
 	S->max_lines = max_lines;
 	S->at_width = at_width;
 	S->p = pg;
+	S->root = L->root;
 	S->d = L->d;
 	S->fs = L->fs;
 	S->m = L->m;
@@ -3459,15 +3552,16 @@ static void grid_decor(struct lay *L, nodeid id, struct grid *g, int gap,
 }
 
 static void add_box(struct lay *L, unsigned long line, long dy, int x, int w,
-	long h, unsigned long bg, int border, unsigned long border_rgb)
+	long h, unsigned long bg, int border, unsigned long border_rgb, unsigned bgi)
 {
 	struct page *p = L->p;
 	struct lbox *b;
 
-	if (w <= 0 || h <= 0 || (bg == LBOX_NONE && border == 0)
+	if (w <= 0 || h <= 0 || (bg == LBOX_NONE && border == 0 && bgi == 0)
 		|| GROW(L, boxes, boxes_cap, p->nboxes + 1, 16) < 0)
 		return;
 	b = &p->boxes[p->nboxes++];
+	b->bgi = (unsigned short)bgi;
 	b->line = line;
 	b->dy = dy;
 	b->x = x;
@@ -3645,7 +3739,7 @@ static int compose_bands(struct lay *L, struct grid *g, const struct gdecor *dc,
 			base = p->nlines;
 			x0 = L->col + shift + dc->margin;
 			add_box(L, base, 0, x0 - dc->margin, gw + 2 * dc->margin, H,
-				dc->bg, dc->border, dc->border_rgb);
+				dc->bg, dc->border, dc->border_rgb, 0);
 			for (i = 0; i < g->ncells; i++) {
 				const struct gcell *gc = &g->cell[i];
 				int last = gc->r + gc->rs - 1;
@@ -3654,7 +3748,7 @@ static int compose_bands(struct lay *L, struct grid *g, const struct gdecor *dc,
 
 				add_box(L, base, ra[gc->r], x0 + g->x[gc->c] - dc->hin,
 					w + 2 * dc->hin, ra[last] + rh[last] - ra[gc->r],
-					gc->bg, cb, dc->border_rgb);
+					gc->bg, cb, dc->border_rgb, 0);
 			}
 		}
 		over = 0;
@@ -3679,7 +3773,7 @@ static int compose_bands(struct lay *L, struct grid *g, const struct gdecor *dc,
 				if (b->line == ln)
 					add_box(L, p->nlines, b->dy + dy,
 						x0 + g->x[gc->c] + b->x, b->w, b->h,
-						b->bg, b->border, b->border_rgb);
+						b->bg, b->border, b->border_rgb, b->bgi);
 			}
 		}
 		L->attr = attr;
@@ -3920,6 +4014,7 @@ struct fitem {
 	int m[4], bw[4], pd[4];
 	unsigned long bg;		/* LBOX_NONE: no background */
 	unsigned long bc[4];		/* each side's border colour */
+	unsigned short bgi;		/* its background picture (lbox.bgi) */
 	int w;				/* its content's width */
 	long h;				/* ... and height */
 	int x;				/* its margin box's left, in the run */
@@ -4115,13 +4210,13 @@ static void float_emit(struct lay *L, struct fitem *it, int n, long H)
 				int bwid = f->bw[3] + f->pd[3] + f->w + f->pd[1] + f->bw[1];
 				long bht = f->bw[0] + f->pd[0] + f->h + f->pd[2] + f->bw[2];
 
-				add_box(L, base, by, bx, bwid, bht, f->bg, 0, 0);
+				add_box(L, base, by, bx, bwid, bht, f->bg, 0, 0, f->bgi);
 				if (bx + bwid + f->m[1] + L->rin > p->need_w)
 					p->need_w = bx + bwid + f->m[1] + L->rin;
-				add_box(L, base, by, bx, bwid, f->bw[0], f->bc[0], 0, 0);
-				add_box(L, base, by + bht - f->bw[2], bx, bwid, f->bw[2], f->bc[2], 0, 0);
-				add_box(L, base, by, bx, f->bw[3], bht, f->bc[3], 0, 0);
-				add_box(L, base, by, bx + bwid - f->bw[1], f->bw[1], bht, f->bc[1], 0, 0);
+				add_box(L, base, by, bx, bwid, f->bw[0], f->bc[0], 0, 0, 0);
+				add_box(L, base, by + bht - f->bw[2], bx, bwid, f->bw[2], f->bc[2], 0, 0, 0);
+				add_box(L, base, by, bx, f->bw[3], bht, f->bc[3], 0, 0, 0);
+				add_box(L, base, by, bx + bwid - f->bw[1], f->bw[1], bht, f->bc[1], 0, 0, 0);
 			}
 		}
 		over = 0;
@@ -4142,7 +4237,7 @@ static void float_emit(struct lay *L, struct fitem *it, int n, long H)
 
 				if (b->line == ln)
 					add_box(L, p->nlines, b->dy + dy, x0 + cx[ev[e].cell] + b->x,
-						b->w, b->h, b->bg, b->border, b->border_rgb);
+						b->w, b->h, b->bg, b->border, b->border_rgb, b->bgi);
 			}
 		}
 		L->asc = 0;
@@ -4269,7 +4364,7 @@ static int fl_place(struct lay *L, int *ind)
 
 		if (b->line == ln)
 			add_box(L, p->nlines, b->dy + dy, L->fl_cx + b->x, b->w, b->h,
-				b->bg, b->border, b->border_rgb);
+				b->bg, b->border, b->border_rgb, b->bgi);
 	}
 	if (dy + h + (f->gc.pg.heights ? f->gc.pg.heights[ln].over : 0) > L->fl_over)
 		L->fl_over = dy + h + (f->gc.pg.heights ? f->gc.pg.heights[ln].over : 0);
@@ -4330,6 +4425,8 @@ static void fl_start(struct lay *L, struct fitem *f)
 	if (bx + bwid + f->m[1] + L->rin > p->need_w)
 		p->need_w = bx + bwid + f->m[1] + L->rin;
 	add_box_any(L, p->nlines, by, bx, bwid, bht, f->bg);
+	if (p->nboxes > L->fl_box)
+		p->boxes[L->fl_box].bgi = f->bgi;
 	add_box_any(L, p->nlines, by, bx, bwid, f->bw[0], f->bc[0]);
 	add_box_any(L, p->nlines, by + bht - f->bw[2], bx, bwid, f->bw[2], f->bc[2]);
 	add_box_any(L, p->nlines, by, bx, f->bw[3], bht, f->bc[3]);
@@ -4386,6 +4483,7 @@ static nodeid float_run(struct lay *L, nodeid id)
 		f->fl = b.fl;
 		box_sides(L, &b, avail, f->m, f->bw, f->pd);
 		f->bg = (b.set & CSS_B_BG) && b.bg != CSS_BG_NONE ? b.bg : LBOX_NONE;
+		f->bgi = bg_pic(L, &b, f->bw);
 		side_rgbs(L, &b, f->bc);
 		f->gc.node = nodes[i];
 		extra = f->m[1] + f->m[3] + f->bw[1] + f->bw[3] + f->pd[1] + f->pd[3];
@@ -4544,7 +4642,7 @@ static void look_swap(struct lay *L, struct pend *pe)
 /* page pg's own background and border, under what's in it (its content's
  * top left is its origin) */
 static void layer_boxes(struct page *pg, const int *bw, const int *pd, int w,
-	long h, unsigned long bg, const unsigned long *bc)
+	long h, unsigned long bg, const unsigned long *bc, unsigned bgi)
 {
 	static const int side[5] = { 0, 0, 2, 3, 1 };
 	struct lbox *b;
@@ -4564,6 +4662,7 @@ static void layer_boxes(struct page *pg, const int *bw, const int *pd, int w,
 		b[i].w = bwid;
 		b[i].h = bht;
 	}
+	b[0].bgi = (unsigned short)bgi;
 	b[1].h = bw[0];
 	b[2].dy = by + bht - bw[2];
 	b[2].h = bw[2];
@@ -4723,7 +4822,7 @@ static void lay_layer(struct lay *L, struct pend *pe, const struct cbox *cb,
 	if (h < 0)
 		h = 0;
 	side_rgbs(L, &b, bc);
-	layer_boxes(&gc.pg, bw, pd, cw, h, bg, bc);
+	layer_boxes(&gc.pg, bw, pd, cw, h, bg, bc, bg_pic(L, &b, bw));
 	/* where its border box goes */
 	ln = cb->line;
 	if (rel) {
@@ -5047,6 +5146,7 @@ int layout_run_m(struct page *p, const struct doc *d, int width,
 		return -1;
 	memset(L, 0, sizeof *L);
 	L->p = p;
+	L->root = p;
 	L->d = d;
 	L->fs = fs;
 	L->m = m;
@@ -5087,7 +5187,7 @@ int layout_run_m(struct page *p, const struct doc *d, int width,
 		for (i = 0; i < p->nboxes; i++) {
 			const struct lbox *b = &p->boxes[i];
 
-			if (b->w > 0 && b->h > 0 && (b->bg != LBOX_NONE || b->border))
+			if (b->w > 0 && b->h > 0 && (b->bg != LBOX_NONE || b->border || b->bgi))
 				p->boxes[k++] = *b;
 		}
 		p->nboxes = k;
@@ -5106,6 +5206,11 @@ void layout_free(struct page *p)
 	xfree(p->anchors);
 	xfree(p->images);
 	xfree(p->boxes);
+	while (p->nbgimgs) {
+		xfree(p->bgimgs[--p->nbgimgs].src);
+		xfree(p->bgimgs[p->nbgimgs].base);
+	}
+	xfree(p->bgimgs);
 	xfree(p->tops);
 	xfree(p->palette);
 	while (p->nlayers)

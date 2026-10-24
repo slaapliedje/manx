@@ -42,7 +42,8 @@
 #define NBUCKET		1024
 #define MEDIA_ALTS	4
 #define MAX_BOX_DECLS	1536		/* rules' declarations about boxes */
-#define CPOOL_MAX	32768		/* content: values, all rules */
+#define CPOOL_MAX	131072		/* content: values, and url()s, all rules */
+#define MAX_URLS	32		/* sheets' URLs (url()s are relative to) */
 
 struct cmp {
 	unsigned long id;		/* #id's hash; 0: none */
@@ -150,8 +151,13 @@ struct css_sheet {
 	int ncmps, cmps_cap;
 	struct bdecl *boxes;
 	int nboxes, boxes_cap;
-	char *cpool;			/* content: values, NUL-ended */
+	char *cpool;			/* content: values, NUL-ended; and
+					 * url()s, after their urls[] index + 1 */
 	unsigned long cpool_n, cpool_cap;
+	char *urls[MAX_URLS];		/* the sheets' URLs */
+	int nurls;
+	int url_at;			/* the text being read: urls[url_at - 1]'s
+					 * (0: the page's) */
 	int want;			/* matching for a ::before (1), ::after (2) */
 	struct media media[MAX_MEDIA];
 	int nmedia;
@@ -288,6 +294,8 @@ void css_free(struct css_sheet *s)
 	xfree(s->cmps);
 	xfree(s->boxes);
 	xfree(s->cpool);
+	while (s->nurls > 0)
+		xfree(s->urls[--s->nurls]);
 	xfree(s->vars);
 	xfree(s->memo);
 	xfree(s);
@@ -1633,7 +1641,17 @@ static int list_style(const char *v, size_t vn, int type_only)
 
 /* --- boxes ------------------------------------------------------------ */
 
-static int bg_value(const char *v, size_t vn, int shorthand, unsigned long *rgb);
+/* what a background says of its image (bg_value), the shorthand's
+ * initial values where it says nothing */
+struct bgsay {
+	const char *src;		/* url()'s, n bytes; NULL: none */
+	size_t n;
+	unsigned char rep, fixed;	/* CSS_BR_*, attachment fixed */
+	struct css_len pos[2];
+};
+
+static int bg_value(const char *v, size_t vn, int shorthand, unsigned long *rgb,
+	struct bgsay *o);
 
 /* does a rule's text say anything about boxes? (cheap, before parsing) */
 static int box_mentions(const char *d, int n)
@@ -1932,6 +1950,192 @@ static unsigned long side_words(const char *v, size_t vn, int style,
 		: CSS_B2_BC(0) | CSS_B2_BC(1) | CSS_B2_BC(2) | CSS_B2_BC(3);
 }
 
+static void bg_initial(struct bgsay *o)
+{
+	memset(o, 0, sizeof *o);
+	o->rep = CSS_BR_REPEAT;
+	o->pos[0].u = o->pos[1].u = CSS_U_PCT;
+}
+
+/* is a picture at this URL (n bytes) one Manx can show? (data: of
+ * PNG, GIF or JPEG; not SVG) */
+static int pic_shown(const char *u, size_t n)
+{
+	size_t k;
+
+	if (n >= 5 && starts(u, 5, "data:"))
+		return (n > 14 && (starts(u, 14, "data:image/png") || starts(u, 14, "data:image/gif")))
+			|| (n > 15 && starts(u, 15, "data:image/jpeg"))
+			|| (n > 14 && starts(u, 14, "data:image/jpg"));
+	for (k = 0; k < n && u[k] != '?' && u[k] != '#'; k++)
+		;
+	return !(k >= 4 && starts(u + k - 4, 4, ".svg"));
+}
+
+/* a url(...)'s URL (quoted or not): 1 and *src, *n, or 0 */
+static int url_of(const char *w, size_t wn, const char **src, size_t *n)
+{
+	const char *e = w + wn, *a;
+
+	if (wn < 5 || !starts(w, 4, "url(") || e[-1] != ')')
+		return 0;
+	w += 4;
+	e--;
+	while (w < e && is_space((unsigned char)*w))
+		w++;
+	while (e > w && is_space((unsigned char)e[-1]))
+		e--;
+	if (w < e && (*w == '"' || *w == '\'')) {
+		for (a = w + 1; a < e && *a != *w; a++)
+			;
+		w++;
+		e = a;
+	}
+	if (w == e || e - w > 60000)
+		return 0;
+	if (!pic_shown(w, (size_t)(e - w)))
+		return 0;		/* (as none) */
+	*src = w;
+	*n = (size_t)(e - w);
+	return 1;
+}
+
+/* one background-repeat value (n words): CSS_BR_* */
+static int bg_repeat(const char *const *w, const size_t *wn, int n)
+{
+	int k[2], i;
+
+	for (i = 0; i < n; i++) {
+		if (is_kw(w[i], wn[i], "repeat-x"))
+			return CSS_BR_X;
+		if (is_kw(w[i], wn[i], "repeat-y"))
+			return CSS_BR_Y;
+		k[i] = is_kw(w[i], wn[i], "no-repeat") ? 0 : 1;	/* (space, round: repeat) */
+	}
+	if (n == 1)
+		k[1] = k[0];
+	return k[0] && k[1] ? CSS_BR_REPEAT : k[0] ? CSS_BR_X : k[1] ? CSS_BR_Y
+		: CSS_BR_NONE;
+}
+
+/* a keyword of background-position as a %: 0 (left, top), 500 (center),
+ * 1000 (right, bottom) in tenths, which axis it is of (1: x, 2: y, 3:
+ * either) in *ax; -1 when it isn't one */
+static int pos_kw(const char *w, size_t wn, int *ax)
+{
+	*ax = 1;
+	if (is_kw(w, wn, "left"))
+		return 0;
+	if (is_kw(w, wn, "right"))
+		return 1000;
+	*ax = 2;
+	if (is_kw(w, wn, "top"))
+		return 0;
+	if (is_kw(w, wn, "bottom"))
+		return 1000;
+	*ax = 3;
+	return is_kw(w, wn, "center") ? 500 : -1;
+}
+
+/* a background-position (n words) into pos[2], x then y: keywords and
+ * lengths (of four values, with offsets from an edge, the edges only) */
+static void bg_pos(const char *const *w, const size_t *wn, int n, struct css_len *pos)
+{
+	struct css_len l[2];
+	int ax[2], i, k = 0;
+
+	pos[0].v = pos[1].v = 0;
+	pos[0].u = pos[1].u = CSS_U_PCT;
+	for (i = 0; i < n && k < 2; i++) {
+		int v = pos_kw(w[i], wn[i], &ax[k]);
+
+		if (v >= 0) {
+			l[k].v = (short)v;
+			l[k++].u = CSS_U_PCT;
+		} else if (n <= 2 && parse_len(w[i], wn[i], &l[k]) && l[k].u != CSS_U_AUTO)
+			ax[k++] = 3;
+		else if (n <= 2)
+			return;			/* (calc(), var(): not known) */
+	}
+	if (k == 0)
+		return;
+	if (k == 1) {
+		l[1].v = 500;
+		l[1].u = CSS_U_PCT;
+		ax[1] = 3;
+	}
+	if (ax[0] == 2 || ax[1] == 1) {
+		pos[0] = l[1];
+		pos[1] = l[0];
+	} else {
+		pos[0] = l[0];
+		pos[1] = l[1];
+	}
+}
+
+/* background-image, -repeat, -attachment, -position (p: after the
+ * "background-"), of the first layer, into *b: 0 (the bits in *set2) */
+static unsigned long bg_long(const char *p, size_t pn, const char *v, size_t vn,
+	struct css_box *b, unsigned long *set2)
+{
+	const char *w[4], *q;
+	size_t wn[4], n;
+	int depth = 0;
+
+	if (pn == 5 && starts(p, pn, "image")) {
+		/* (of several, the first picture: a gradient over it is the
+		 * one that isn't drawn) */
+		const char *e = v + vn, *a;
+		int url = 0;
+
+		b->bgsrc = NULL;
+		b->bgsrc_n = 0;
+		b->bgbase = NULL;
+		for (a = v; a + 4 < e; a++)
+			if (starts(a, (size_t)(e - a), "url(")) {
+				for (q = a; q < e && *q != ')'; q++)
+					;
+				/* (one not shown here, SVG: as none) */
+				url = q < e;
+				if (url && url_of(a, (size_t)(q + 1 - a), &w[0], &n)) {
+					b->bgsrc = w[0];
+					b->bgsrc_n = (unsigned short)n;
+				}
+				break;
+			}
+		if (!url && !is_kw(v, vn, "none") && !has(v, vn, "gradient("))
+			return 0;
+		*set2 |= CSS_B2_BGI;
+		return 0;
+	}
+	/* (the first layer) */
+	for (q = v; q < v + vn && (depth || *q != ','); q++)
+		if (*q == '(')
+			depth++;
+		else if (*q == ')' && depth)
+			depth--;
+	vn = (size_t)(q - v);
+	if (pn == 6 && starts(p, pn, "repeat")) {
+		int k = words(v, vn, w, wn, 3);
+
+		if (k < 1 || k > 2)
+			return 0;
+		b->bgrep = (unsigned char)bg_repeat(w, wn, k);
+		*set2 |= CSS_B2_BGR;
+	} else if (pn == 10 && starts(p, pn, "attachment")) {
+		b->bgfixed = is_kw(v, vn, "fixed");
+		*set2 |= CSS_B2_BGA;
+	} else if (pn == 8 && starts(p, pn, "position")) {
+		int k = words(v, vn, w, wn, 4);
+
+		if (k < 1)
+			return 0;
+		bg_pos(w, wn, k, b->bgpos);
+		*set2 |= CSS_B2_BGP;
+	}
+	return 0;
+}
+
 /* one declaration about the box into *b: the CSS_B_* bits it set (0: none),
  * and the CSS_B2_* bits into *set2 */
 static unsigned long box_decl(const char *p, size_t pn, const char *v,
@@ -2031,12 +2235,25 @@ static unsigned long box_decl(const char *p, size_t pn, const char *v,
 	if ((pn == 16 && starts(p, pn, "background-color"))
 		|| (pn == 10 && starts(p, pn, "background"))) {
 		unsigned long rgb;
+		struct bgsay o;
 
-		if (bg_value(v, vn, pn == 10, &rgb) <= 0)
+		if (bg_value(v, vn, pn == 10, &rgb, &o) <= 0)
 			return 0;
 		b->bg = rgb;
+		if (pn == 10) {
+			/* (the shorthand: all of it, what isn't said as it starts) */
+			b->bgsrc = o.src;
+			b->bgsrc_n = (unsigned short)o.n;
+			b->bgbase = NULL;
+			b->bgrep = o.rep;
+			b->bgfixed = o.fixed;
+			memcpy(b->bgpos, o.pos, sizeof b->bgpos);
+			*set2 |= CSS_B2_BGI | CSS_B2_BGR | CSS_B2_BGA | CSS_B2_BGP;
+		}
 		return CSS_B_BG;
 	}
+	if (pn > 11 && starts(p, 11, "background-"))
+		return bg_long(p + 11, pn - 11, v, vn, b, set2);
 	if (pn == 11 && starts(p, pn, "line-height"))
 		return line_height(v, vn, &b->lh) ? CSS_B_LH : 0;
 	if (pn == 4 && starts(p, pn, "font")) {
@@ -2271,6 +2488,34 @@ static int split_decl(const char *p, const char *e, const char **name, size_t *p
 	return n > 0 || (*pn > 2 && (*name)[0] == '-' && (*name)[1] == '-');
 }
 
+/* n bytes at v into the sheet's pool, after the byte url + 1 when url >=
+ * 0: where (its offset + 1), or 0 when there's no room */
+static unsigned long cpool_add(struct css_sheet *s, int url, const char *v, size_t n)
+{
+	unsigned long need = s->cpool_n + n + 1 + (url >= 0), at;
+
+	if (need > CPOOL_MAX)
+		return 0;
+	if (need > s->cpool_cap) {
+		unsigned long c = s->cpool_cap ? s->cpool_cap * 2 : 1024;
+		char *q;
+
+		while (c < need)
+			c *= 2;
+		if ((q = xrealloc(s->cpool, c)) == NULL)
+			return 0;
+		s->cpool = q;
+		s->cpool_cap = c;
+	}
+	at = s->cpool_n + 1;
+	if (url >= 0)
+		s->cpool[s->cpool_n++] = (char)(url + 1);
+	memcpy(s->cpool + s->cpool_n, v, n);
+	s->cpool[s->cpool_n + n] = '\0';
+	s->cpool_n += n + 1;
+	return at;
+}
+
 /* the rule just read: if it says something about display, visibility,
  * list-style or text, file each of its selectors; custom properties set
  * for the whole page are kept */
@@ -2337,6 +2582,14 @@ static void end_rule(struct css_sheet *s)
 			unsigned long bits2 = 0;
 			unsigned long bits = box_decl(p, pn, v, vn, &bd.b, &bits2);
 
+			if ((bits2 & CSS_B2_BGI) && bd.b.bgsrc) {
+				/* (the url, kept: the text goes) */
+				bd.b.bgi = cpool_add(s, s->url_at, bd.b.bgsrc, bd.b.bgsrc_n);
+				bd.b.bgsrc = NULL;
+				if (bd.b.bgi == 0)
+					bits2 &= ~CSS_B2_BGI;
+			} else if (bits2 & CSS_B2_BGI)
+				bd.b.bgi = 0;
 			bd.b.set |= bits;
 			bd.b.set2 |= bits2;
 			if (imp) {
@@ -2401,25 +2654,8 @@ static void end_rule(struct css_sheet *s)
 			box = s->nboxes++;
 		}
 	}
-	if (cv && s->cpool_n + cvn + 1 <= CPOOL_MAX) {
-		if (s->cpool_n + cvn + 1 > s->cpool_cap) {
-			unsigned long c = s->cpool_cap ? s->cpool_cap * 2 : 1024;
-			char *q;
-
-			while (c < s->cpool_n + cvn + 1)
-				c *= 2;
-			if ((q = xrealloc(s->cpool, c)) != NULL) {
-				s->cpool = q;
-				s->cpool_cap = c;
-			}
-		}
-		if (s->cpool_n + cvn + 1 <= s->cpool_cap) {
-			memcpy(s->cpool + s->cpool_n, cv, cvn);
-			s->cpool[s->cpool_n + cvn] = '\0';
-			cont = s->cpool_n + 1;
-			s->cpool_n += cvn + 1;
-		}
-	}
+	if (cv)
+		cont = cpool_add(s, -1, cv, cvn);
 	if (!disp && !vis && !ls && !t.fg && !t.fw && !t.fs && !t.td && !t.ta
 		&& !t.fz && box < 0 && !cont)
 		return;
@@ -2635,6 +2871,26 @@ keep:
 		s->decl[s->dlen++] = (char)c;
 }
 
+void css_base(struct css_sheet *s, const char *url)
+{
+	size_t n;
+	int i;
+
+	if (s == NULL || url == NULL)
+		return;
+	for (i = 0; i < s->nurls && strcmp(s->urls[i], url) != 0; i++)
+		;
+	if (i == s->nurls) {
+		if (i == MAX_URLS || (s->urls[i] = xmalloc((n = strlen(url)) + 1)) == NULL) {
+			s->url_at = 0;	/* (the page's: often the same server) */
+			return;
+		}
+		memcpy(s->urls[i], url, n + 1);
+		s->nurls++;
+	}
+	s->url_at = i + 1;
+}
+
 void css_begin(struct css_sheet *s, const char *media, nodeid pos)
 {
 	unsigned short m = 0;
@@ -2642,6 +2898,7 @@ void css_begin(struct css_sheet *s, const char *media, nodeid pos)
 	if (s == NULL)
 		return;
 	s->on = 1;
+	s->url_at = 0;
 	s->order = (unsigned long)pos << 16;
 	s->state = P_PRELUDE;
 	s->depth = s->quote = s->esc = s->slash = s->star = s->comment = 0;
@@ -3176,8 +3433,19 @@ static void box_take(struct css_box *b, const struct css_box *a, int k)
 		k -= CSS_B_NBITS;
 		if (k < 4)
 			b->bstyle[k] = a->bstyle[k];
-		else
+		else if (k < 8)
 			b->bcolor[k - 4] = a->bcolor[k - 4];
+		else if (k == 8) {
+			b->bgsrc = a->bgsrc;
+			b->bgbase = a->bgbase;
+			b->bgsrc_n = a->bgsrc_n;
+			b->bgi = a->bgi;
+		} else if (k == 9)
+			b->bgrep = a->bgrep;
+		else if (k == 10)
+			b->bgfixed = a->bgfixed;
+		else
+			memcpy(b->bgpos, a->bgpos, sizeof b->bgpos);
 		b->set2 |= 1UL << k;
 		return;
 	}
@@ -3218,6 +3486,20 @@ static void box_take(struct css_box *b, const struct css_box *a, int k)
 	b->set |= bit;
 }
 
+/* the background-image the sheet's rules gave b, where it is kept */
+static void bg_url(const struct css_sheet *s, struct css_box *b)
+{
+	const char *u;
+
+	if (!(b->set2 & CSS_B2_BGI) || b->bgi == 0)
+		return;
+	u = s->cpool + b->bgi - 1;
+	b->bgbase = u[0] > 1 && u[0] - 2 < s->nurls ? s->urls[u[0] - 2] : NULL;
+	b->bgsrc = u + 1;
+	b->bgsrc_n = (unsigned short)strlen(u + 1);
+	b->bgi = 0;
+}
+
 int css_box(struct css_sheet *s, const struct doc *d, nodeid node,
 	const char *id, const char *cls, int vw, struct css_box *b)
 {
@@ -3238,6 +3520,7 @@ int css_box(struct css_sheet *s, const struct doc *d, nodeid node,
 	for (k = 0; k < BOX_NBITS; k++)
 		if (w.box[k])
 			box_take(b, &s->boxes[w.box[k]->box].b, k);
+	bg_url(s, b);
 	return 1;
 }
 
@@ -3372,6 +3655,8 @@ int css_pseudo(struct css_sheet *s, const struct doc *d, nodeid node,
 	for (k = 0; b && k < BOX_NBITS; k++)
 		if (w.box[k])
 			box_take(b, &s->boxes[w.box[k]->box].b, k);
+	if (b)
+		bg_url(s, b);
 	return 1;
 }
 
@@ -3441,19 +3726,24 @@ static int grad_color(const char *w, size_t wn, unsigned long *rgb)
  * isn't known here (currentcolor, var()); 0 when they drop it ("red
  * pink", "url(x) blah"). Of several layers, only the last has a colour.
  */
-static int bg_value(const char *v, size_t vn, int shorthand, unsigned long *rgb)
+static int bg_value(const char *v, size_t vn, int shorthand, unsigned long *rgb,
+	struct bgsay *o)
 {
 	static const char *const rep[] = { "repeat", "no-repeat", "space", "round", NULL };
 	static const char *const pos[] = { "left", "right", "top", "bottom", "center", NULL };
 	static const char *const boxk[] = { "border-box", "padding-box", "content-box",
 		"text", NULL };
 	const char *e = v + vn, *p;
+	const char *rw[2], *pw[4] = { NULL, NULL, NULL, NULL };
+	size_t rwn[2], pwn[4] = { 0, 0, 0, 0 };
 	int ncol = 0, nimg = 0, nrep = 0, natt = 0, npos = 0, nsize = 0, nbox = 0;
 	int slash = 0, known = 1, ck = COL_NO, depth = 0, i, grad = 0;
 	unsigned long grgb = 0;
 	struct cval c;
 	struct css_len l;
 
+	if (o)
+		bg_initial(o);
 	if (!shorthand) {
 		if ((ck = is_color(v, vn, &c)) == COL_NO)
 			return 0;
@@ -3514,24 +3804,33 @@ static int bg_value(const char *v, size_t vn, int shorthand, unsigned long *rgb)
 				return 0;
 			if (has(w, wn, "gradient("))
 				grad = grad_color(w, wn, &grgb);
+			if (o)
+				url_of(w, wn, &o->src, &o->n);
 			continue;
 		}
 		if (is_kw(w, wn, "repeat-x") || is_kw(w, wn, "repeat-y")) {
 			if (nrep)
 				return 0;
+			rw[0] = w;
+			rwn[0] = wn;
+			rwn[1] = 0;
 			nrep = 2;
 			continue;
 		}
 		for (i = 0; rep[i] && !is_kw(w, wn, rep[i]); i++)
 			;
 		if (rep[i]) {
-			if (nrep++ == 2)
+			if (nrep == 2)
 				return 0;
+			rw[nrep] = w;
+			rwn[nrep++] = wn;
 			continue;
 		}
 		if (is_kw(w, wn, "scroll") || is_kw(w, wn, "fixed") || is_kw(w, wn, "local")) {
 			if (natt++)
 				return 0;
+			if (o)
+				o->fixed = is_kw(w, wn, "fixed");
 			continue;
 		}
 		for (i = 0; boxk[i] && !is_kw(w, wn, boxk[i]); i++)
@@ -3544,8 +3843,10 @@ static int bg_value(const char *v, size_t vn, int shorthand, unsigned long *rgb)
 		for (i = 0; pos[i] && !is_kw(w, wn, pos[i]); i++)
 			;
 		if (pos[i] || (parse_len(w, wn, &l) && l.u != CSS_U_AUTO) || is_wild(w, wn)) {
-			if (slash || npos++ == 4)
+			if (slash || npos == 4)
 				return 0;
+			pw[npos] = w;
+			pwn[npos++] = wn;
 			continue;
 		}
 		if (!ncol && (ck = is_color(w, wn, &c)) != COL_NO) {
@@ -3558,6 +3859,11 @@ static int bg_value(const char *v, size_t vn, int shorthand, unsigned long *rgb)
 		return 0;
 	if (!known)
 		return -1;
+	if (o) {
+		if (nrep)
+			o->rep = (unsigned char)bg_repeat(rw, rwn, nrep == 2 && rwn[1] ? 2 : 1);
+		bg_pos(pw, pwn, npos, o->pos);
+	}
 done:
 	if (ck == COL_RGB)
 		*rgb = c.rgb;
@@ -3644,7 +3950,7 @@ void css_inline_text(struct css_sheet *s, const char *style, struct css_text *t)
 				|| (pn == 10 && starts(p, pn, "background"))) {
 				unsigned long rgb;
 
-				if (bg_value(v, vn, pn == 10, &rgb) > 0 && rgb != CSS_BG_NONE)
+				if (bg_value(v, vn, pn == 10, &rgb, NULL) > 0 && rgb != CSS_BG_NONE)
 					t->bg = CSS_RGB_SET | rgb;
 			} else if (pn == 9 && starts(p, pn, "font-size")) {
 				struct css_len l;

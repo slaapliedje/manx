@@ -12,10 +12,16 @@
  * stale one checked with the server first (If-None-Match /
  * If-Modified-Since: a 304 renews it).
  *
+ * Boxes' background pictures (CSS background-image) are entries too, one
+ * a URL however many boxes have it (a sprite), registered after each
+ * layout (pimg_bgs) and decoded at their own size.
+ *
  * Order: the images shown first (decoded if fetched, else fetched); then
- * those whose size isn't known yet, in document order (until it is, the
- * layout shows their alt text, and they may be anywhere); then the rest,
- * nearest the lines shown first.
+ * the background pictures of the boxes down to the bottom of what is
+ * shown; then the images whose size isn't known yet, in document order
+ * (until it is, the layout shows their alt text, and they may be
+ * anywhere); then the rest, nearest the lines shown first; then the
+ * other background pictures.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,6 +42,9 @@
 #define PIMG_ROWS_POLL	8		/* rows decoded between polls */
 #define PIMG_CACHE_MAX	(256UL * 1024)	/* bigger ones: not kept on disk
 					 * (the cache is pages' too) */
+#define PIMG_MAX_BG	512		/* background pictures, a page */
+#define PIMG_BG_PIXELS	(1024UL * 1024)	/* none bigger (held whole, at its
+					 * own size, on the screen) */
 
 enum { P_NEW, P_HAVE, P_FAILED, P_SKIP };
 
@@ -58,6 +67,8 @@ struct pent {
 
 static struct pent *g_e;
 static int g_n;
+static struct pent *g_b;		/* background pictures (own: the URL) */
+static int g_nb, g_bcap;
 static const struct doc *g_d;
 static struct url g_base;
 static int g_local;		/* the page is a file: subresources may be */
@@ -98,6 +109,14 @@ void pimg_end(void)
 	xfree(g_e);
 	g_e = NULL;
 	g_n = 0;
+	for (i = 0; i < g_nb; i++) {
+		drop_data(&g_b[i]);
+		drop_scr(&g_b[i]);
+		xfree(g_b[i].own);
+	}
+	xfree(g_b);
+	g_b = NULL;
+	g_nb = g_bcap = 0;
 	g_d = NULL;
 	g_held = 0;
 }
@@ -271,6 +290,83 @@ void pimg_cancel(void)
 	for (i = 0; i < g_n; i++)
 		if (g_e[i].state == P_NEW && g_e[i].data == NULL && g_e[i].iw == 0)
 			g_e[i].state = P_SKIP;
+	for (i = 0; i < g_nb; i++)
+		if (g_b[i].state == P_NEW && g_b[i].data == NULL)
+			g_b[i].state = P_SKIP;
+}
+
+/* the entry for a background picture's URL (made if new), or -1 */
+static int bg_ent(const struct lbgimg *g)
+{
+	static struct url b, u;
+	static char url[URL_MAX];
+	const char *abs = url;
+	struct pent *e;
+	size_t n;
+	int i;
+
+	if (strncmp(g->src, "data:", 5) == 0)
+		abs = g->src;
+	else if ((g->base && url_parse(g->base, &b) < 0)
+		|| url_resolve(g->base ? &b : &g_base, g->src, &u) < 0
+		|| url_format(&u, url, sizeof url, 0) < 0)
+		return -1;
+	for (i = 0; i < g_nb; i++)
+		if (strcmp(g_b[i].own, abs) == 0)
+			return i;
+	if (g_nb == PIMG_MAX_BG)
+		return -1;
+	if (g_nb == g_bcap) {
+		int c = g_bcap ? g_bcap * 2 : 16;
+
+		if ((e = xrealloc(g_b, (size_t)c * sizeof *e)) == NULL)
+			return -1;
+		g_b = e;
+		g_bcap = c;
+	}
+	e = &g_b[g_nb];
+	memset(e, 0, sizeof *e);
+	n = strlen(abs);
+	if ((e->own = xmalloc(n + 1)) == NULL)
+		return -1;
+	memcpy(e->own, abs, n + 1);
+	e->src = e->own;
+	return g_nb++;
+}
+
+void pimg_bgs(struct page *p)
+{
+	unsigned long i;
+
+	if (g_d == NULL || scr_pixels() == NULL)
+		return;
+	for (i = 0; i < p->nbgimgs; i++)
+		if (p->bgimgs[i].ent == -1) {
+			int k = bg_ent(&p->bgimgs[i]);
+
+			p->bgimgs[i].ent = k < 0 ? -2 : k;
+		}
+}
+
+/* top page p's background picture k (lbox.bgi): its entry, or NULL */
+static struct pent *bg_of(const struct page *p, unsigned k)
+{
+	int ent;
+
+	if (k == 0 || k > p->nbgimgs || (ent = p->bgimgs[k - 1].ent) < 0 || ent >= g_nb)
+		return NULL;
+	return &g_b[ent];
+}
+
+void *pimg_bg_screen(const struct page *p, unsigned k, int *w, int *h)
+{
+	struct pent *e = bg_of(p, k);
+
+	if (e == NULL || e->scr == NULL || e->state == P_FAILED)
+		return NULL;
+	*w = e->sw;
+	*h = e->sh;
+	return e->scr;
 }
 
 void pimg_count(int *total, int *done)
@@ -283,6 +379,13 @@ void pimg_count(int *total, int *done)
 			continue;
 		(*total)++;
 		if (g_e[i].state != P_NEW || g_e[i].iw > 0)
+			(*done)++;
+	}
+	for (i = 0; i < g_nb; i++) {
+		if (g_b[i].state == P_SKIP)
+			continue;
+		(*total)++;
+		if (g_b[i].state != P_NEW || g_b[i].iw > 0)
 			(*done)++;
 	}
 }
@@ -390,6 +493,12 @@ static int b64(int c)
 	return -1;
 }
 
+static int hexv(int c)
+{
+	return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10
+		: c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+}
+
 /* a data: URL's bytes (base64 only: the images worth showing are) */
 static int data_url(struct pent *e, const char *s)
 {
@@ -403,6 +512,11 @@ static int data_url(struct pent *e, const char *s)
 		int v = b64((unsigned char)*s);
 		unsigned char c;
 
+		if (*s == '%' && hexv(s[1]) >= 0 && hexv(s[2]) >= 0) {
+			/* (escaped, as in a style sheet's url(): %2F) */
+			v = b64(hexv(s[1]) * 16 + hexv(s[2]));
+			s += 2;
+		}
 		if (v < 0)
 			continue;	/* (white space, padding) */
 		acc = acc << 6 | (unsigned long)v;
@@ -584,7 +698,7 @@ static int dec_row(void *ctx, int y, const unsigned char *px, const unsigned cha
 	return 0;
 }
 
-static int decode_one(const struct page *p, long k, struct pent *e,
+static int decode_one(struct pent *e, int w, int h,
 	int (*poll)(void *ctx, int shown), void *ctx)
 {
 	struct decoding g;
@@ -600,8 +714,8 @@ static int decode_one(const struct page *p, long k, struct pent *e,
 	g.ctx = ctx;
 	memset(&o, 0, sizeof o);
 	o.fmt = scr_pixels();
-	o.want_w = p->images[k].w;
-	o.want_h = p->images[k].h;
+	o.want_w = w;
+	o.want_h = h;
 	o.size = dec_size;
 	o.row = dec_row;
 	o.ctx = &g;
@@ -628,8 +742,8 @@ static int decode_one(const struct page *p, long k, struct pent *e,
 	e->whole = 1;
 	if (r != IMG_END) {
 		e->bad = 1;
-		e->bw = (int)p->images[k].w;
-		e->bh = (int)p->images[k].h;
+		e->bw = w;
+		e->bh = h;
 		if (e->scr == NULL) {
 			/* nothing of it to show (a progressive JPEG): its
 			 * alt text instead, so lay out again */
@@ -673,7 +787,7 @@ static int work_on(const struct page *p, long k, int (*poll)(void *ctx, int show
 	switch (needs(p, k, &e)) {
 	case 1:
 		e->bad = 0;
-		return decode_one(p, k, e, poll, ctx);
+		return decode_one(e, (int)p->images[k].w, (int)p->images[k].h, poll, ctx);
 	case 2:
 		return fetch_one(e, poll, ctx);
 	}
@@ -721,14 +835,55 @@ static int layers_work(const struct page *p, int (*poll)(void *ctx, int shown),
 	return -1;
 }
 
+/* a background picture's work (fetching, decoding at its own size): as
+ * work_on, or -1 for none */
+static int bg_work(struct pent *e, int (*poll)(void *ctx, int shown), void *ctx)
+{
+	int r;
+
+	if (e == NULL || e->state == P_SKIP || e->state == P_FAILED
+		|| (e->scr && e->whole) || e->bad)
+		return -1;
+	if (e->state != P_HAVE)
+		return fetch_one(e, poll, ctx);
+	if ((unsigned long)e->iw * (unsigned long)e->ih > PIMG_BG_PIXELS) {
+		drop_data(e);
+		e->state = P_FAILED;
+		return PIMG_WORKED;
+	}
+	r = decode_one(e, e->iw, e->ih, poll, ctx);
+	return r == PIMG_SIZED ? PIMG_WORKED : r;
+}
+
+/* the background pictures of page p's layers' boxes (top: the top
+ * page): as bg_work */
+static int layers_bg(const struct page *top, const struct page *p,
+	int (*poll)(void *ctx, int shown), void *ctx)
+{
+	unsigned long i, b;
+	int r;
+
+	for (i = 0; i < p->nlayers; i++) {
+		const struct page *lp = &p->layers[i].pg;
+
+		for (b = 0; b < lp->nboxes; b++)
+			if (lp->boxes[b].bgi
+				&& (r = bg_work(bg_of(top, lp->boxes[b].bgi), poll, ctx)) >= 0)
+				return r;
+		if ((r = layers_bg(top, lp, poll, ctx)) >= 0)
+			return r;
+	}
+	return -1;
+}
+
 int pimg_step(const struct page *p, long top, long rows,
 	int (*poll)(void *ctx, int shown), void *ctx)
 {
 	long k, best = -1, bestd = 0;
-	unsigned long ln;
+	unsigned long ln, b;
 	int i, r;
 
-	if (g_n == 0 || (p->images == NULL && p->nlayers == 0))
+	if ((g_n == 0 || (p->images == NULL && p->nlayers == 0)) && g_nb == 0)
 		return PIMG_IDLE;
 	/* which are laid out as images (the others show alt text) */
 	g_gen++;
@@ -748,6 +903,21 @@ int pimg_step(const struct page *p, long top, long rows,
 	}
 	if ((r = layers_work(p, poll, ctx)) >= 0)
 		return r;
+	/* background pictures: the page's, its boxes' down to the bottom of
+	 * what's shown, its layers' */
+	if (g_nb) {
+		for (b = 0; b < p->nbgimgs; b++)
+			if (p->bgimgs[b].ent >= 0 && p->bgimgs[b].ent < g_nb)
+				g_b[p->bgimgs[b].ent].gen = g_gen;
+		if ((r = bg_work(bg_of(p, p->page_bgi), poll, ctx)) >= 0)
+			return r;
+		for (b = 0; b < p->nboxes; b++)
+			if (p->boxes[b].bgi && (long)p->boxes[b].line < top + rows
+				&& (r = bg_work(bg_of(p, p->boxes[b].bgi), poll, ctx)) >= 0)
+				return r;
+		if ((r = layers_bg(p, p, poll, ctx)) >= 0)
+			return r;
+	}
 	/* those of no known size yet, shown as alt text: once it is known,
 	 * the page is laid out again */
 	for (i = 0; i < g_n; i++)
@@ -771,5 +941,9 @@ int pimg_step(const struct page *p, long top, long rows,
 	}
 	if (best >= 0 && (r = work_on(p, best, poll, ctx)) >= 0)
 		return r;
+	/* the other background pictures this layout has */
+	for (i = 0; i < g_nb; i++)
+		if (g_b[i].gen == g_gen && (r = bg_work(&g_b[i], poll, ctx)) >= 0)
+			return r;
 	return PIMG_IDLE;
 }

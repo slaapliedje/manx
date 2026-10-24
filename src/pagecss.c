@@ -212,14 +212,18 @@ static int from_cache(void *ctx, const unsigned char *b, size_t n)
 	return 0;
 }
 
+/* (base: where it came from, which its url()s are relative to; NULL:
+ * the page) */
 static void read_into_sheet(const struct psheet *p, const unsigned char *b, size_t n,
-	const char *cache_key)
+	const char *cache_key, const char *base)
 {
 	static struct cache_meta m;
 
 	if (g_d->sheet == NULL && (g_d->sheet = css_new()) == NULL)
 		return;
 	css_begin(g_d->sheet, p->media, p->node);
+	if (base && *base)
+		css_base(g_d->sheet, base);
 	if (cache_key)
 		cache_read(cache_key, &m, from_cache, NULL);
 	else if (b)		/* (NULL: an empty body) */
@@ -317,7 +321,7 @@ static void data_sheet(const struct psheet *p)
 		} else
 			b[n++] = (unsigned char)*q;
 	}
-	read_into_sheet(p, b, n, NULL);
+	read_into_sheet(p, b, n, NULL, NULL);
 	xfree(b);
 }
 
@@ -355,7 +359,7 @@ int pcss_step(int (*poll)(void *ctx, int shown), void *ctx)
 	/* a fresh copy in the cache: no fetch */
 	if (strncmp(url, "file:", 5) != 0 && cache_lookup(url, &m)
 		&& m.fresh_until > (long)time(NULL)) {
-		read_into_sheet(p, NULL, 0, url);
+		read_into_sheet(p, NULL, 0, url, m.location[0] ? m.location : url);
 		p->state = S_DONE;
 		return PCSS_READ;
 	}
@@ -394,7 +398,7 @@ int pcss_step(int (*poll)(void *ctx, int shown), void *ctx)
 	}
 	if (strncmp(url, "file:", 5) != 0)
 		keep(url, res->url, &f);
-	read_into_sheet(p, f.buf, f.len, NULL);
+	read_into_sheet(p, f.buf, f.len, NULL, res->url[0] ? res->url : url);
 	xfree(f.buf);
 	xfree(res);
 	return PCSS_READ;

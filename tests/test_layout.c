@@ -10,6 +10,7 @@
 #include "load.h"
 #include "layout.h"
 #include "tags.h"
+#include "css.h"
 
 static int fails, runs;
 
@@ -364,6 +365,76 @@ static void check_minmax(const char *name, const char *html, unsigned long bg,
 	doc_free(&d);
 }
 
+/* the background picture of top page top whose url() is src: its
+ * lbox.bgi, or 0 */
+static unsigned bgi_of(const struct page *top, const char *src)
+{
+	unsigned long i;
+
+	for (i = 0; i < top->nbgimgs; i++)
+		if (strcmp(top->bgimgs[i].src, src) == 0)
+			return (unsigned)i + 1;
+	return 0;
+}
+
+/* how many of page pg's boxes have background picture k */
+static int boxes_with(const struct page *pg, unsigned k)
+{
+	unsigned long i;
+	int n = 0;
+
+	for (i = 0; i < pg->nboxes; i++)
+		n += k && pg->boxes[i].bgi == k;
+	return n;
+}
+
+/* background pictures: blocks', the page's, floats', layers', cells' */
+static void check_bg_pics(void)
+{
+	struct page pg;
+	struct doc d;
+	const struct lbgimg *g;
+	unsigned k;
+	int ok;
+
+	lay_px("<style>body{background:url(p.gif) fixed} .a{background:url(a.png) "
+		"no-repeat 50% 10px;border:3px solid;padding:2px} .s{background:red url(i.svg)}"
+		"</style><div class=a>x</div><div class=a>y</div><div class=s>z</div>", &pg, &d);
+	k = bgi_of(&pg, "a.png");
+	g = k ? &pg.bgimgs[k - 1] : NULL;
+	ok = pg.page_bgi && pg.page_bgi == bgi_of(&pg, "p.gif")
+		&& pg.bgimgs[pg.page_bgi - 1].fixed && pg.nbgimgs == 2
+		&& g && g->rep == CSS_BR_NONE && g->pct[0] && g->pos[0] == 500
+		&& !g->pct[1] && g->pos[1] == 10 && g->in[0] == 3 && g->in[3] == 3
+		&& boxes_with(&pg, k) == 2 && box_bg(&pg, 0xff0000UL) != NULL
+		&& box_bg(&pg, 0xff0000UL)->bgi == 0;
+	runs++;
+	if (!ok) {
+		fails++;
+		printf("FAIL bg pics: blocks: %lu pictures, page's %u\n", pg.nbgimgs, pg.page_bgi);
+	}
+	layout_free(&pg);
+	doc_free(&d);
+
+	lay_px("<style>html{background:url(h.png)}</style><body style='background:url(b.png)'>"
+		"<div style='float:left;width:50px;height:20px;background:url(f.png)'></div>t"
+		"<div style='position:absolute;top:0;background:url(l.png)'>x</div>"
+		"<table><tr><td><div style='background:url(c.png)'>c</div></table>", &pg, &d);
+	ok = pg.page_bgi == bgi_of(&pg, "h.png") && pg.page_bgi
+		&& boxes_with(&pg, bgi_of(&pg, "b.png")) == 1
+		&& boxes_with(&pg, bgi_of(&pg, "f.png")) == 1
+		&& boxes_with(&pg, bgi_of(&pg, "c.png")) == 1
+		&& pg.nlayers == 1 && boxes_with(&pg.layers[0].pg, bgi_of(&pg, "l.png")) == 1
+		&& pg.layers[0].pg.nbgimgs == 0;
+	runs++;
+	if (!ok) {
+		fails++;
+		printf("FAIL bg pics: floats, layers, cells: %lu pictures\n", pg.nbgimgs);
+	}
+	layout_free(&pg);
+	doc_free(&d);
+}
+
 /* between the box with background bg1 and the one with bg2 below it: gap
  * pixels; and bg2's x and width (-1: any) */
 static void check_gap(const char *name, const char *html, unsigned long bg1,
@@ -547,6 +618,7 @@ static void check_positioned(void)
 int main(void)
 {
 	check_grid_bands();
+	check_bg_pics();
 	check_acid1_floats();
 	check_minmax("max-width, in the middle", "<div style='max-width:100px;"
 		"margin:0 auto;background:#f00'>x</div>", 0xff0000UL, 150, 100, -1);

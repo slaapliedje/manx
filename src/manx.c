@@ -49,6 +49,8 @@
 #include <time.h>
 
 #define HIST_MAX	64
+#define PANE_OUT	8		/* the page's background goes this far
+					 * out to the pane's sides (its inset) */
 #define SEARCH_URL	"https://lite.duckduckgo.com/lite/?q="
 
 /* the page on screen */
@@ -391,6 +393,34 @@ static long layer_y(struct page *p, const struct llayer *ly, long y0, int h)
 	return y0 + line_top(p, ly->line) + ly->dy;
 }
 
+/* background picture k of the page (lbox.bgi) over a box whose border
+ * box is at x, y of the pane, w x h, and out more to each side */
+static void draw_bg_pic(unsigned k, int x, long y, int w, long h, int out)
+{
+	const struct lbgimg *g;
+	void *img;
+	int iw, ih;
+	long ax, ay, aw, ah, tx, ty;
+
+	if (k == 0 || k > g_page.nbgimgs || (img = pimg_bg_screen(&g_page, k, &iw, &ih)) == NULL)
+		return;
+	g = &g_page.bgimgs[k - 1];
+	/* placed in its padding box, or the window (fixed) */
+	if (g->fixed) {
+		ax = ay = 0;
+		aw = scr_pane_w();
+		ah = scr_pane_h();
+	} else {
+		ax = x + g->in[3];
+		ay = y + g->in[0];
+		aw = w - g->in[1] - g->in[3];
+		ah = h - g->in[0] - g->in[2];
+	}
+	tx = ax + (g->pct[0] ? g->pos[0] * (aw - iw) / 1000 : g->pos[0]);
+	ty = ay + (g->pct[1] ? g->pos[1] * (ah - ih) / 1000 : g->pos[1]);
+	scr_tile(x - out, (int)y, w + 2 * out, (int)h, img, (int)tx, (int)ty, g->rep);
+}
+
 /* page p's layers (positioned elements), its line 0's top at y0 in the
  * pane, x0 across, in z order, each one's boxes, then its lines, then its
  * own layers; h: the pane's height */
@@ -412,9 +442,11 @@ static void draw_layers(struct page *p, int x0, long y0, int h)
 			const struct lbox *bx = &lp->boxes[b];
 			long by = ly0 + line_top(lp, bx->line) + bx->dy;
 
-			if (by < h && by + bx->h > 0)
+			if (by < h && by + bx->h > 0) {
 				scr_rect(lx + bx->x, (int)by, bx->w, (int)bx->h, bx->bg,
 					bx->border, bx->border_rgb);
+				draw_bg_pic(bx->bgi, lx + bx->x, by, bx->w, bx->h, 0);
+			}
 		}
 		if (lp->heights)
 			for (ln = 0; ln < lp->nlines; ln++) {
@@ -550,8 +582,16 @@ static void draw(int full)
 
 			/* the page's background, then the boxes under the text:
 			 * blocks', tables' and cells' backgrounds and borders */
+			/* (the page's background: the page's, scrolled with
+			 * it, so that only the strip a scroll uncovers is
+			 * painted again; out to the pane's sides) */
+			long ph = tops[g_page.nlines] + h;
+
 			if (g_page.page_bg != LBOX_NONE)
-				scr_rect(0, 0, scr_pane_w(), h, g_page.page_bg, 0, 0);
+				scr_rect(-PANE_OUT, (int)-y0, scr_pane_w() + 2 * PANE_OUT, (int)ph,
+					g_page.page_bg, 0, 0);
+			if (g_page.page_bgi)
+				draw_bg_pic(g_page.page_bgi, 0, -y0, scr_pane_w(), ph, PANE_OUT);
 			for (b = 0; b < g_page.nboxes; b++) {
 				const struct lbox *bx = &g_page.boxes[b];
 				long by;
@@ -559,9 +599,11 @@ static void draw(int full)
 				if (bx->line > g_page.nlines)
 					continue;
 				by = tops[bx->line] - y0 + bx->dy;
-				if (by < h && by + bx->h > 0)
+				if (by < h && by + bx->h > 0) {
 					scr_rect(bx->x, (int)by, bx->w, (int)bx->h, bx->bg,
 						bx->border, bx->border_rgb);
+					draw_bg_pic(bx->bgi, bx->x, by, bx->w, bx->h, 0);
+				}
 			}
 			/* lines above whose tall content (a cell's picture)
 			 * reaches down into view */
@@ -634,8 +676,10 @@ static void relayout(long max_lines)
 	}
 	g_have_page = 1;
 	/* (sizes may have changed: images to decode again) */
-	if (g_lm.image)
+	if (g_lm.image) {
+		pimg_bgs(&g_page);
 		g_img_busy = 1;
+	}
 }
 
 static long max_top(void)

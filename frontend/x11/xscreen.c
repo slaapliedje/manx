@@ -25,6 +25,7 @@
 #include "os.h"
 #include "entropy.h"
 #include "style.h"
+#include "css.h"
 #include "screen.h"
 #include "pixels.h"
 
@@ -851,6 +852,9 @@ struct rdraw {
 	unsigned long fill, line;
 	short border;
 	unsigned char fill_ok, line_ok;
+	unsigned char rep;		/* tile: CSS_BR_* */
+	struct ximg *tile;		/* a picture over it (scr_tile), or NULL */
+	int tx, ty;			/* ... from there */
 };
 
 static struct rdraw *rdraws;
@@ -1467,6 +1471,12 @@ void scr_image_free(void *img)
 	for (i = 0; i < nidraws; i++)
 		if (idraws[i].im == im)
 			idraws[i].im = &gone;
+	for (i = 0; i < nsrdraws; i++)
+		if (srdraws[i].tile == im)
+			srdraws[i].tile = &gone;
+	for (i = 0; i < nrdraws; i++)
+		if (rdraws[i].tile == im)
+			rdraws[i].tile = &gone;
 	if (im->pm)
 		XFreePixmap(dpy, im->pm);
 	if (im->mask)
@@ -1607,6 +1617,33 @@ static void clip_band(int b0, int b1)
 	band_clip.height = (unsigned short)(y1 - y0);
 	XSetClipRectangles(dpy, gc, 0, 0, &band_clip, 1, Unsorted);
 	band_on = 1;
+}
+
+void scr_tile(int x, int y, int w, int h, void *img, int tx, int ty, int rep)
+{
+	struct rdraw *r;
+
+	if (!px_mode || w <= 0 || h <= 0 || img == NULL)
+		return;
+	if (nrdraws == rdraws_cap) {
+		int c = rdraws_cap ? rdraws_cap * 2 : 32;
+		struct rdraw *q = xrealloc(rdraws, (size_t)c * sizeof *q);
+
+		if (q == NULL)
+			return;
+		rdraws = q;
+		rdraws_cap = c;
+	}
+	r = &rdraws[nrdraws++];
+	memset(r, 0, sizeof *r);
+	r->x = x;
+	r->y = y;
+	r->w = w;
+	r->h = h;
+	r->tile = img;
+	r->tx = tx;
+	r->ty = ty;
+	r->rep = (unsigned char)rep;
 }
 
 static void clip_none(void)
@@ -1767,11 +1804,78 @@ static void fill_clipped(long x0, long y0, long x1, long y1, unsigned long px,
 		(unsigned)(x1 - x0), (unsigned)(y1 - y0));
 }
 
+/* a picture repeated over box r, within pane rows [b0, b1) (the band:
+ * its clip is band_clip) */
+static void paint_tile(const struct rdraw *r)
+{
+	struct ximg *im = r->tile;
+	long x0 = r->x, y0 = r->y, x1 = (long)r->x + r->w, y1 = (long)r->y + r->h;
+	long ox = pane_x() + PANE_IN, oy = pane_y();
+	unsigned w, h;
+	Pixmap m = None;
+
+	if (r->rep == CSS_BR_X || r->rep == CSS_BR_NONE) {
+		if (y0 < r->ty)
+			y0 = r->ty;
+		if (y1 > (long)r->ty + im->h)
+			y1 = (long)r->ty + im->h;
+	}
+	if (r->rep == CSS_BR_Y || r->rep == CSS_BR_NONE) {
+		if (x0 < r->tx)
+			x0 = r->tx;
+		if (x1 > (long)r->tx + im->w)
+			x1 = (long)r->tx + im->w;
+	}
+	/* (in the window, in the band) */
+	x0 += ox;
+	x1 += ox;
+	y0 += oy;
+	y1 += oy;
+	if (x0 < band_clip.x)
+		x0 = band_clip.x;
+	if (y0 < band_clip.y)
+		y0 = band_clip.y;
+	if (x1 > band_clip.x + band_clip.width)
+		x1 = band_clip.x + band_clip.width;
+	if (y1 > band_clip.y + band_clip.height)
+		y1 = band_clip.y + band_clip.height;
+	if (x0 >= x1 || y0 >= y1)
+		return;
+	w = (unsigned)(x1 - x0);
+	h = (unsigned)(y1 - y0);
+	if (im->mask) {
+		/* the mask repeated likewise, as the clip */
+		m = XCreatePixmap(dpy, win, w, h, 1);
+		XSetTile(dpy, mask_gc, im->mask);
+		XSetTSOrigin(dpy, mask_gc, (int)(ox + r->tx - x0), (int)(oy + r->ty - y0));
+		XSetFillStyle(dpy, mask_gc, FillTiled);
+		XFillRectangle(dpy, m, mask_gc, 0, 0, w, h);
+		XSetFillStyle(dpy, mask_gc, FillSolid);
+		XSetClipMask(dpy, gc, m);
+		XSetClipOrigin(dpy, gc, (int)x0, (int)y0);
+	}
+	XSetTile(dpy, gc, im->pm);
+	XSetTSOrigin(dpy, gc, (int)(ox + r->tx), (int)(oy + r->ty));
+	XSetFillStyle(dpy, gc, FillTiled);
+	XFillRectangle(dpy, win, gc, (int)x0, (int)y0, w, h);
+	XSetFillStyle(dpy, gc, FillSolid);
+	XSetTSOrigin(dpy, gc, 0, 0);
+	if (m != None) {
+		XFreePixmap(dpy, m);
+		XSetClipRectangles(dpy, gc, 0, 0, &band_clip, 1, Unsorted);
+	}
+}
+
 static void paint_rect(const struct rdraw *r, int b0, int b1)
 {
 	long x0 = r->x, y0 = r->y, x1 = (long)r->x + r->w, y1 = (long)r->y + r->h;
 	int k = r->border;
 
+	if (r->tile) {
+		if (r->tile != &gone)
+			paint_tile(r);
+		return;
+	}
 	if (r->fill_ok)
 		fill_clipped(x0, y0, x1, y1, r->fill, b0, b1);
 	if (r->line_ok && k > 0) {
@@ -1909,7 +2013,8 @@ static int rect_like(const struct rdraw *a, const struct rdraw *b, int s)
 	return a->x == b->x && a->y == b->y + s && a->w == b->w && a->h == b->h
 		&& a->fill_ok == b->fill_ok && a->line_ok == b->line_ok
 		&& a->border == b->border && (!a->fill_ok || a->fill == b->fill)
-		&& (!a->line_ok || a->line == b->line);
+		&& (!a->line_ok || a->line == b->line) && a->tile == b->tile
+		&& (!a->tile || (a->rep == b->rep && a->tx == b->tx && a->ty == b->ty + s));
 }
 
 /* (arg: char *, as R5 has no XPointer) */
@@ -2179,9 +2284,24 @@ static void keep_shown(void)
  * Images with rows come since they were painted: just those rows onto
  * the window (and the cells over them again, if a menu is open).
  */
-static void paint_new_rows(void)
+static void paint_new_rows(const struct fview *v)
 {
 	int i;
+
+	/* (a box's picture: its band again, what is over it too) */
+	for (i = 0; i < nrdraws; i++) {
+		struct ximg *t = rdraws[i].tile;
+		int y0 = rdraws[i].y, y1 = rdraws[i].y + rdraws[i].h, H = pane_hpx();
+
+		if (t == NULL || t == &gone || t->new0 > t->new1)
+			continue;
+		paint_band(v, y0 < 0 ? 0 : y0, y1 > H ? H : y1);
+	}
+	for (i = 0; i < nrdraws; i++)
+		if (rdraws[i].tile && rdraws[i].tile != &gone) {
+			rdraws[i].tile->new0 = rdraws[i].tile->h;
+			rdraws[i].tile->new1 = -1;
+		}
 
 	for (i = 0; i < nidraws; i++) {
 		const struct idraw *d = &idraws[i];
@@ -2234,7 +2354,7 @@ static void flush_pane(int full)
 	shown_w = W;
 	shown_h = H;
 	shown_over = cells_over;
-	paint_new_rows();
+	paint_new_rows(&v);
 }
 
 /* --- cells ------------------------------------------------------------- */
