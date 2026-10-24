@@ -250,6 +250,77 @@ static void keep(const char *key, const char *final_url, struct fetching *f)
 	cache_commit(&m);
 }
 
+static int hexd(int c)
+{
+	return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10
+		: c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+}
+
+static int b64d(int c)
+{
+	if (c >= 'A' && c <= 'Z')
+		return c - 'A';
+	if (c >= 'a' && c <= 'z')
+		return c - 'a' + 26;
+	if (c >= '0' && c <= '9')
+		return c - '0' + 52;
+	return c == '+' || c == '-' ? 62 : c == '/' || c == '_' ? 63 : -1;
+}
+
+/* is s (n bytes) w, case aside? */
+static int same(const char *s, size_t n, const char *w)
+{
+	size_t i;
+
+	for (i = 0; i < n && w[i]; i++)
+		if ((s[i] >= 'A' && s[i] <= 'Z' ? s[i] + 32 : s[i]) != w[i])
+			return 0;
+	return i == n && w[i] == '\0';
+}
+
+/* a data: URL's sheet ("data:text/css,a%20%7B...", or ;base64), read at
+ * once: there is nothing to fetch */
+static void data_sheet(const struct psheet *p)
+{
+	const char *s = p->href + 5, *comma = strchr(s, ','), *t, *q;
+	unsigned char *b;
+	unsigned long acc = 0;
+	size_t n = 0;
+	int bits = 0, base64;
+
+	if (comma == NULL)
+		return;
+	for (t = s; t < comma && *t != ';'; t++)
+		;
+	/* (a type, if any, must be CSS's) */
+	if (t > s && !same(s, (size_t)(t - s), "text/css"))
+		return;
+	base64 = comma - s >= 7 && same(comma - 7, 7, ";base64");
+	if ((b = xmalloc(strlen(comma) + 1)) == NULL)
+		return;
+	for (q = comma + 1; *q; q++) {
+		if (base64) {
+			int v = b64d((unsigned char)*q);
+
+			if (v < 0)
+				continue;	/* (white space, padding) */
+			acc = acc << 6 | (unsigned long)v;
+			if ((bits += 6) >= 8) {
+				bits -= 8;
+				b[n++] = (unsigned char)(acc >> bits);
+			}
+		} else if (*q == '%' && hexd((unsigned char)q[1]) >= 0
+			&& hexd((unsigned char)q[2]) >= 0) {
+			b[n++] = (unsigned char)(hexd((unsigned char)q[1]) << 4
+				| hexd((unsigned char)q[2]));
+			q += 2;
+		} else
+			b[n++] = (unsigned char)*q;
+	}
+	read_into_sheet(p, b, n, NULL);
+	xfree(b);
+}
+
 int pcss_step(int (*poll)(void *ctx, int shown), void *ctx)
 {
 	static struct cache_meta m;
@@ -269,6 +340,11 @@ int pcss_step(int (*poll)(void *ctx, int shown), void *ctx)
 			p = &g_s[i];
 	if (p == NULL)
 		return PCSS_IDLE;
+	if (same(p->href, 5, "data:")) {
+		data_sheet(p);
+		p->state = S_DONE;
+		return PCSS_READ;
+	}
 	if (url_resolve(&g_base, p->href, &u) < 0
 		|| url_format(&u, url, sizeof url, 0) < 0
 		|| (strncmp(url, "http://", 7) && strncmp(url, "https://", 8)

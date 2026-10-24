@@ -427,7 +427,17 @@ int main(void)
 		"<p class=k>a</p><p>b</p>", "b|");
 	check("nested rule not followed", ".a{color:red; .b{display:none}}",
 		"<p class=a>a</p><div class=a><p class=b>b</p></div>", "a||b|");
-	check("never the body", "body{display:none} html{visibility:hidden}", "<p>a</p>", "a|");
+	check("a ';' after a rule spoils the next", ".a{color:red};.b{display:none} .c{display:none}",
+		"<p class=b>a</p><p class=c>b</p>", "a|");
+	check("acid2 selectors", "[class=second two]{display:none}"
+		" [class~=one][class~=first] [class=second\\ two][class=\"second two\"]{display:none}",
+		"<div class='first one'><p class='second two'>a</p></div><p class='second two'>b</p>",
+		"b|");
+	check("display: only what there is", ".a{display:none} .a{display:nonsense}"
+		" .b{display:none} .b{display:inline-flex}", "<p class=a>a</p><p class=b>b</p>", "b|");
+	check("html comment marks", "<!-- .a{display:none} --> <!-- .b{display:none} -->",
+		"<p class=a>a</p><p class=b>b</p><p>c</p>", "c|");
+	check("never the body","body{display:none} html{visibility:hidden}", "<p>a</p>", "a|");
 	check("unclosed rule", ".k{display:none", "<p class=k>a</p><p>b</p>", "b|");
 	check("style media print", "", "<style media=print>.p{display:none}</style><p class=p>a</p>",
 		"a|");
@@ -471,6 +481,45 @@ int main(void)
 		TAG_P, "minw=0.0a maxw=600.0p ");
 	box("min-width not a length", "p{min-width:10em;min-width:fit-content}", "<p>x",
 		TAG_P, "minw=10.0e ");
+	/* what browsers drop: Acid2's parser tests, as it has them */
+	box("acid2 parser", ".parser { margin: 0 5em 1em; padding: 0 1em; width: 2em; "
+		"height: 1em; error: \\}; background: yellow; }"
+		"* html .parser {  background: gray; }"
+		"\\.parser { padding: 2em; }"
+		".parser { m\\argin: 2em; };"
+		".parser { height: 3em; }"
+		".parser { width: 200; }"
+		".parser { border: 5em solid red ! error; }"
+		".parser { background: red pink; }",
+		"<div class=parser>x</div>", TAG_DIV, "bg=ffff00 m0=0.0p m1=5.0e m2=1.0e "
+		"m3=5.0e p0=0.0p p1=1.0e p2=0.0p p3=1.0e w=2.0e h=1.0e ");
+	box("names", "p{*zoom:1;m\\61rgin:1px;-x-:2px;9a:1px}", "<p>x", TAG_P,
+		"m0=1.0p m1=1.0p m2=1.0p m3=1.0p ");
+	box("! important spaced, !ie", "p{width:1px ! IMPORTANT} p{width:2px} "
+		"p{height:1px} p{height:2px !ie}", "<p>x", TAG_P, "w=1.0p h=1.0p ");
+	box("lengths: whole, units", "p{width:3px} p{width:2em x} p{height:2mm}"
+		" p{margin:1px 2px 3px 4px 5px} p{padding:-1px}", "<p>x", TAG_P,
+		"w=3.0p h=7.5p ");
+	box("border: each part once", "p{border:1px solid red} p{border:2px dotted blue green}"
+		" p{border:3px 4px}", "<p>x", TAG_P,
+		"bw0=1.0p bw1=1.0p bw2=1.0p bw3=1.0p bs=1 bc=ff0000 ");
+	box("border: var() is any part", "p{border:1px solid red} p{border:2px var(--s) blue}",
+		"<p>x", TAG_P, "bw0=2.0p bw1=2.0p bw2=2.0p bw3=2.0p bs=1 bc=0000ff ");
+	box("border: var()'s fallback", "p{border:solid var(--w, 2px) var(--c,#00f)}",
+		"<p>x", TAG_P, "bw0=2.0p bw1=2.0p bw2=2.0p bw3=2.0p bs=1 bc=0000ff ");
+	box("border transparent", "p{border:1em solid transparent}", "<p>x", TAG_P,
+		"bw0=1.0e bw1=1.0e bw2=1.0e bw3=1.0e bs=1 bc=ffffffff ");
+	box("background: no colour is transparent", "p{background:red} p{background:url(x.png)}",
+		"<p>x", TAG_P, "bg=ffffffff ");
+	box("background: its parts", "p{background:#fc0 url(x) no-repeat fixed 1px 0 / cover}",
+		"<p>x", TAG_P, "bg=ffcc00 ");
+	box("background: not one", "p{background:red} p{background:url(x) blah}"
+		" p{background-color:red blue}", "<p>x", TAG_P, "bg=ff0000 ");
+	box("background: last layer's colour", "p{background:url(a) red, url(b) #00f}",
+		"<p>x", TAG_P, "bg=0000ff ");
+	box("inline: what's dropped", "", "<p style='width:5px;width:6px !ie;"
+		"height:1px;*height:2px;float:leftish'>x", TAG_P, "w=5.0p h=1.0p ");
+	box("float: the keyword", "p{float:left} p{float:lefty}", "<p>x", TAG_P, "fl=2 ");
 	{
 		/* line-height: in the box's declarations (the layout inherits it) */
 		static struct html_load l;

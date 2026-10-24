@@ -12,6 +12,10 @@
  * id, else a class, else its tag, so an element is tried against a
  * handful of rules, not all of them. What the sheet says about each
  * element is remembered until the rules or the window's width change.
+ * What browsers drop is dropped here too: a declaration with a '!' not
+ * of !important, a name that isn't one, a value with a word too many or
+ * of the wrong kind ("red pink", "200" for a length), and a rule whose
+ * selector a stray ';' spoils.
  */
 #include <string.h>
 #include "os.h"
@@ -41,11 +45,11 @@
 struct cmp {
 	unsigned long id;		/* #id's hash; 0: none */
 	unsigned long cls[3];		/* .class hashes */
-	unsigned long aval;		/* [attr=v] / [attr~=v]: v's hash */
+	unsigned long aval[2];		/* [attr=v] / [attr~=v]: v's hash */
 	short tag;			/* TAG_*; 0: any */
-	unsigned char ncls;
-	unsigned char attr;		/* ATTR_*; 0: no attribute test */
-	unsigned char aop;		/* 0: present; '=', '~' */
+	unsigned char ncls, nattr;
+	unsigned char attr[2];		/* attribute tests: ATTR_* */
+	unsigned char aop[2];		/* 0: present; '=', '~' */
 	unsigned char comb;		/* to the compound on its left: ' ' or '>' */
 };
 
@@ -194,6 +198,35 @@ static int starts(const char *s, size_t n, const char *w)
 		if (i >= n || lower((unsigned char)s[i]) != w[i])
 			return 0;
 	return 1;
+}
+
+/* is s (n bytes) the keyword w, case aside? */
+static int is_kw(const char *s, size_t n, const char *w)
+{
+	return n == strlen(w) && starts(s, n, w);
+}
+
+/* is a display value (not none) one there is? its first word, as
+ * "block flow", "inline flex" put two */
+static int display_ok(const char *v, size_t vn)
+{
+	static const char *const kw[] = { "block", "inline", "inline-block",
+		"list-item", "flex", "inline-flex", "grid", "inline-grid", "table",
+		"inline-table", "table-row", "table-cell", "table-row-group",
+		"table-header-group", "table-footer-group", "table-column",
+		"table-column-group", "table-caption", "contents", "flow-root",
+		"flow", "run-in", "ruby", "ruby-text", "ruby-base", "math",
+		"-webkit-box", "-webkit-inline-box", "-ms-flexbox", "initial",
+		"inherit", "unset", "revert", "revert-layer", NULL };
+	size_t n;
+	int i;
+
+	for (n = 0; n < vn && !is_space((unsigned char)v[n]); n++)
+		;
+	for (i = 0; kw[i]; i++)
+		if (is_kw(v, n, kw[i]))
+			return 1;
+	return 0;
 }
 
 /* the word w somewhere in s (n bytes), case aside */
@@ -843,6 +876,76 @@ static void parse_color(const char *v, size_t vn, struct cval *c, int depth)
 	/* inherit, unset, currentcolor, transparent, color-mix()...: nothing */
 }
 
+/* what is_color says a word is */
+enum { COL_NO, COL_RGB, COL_CLEAR, COL_OTHER };
+
+/* Is word w a colour? COL_RGB (its value in *c), COL_CLEAR (transparent),
+ * COL_OTHER (one, but not known here: currentcolor, var(), lab()...), or
+ * COL_NO: in a shorthand, it's some other part, or a mistake. */
+static int is_color(const char *w, size_t wn, struct cval *c)
+{
+	static const char *const fn[] = { "rgb(", "rgba(", "hsl(", "hsla(", "hwb(",
+		"lab(", "lch(", "oklab(", "oklch(", "color(", "color-mix(",
+		"light-dark(", NULL };
+	int i;
+
+	parse_color(w, wn, c, 0);
+	if (c->kind == CV_RGB)
+		return COL_RGB;
+	if (c->kind != CV_NONE)
+		return COL_OTHER;
+	if (is_kw(w, wn, "transparent"))
+		return COL_CLEAR;
+	if (is_kw(w, wn, "currentcolor"))
+		return COL_OTHER;
+	if (*w == '#') {
+		/* (well formed, so its alpha is 0: #0000) */
+		for (i = 1; (size_t)i < wn && hexval((unsigned char)w[i]) >= 0; i++)
+			;
+		return (size_t)i == wn && (wn == 5 || wn == 9) ? COL_CLEAR : COL_NO;
+	}
+	if (wn > 4 && w[wn - 1] == ')')
+		for (i = 0; fn[i]; i++)
+			if (starts(w, wn, fn[i]))
+				/* (rgb() and hsl() that parse_color refuses have
+				 * alpha 0: rgba(0,0,0,0)) */
+				return i < 4 ? COL_CLEAR : COL_OTHER;
+	return COL_NO;
+}
+
+/* var(--x, fallback): the fallback (a word: *f, *fn), when there is one */
+static int var_fallback(const char *w, size_t wn, const char **f, size_t *fn)
+{
+	const char *e = w + wn, *a;
+
+	if (!starts(w, wn, "var(") || w[wn - 1] != ')')
+		return 0;
+	a = arg_end(w + 4, e - 1);
+	if (a >= e - 1 || *a != ',')
+		return 0;
+	for (a++; a < e - 1 && is_space((unsigned char)*a); a++)
+		;
+	for (e--; e > a && is_space((unsigned char)e[-1]); e--)
+		;
+	*f = a;
+	*fn = (size_t)(e - a);
+	return *fn > 0;
+}
+
+/* is word w one whose value is only known later (var(), calc()...)? In a
+ * shorthand it may be any of the parts */
+static int is_wild(const char *w, size_t wn)
+{
+	static const char *const fn[] = { "var(", "calc(", "min(", "max(", "clamp(",
+		"env(", "attr(", NULL };
+	int i;
+
+	for (i = 0; fn[i]; i++)
+		if (starts(w, wn, fn[i]))
+			return 1;
+	return 0;
+}
+
 /* the palette index of colour rgb, added if new; 0: no room */
 static int pal_index(struct css_sheet *s, unsigned long rgb)
 {
@@ -1051,11 +1154,11 @@ static int compile(const char *p, const char *e, struct cmp *out, unsigned long 
 					return 0;
 				cur.tag = TAG_HTML;
 			} else if (strcmp(name, "link") == 0 || strcmp(name, "any-link") == 0) {
-				if (cur.attr || (cur.tag && cur.tag != TAG_A))
+				if (cur.nattr == 2 || (cur.tag && cur.tag != TAG_A))
 					return 0;
 				cur.tag = TAG_A;
-				cur.attr = ATTR_HREF;
-				cur.aop = 0;
+				cur.attr[cur.nattr] = ATTR_HREF;
+				cur.aop[cur.nattr++] = 0;
 			} else
 				return 0;
 			*spec += 1UL << 8;
@@ -1079,13 +1182,13 @@ static int compile(const char *p, const char *e, struct cmp *out, unsigned long 
 			p++;
 			while (p < e && is_space((unsigned char)*p))
 				p++;
-			if (cur.attr || (k = read_name(&p, e, name, sizeof name)) < 0)
+			if (cur.nattr == 2 || (k = read_name(&p, e, name, sizeof name)) < 0)
 				return 0;
 			for (i = 0; i < k; i++)
 				name[i] = (char)lower((unsigned char)name[i]);
 			if ((a = attr_lookup(name)) == ATTR_NONE)
 				return 0;	/* (not kept: can't be tested) */
-			cur.attr = (unsigned char)a;
+			cur.attr[cur.nattr] = (unsigned char)a;
 			while (p < e && is_space((unsigned char)*p))
 				p++;
 			if (p < e && *p == ']') {
@@ -1095,10 +1198,10 @@ static int compile(const char *p, const char *e, struct cmp *out, unsigned long 
 				const char *v;
 
 				if (p < e && *p == '~' && p + 1 < e && p[1] == '=') {
-					cur.aop = '~';
+					cur.aop[cur.nattr] = '~';
 					p += 2;
 				} else if (p < e && *p == '=') {
-					cur.aop = '=';
+					cur.aop[cur.nattr] = '=';
 					p++;
 				} else
 					return 0;	/* ^= $= *= |= */
@@ -1111,12 +1214,12 @@ static int compile(const char *p, const char *e, struct cmp *out, unsigned long 
 						p++;
 					if (p == e)
 						return 0;
-					cur.aval = hash_bytes(v, (size_t)(p - v));
+					cur.aval[cur.nattr] = hash_bytes(v, (size_t)(p - v));
 					p++;
 				} else {
 					if ((k = read_name(&p, e, name, sizeof name)) < 0)
 						return 0;
-					cur.aval = hash_bytes(name, (size_t)k);
+					cur.aval[cur.nattr] = hash_bytes(name, (size_t)k);
 				}
 				while (p < e && is_space((unsigned char)*p))
 					p++;
@@ -1126,6 +1229,7 @@ static int compile(const char *p, const char *e, struct cmp *out, unsigned long 
 					return 0;
 				p++;
 			}
+			cur.nattr++;
 			*spec += 1UL << 8;
 		} else if (is_name(c) || c == '\\') {
 			int k = read_name(&p, e, name, sizeof name), t;
@@ -1178,6 +1282,8 @@ static int mentions(const char *d, int n)
 {
 	int i;
 
+	if (memchr(d, '\\', (size_t)n))
+		return 1;
 	for (i = 1; i + 4 < n; i++)
 		switch (d[i]) {
 		case 'i':
@@ -1469,13 +1575,15 @@ static int list_style(const char *v, size_t vn, int type_only)
 
 /* --- boxes ------------------------------------------------------------ */
 
-static int bg_color(const char *v, size_t vn, unsigned long *rgb);
+static int bg_value(const char *v, size_t vn, int shorthand, unsigned long *rgb);
 
 /* does a rule's text say anything about boxes? (cheap, before parsing) */
 static int box_mentions(const char *d, int n)
 {
 	int i;
 
+	if (memchr(d, '\\', (size_t)n))
+		return 1;		/* (a name may be escaped: m\61rgin) */
 	for (i = 0; i + 4 < n; i++)
 		switch (d[i]) {
 		case 'm': case 'p': case 'b': case 'w': case 'h': case 'f':
@@ -1498,36 +1606,54 @@ static int box_mentions(const char *d, int n)
 /* a length (or auto) at v (vn bytes) into *l: 1, or 0 if not one */
 static int parse_len(const char *v, size_t vn, struct css_len *l)
 {
-	const char *e = v + vn, *q;
+	const char *e = v + vn, *q, *u;
 	long t;
 	int pct;
+	size_t un;
 
 	while (v < e && is_space((unsigned char)*v))
 		v++;
-	if (starts(v, (size_t)(e - v), "auto")) {
+	while (e > v && is_space((unsigned char)e[-1]))
+		e--;
+	if (is_kw(v, (size_t)(e - v), "auto")) {
 		l->v = 0;
 		l->u = CSS_U_AUTO;
 		return 1;
 	}
-	if ((q = number(v, e, &t, &pct)) == NULL)
+	/* (one number and its unit, nothing more: "200", "2em x" aren't) */
+	if (v == e || *v == ',' || (q = number(v, e, &t, &pct)) != e)
 		return 0;
-	/* (number() went past the unit's letters: look back at them) */
-	while (q > v && ((q[-1] | 32) >= 'a' && (q[-1] | 32) <= 'z'))
-		q--;
+	for (u = q; u > v && ((u[-1] | 32) >= 'a' && (u[-1] | 32) <= 'z'); u--)
+		;
+	un = (size_t)(q - u);
 	t /= 100;			/* thousandths to tenths */
-	if (pct)
+	if (pct) {
+		if (un)
+			return 0;
 		l->u = CSS_U_PCT;
-	else if (starts(q, (size_t)(e - q), "px"))
+	} else if (is_kw(u, un, "px"))
 		l->u = CSS_U_PX;
-	else if (starts(q, (size_t)(e - q), "em") || starts(q, (size_t)(e - q), "rem"))
+	else if (is_kw(u, un, "em") || is_kw(u, un, "rem"))
 		l->u = CSS_U_EM;
-	else if (starts(q, (size_t)(e - q), "ex") || starts(q, (size_t)(e - q), "ch")) {
+	else if (is_kw(u, un, "ex") || is_kw(u, un, "ch")) {
 		l->u = CSS_U_EM;
 		t /= 2;
-	} else if (starts(q, (size_t)(e - q), "pt")) {
+	} else if (is_kw(u, un, "pt")) {
 		l->u = CSS_U_PX;
 		t = t * 4 / 3;
-	} else if (t == 0)
+	} else if (is_kw(u, un, "pc")) {
+		l->u = CSS_U_PX;
+		t *= 16;
+	} else if (is_kw(u, un, "in")) {
+		l->u = CSS_U_PX;
+		t = clamp(t, -1000, 1000) * 96;
+	} else if (is_kw(u, un, "cm")) {
+		l->u = CSS_U_PX;
+		t = clamp(t, -10000, 10000) * 378 / 10;
+	} else if (is_kw(u, un, "mm")) {
+		l->u = CSS_U_PX;
+		t = clamp(t, -100000, 100000) * 378 / 100;
+	} else if (t == 0 && un == 0)
 		l->u = CSS_U_PX;	/* (a bare 0) */
 	else
 		return 0;
@@ -1564,12 +1690,12 @@ static int words(const char *v, size_t vn, const char **w, size_t *wn, int max)
 /* 1 to 4 lengths, as margin and padding have them, into l[4]: 1 or 0 */
 static int four_lens(const char *v, size_t vn, struct css_len *l)
 {
-	const char *w[4];
-	size_t wn[4];
-	int n = words(v, vn, w, wn, 4), i;
+	const char *w[5];
+	size_t wn[5];
+	int n = words(v, vn, w, wn, 5), i;
 	struct css_len t[4];
 
-	if (n == 0)
+	if (n == 0 || n > 4)
 		return 0;
 	for (i = 0; i < n; i++)
 		if (!parse_len(w[i], wn[i], &t[i]))
@@ -1584,14 +1710,15 @@ static int four_lens(const char *v, size_t vn, struct css_len *l)
 static int border_width(const char *v, size_t vn, struct css_len *l)
 {
 	l->u = CSS_U_PX;
-	if (starts(v, vn, "thin"))
+	if (is_kw(v, vn, "thin"))
 		l->v = 10;
-	else if (starts(v, vn, "medium"))
+	else if (is_kw(v, vn, "medium"))
 		l->v = 30;
-	else if (starts(v, vn, "thick"))
+	else if (is_kw(v, vn, "thick"))
 		l->v = 50;
 	else
-		return parse_len(v, vn, l) && l->u != CSS_U_AUTO && l->u != CSS_U_PCT;
+		return parse_len(v, vn, l) && l->u != CSS_U_AUTO && l->u != CSS_U_PCT
+			&& l->v >= 0;
 	return 1;
 }
 
@@ -1601,7 +1728,7 @@ static int border_style(const char *v, size_t vn, unsigned char *st)
 		"groove", "ridge", "inset", "outset", NULL };
 	int i;
 
-	if (starts(v, vn, "none") || starts(v, vn, "hidden")) {
+	if (is_kw(v, vn, "none") || is_kw(v, vn, "hidden")) {
 		*st = 0;
 		return 1;
 	}
@@ -1613,41 +1740,64 @@ static int border_style(const char *v, size_t vn, unsigned char *st)
 	return 0;
 }
 
-/* border, border-top...: width, style, colour in any order */
+/* border, border-top...: width, style, colour in any order, each once
+ * (else none of it is taken) */
 static unsigned long border_short(const char *v, size_t vn, int side,
 	struct css_box *b)
 {
-	const char *w[3];
-	size_t wn[3];
-	int n = words(v, vn, w, wn, 3), i, k;
-	unsigned long set = 0;
-	struct css_len l;
+	const char *w[4];
+	size_t wn[4];
+	int n = words(v, vn, w, wn, 4), i, k, got = 0, wild = 0;
+	unsigned long set = 0, rgb = 0;
+	unsigned char st = 0;
+	struct css_len wl;
 
+	if (n == 0 || n > 3)
+		return 0;
 	for (i = 0; i < n; i++) {
 		struct cval c;
+		int ck;
 
-		if (border_width(w[i], wn[i], &l)) {
-			for (k = 0; k < 4; k++)
-				if (side < 0 || side == k) {
-					b->bw[k] = l;
-					set |= CSS_B_BW(k);
-				}
-		} else if (border_style(w[i], wn[i], &b->bstyle))
-			set |= CSS_B_BSTYLE;
-		else {
-			parse_color(w[i], wn[i], &c, 0);
-			if (c.kind == CV_RGB) {
-				b->bcolor = c.rgb;
-				set |= CSS_B_BCOLOR;
-			}
+		/* (var(--w, 1px): taken as its fallback) */
+		(void)var_fallback(w[i], wn[i], &w[i], &wn[i]);
+		if (is_wild(w[i], wn[i])) {
+			wild = 1;		/* (any part: none reset) */
+			continue;
 		}
+		if (!(got & 1) && border_width(w[i], wn[i], &wl))
+			got |= 1;
+		else if (!(got & 2) && border_style(w[i], wn[i], &st))
+			got |= 2;
+		else if (!(got & 4) && (ck = is_color(w[i], wn[i], &c)) != COL_NO) {
+			got |= 4;
+			if (ck == COL_RGB || ck == COL_CLEAR) {
+				rgb = ck == COL_RGB ? c.rgb : CSS_BG_NONE;
+				got |= 8;
+			}
+		} else
+			return 0;
+	}
+	if (got & 1) {
+		for (k = 0; k < 4; k++)
+			if (side < 0 || side == k) {
+				b->bw[k] = wl;
+				set |= CSS_B_BW(k);
+			}
+	}
+	if (got & 2) {
+		b->bstyle = st;
+		set |= CSS_B_BSTYLE;
+	}
+	if (got & 8) {
+		b->bcolor = rgb;
+		set |= CSS_B_BCOLOR;
 	}
 	/* (what the shorthand leaves out is reset: no style, no border) */
-	if (n && !(set & CSS_B_BSTYLE) && side < 0) {
+	if (!wild && !(set & CSS_B_BSTYLE) && side < 0) {
 		b->bstyle = 0;
 		set |= CSS_B_BSTYLE;
 	}
-	if (n && side < 0 && !(set & CSS_B_BW(0))) {
+	if (!wild && side < 0 && !(set & CSS_B_BW(0))) {
 		for (k = 0; k < 4; k++) {
 			b->bw[k].v = 30;
 			b->bw[k].u = CSS_U_PX;
@@ -1707,6 +1857,9 @@ static unsigned long box_decl(const char *p, size_t pn, const char *v,
 		if (!four_lens(v, vn, l))
 			return 0;
 		for (i = 0; i < 4; i++)
+			if (!m && l[i].v < 0)
+				return 0;	/* (padding can't be negative) */
+		for (i = 0; i < 4; i++)
 			if (m)
 				b->m[i] = l[i];
 			else
@@ -1718,37 +1871,40 @@ static unsigned long box_decl(const char *p, size_t pn, const char *v,
 		size_t k = strlen(sides[i]);
 
 		if (pn == 7 + k && starts(p, 7, "margin-") && starts(p + 7, k, sides[i])) {
-			if (!parse_len(v, vn, &b->m[i]))
+			if (!parse_len(v, vn, &l[0]))
 				return 0;
+			b->m[i] = l[0];
 			return CSS_B_M(i);
 		}
 		if (pn == 8 + k && starts(p, 8, "padding-") && starts(p + 8, k, sides[i])) {
-			if (!parse_len(v, vn, &b->p[i]))
+			if (!parse_len(v, vn, &l[0]) || l[0].v < 0)
 				return 0;
+			b->p[i] = l[0];
 			return CSS_B_P(i);
 		}
 		if (pn == 7 + k && starts(p, 7, "border-") && starts(p + 7, k, sides[i]))
 			return border_short(v, vn, i, b);
 		if (pn == 13 + k && starts(p, 7, "border-") && starts(p + 7, k, sides[i])
 			&& starts(p + 7 + k, 6, "-width")) {
-			if (!border_width(v, vn, &b->bw[i]))
+			if (!border_width(v, vn, &l[0]))
 				return 0;
+			b->bw[i] = l[0];
 			return CSS_B_BW(i);
 		}
 	}
 	if (pn == 6 && starts(p, pn, "border"))
 		return border_short(v, vn, -1, b);
 	if (pn == 12 && starts(p, pn, "border-width")) {
-		const char *w[4];
-		size_t wn[4];
-		int n = words(v, vn, w, wn, 4);
+		const char *w[5];
+		size_t wn[5];
+		int n = words(v, vn, w, wn, 5);
 		struct css_len t[4];
 
+		if (n == 0 || n > 4)
+			return 0;
 		for (i = 0; i < n; i++)
 			if (!border_width(w[i], wn[i], &t[i]))
 				return 0;
-		if (n == 0)
-			return 0;
 		b->bw[0] = t[0];
 		b->bw[1] = n > 1 ? t[1] : t[0];
 		b->bw[2] = n > 2 ? t[2] : t[0];
@@ -1767,24 +1923,23 @@ static unsigned long box_decl(const char *p, size_t pn, const char *v,
 		const char *w[1];
 		size_t wn[1];
 		struct cval c;
+		int ck;
 
 		if (!words(v, vn, w, wn, 1))
 			return 0;
-		parse_color(w[0], wn[0], &c, 0);
-		if (c.kind != CV_RGB)
+		if ((ck = is_color(w[0], wn[0], &c)) != COL_RGB && ck != COL_CLEAR)
 			return 0;
-		b->bcolor = c.rgb;
+		b->bcolor = ck == COL_RGB ? c.rgb : CSS_BG_NONE;
 		return CSS_B_BCOLOR;
 	}
 	if ((pn == 16 && starts(p, pn, "background-color"))
 		|| (pn == 10 && starts(p, pn, "background"))) {
-		if (bg_color(v, vn, &b->bg))
-			return CSS_B_BG;
-		if (has_word(v, vn, "transparent") || has_word(v, vn, "none")) {
-			b->bg = CSS_BG_NONE;
-			return CSS_B_BG;
-		}
-		return 0;
+		unsigned long rgb;
+
+		if (bg_value(v, vn, pn == 10, &rgb) <= 0)
+			return 0;
+		b->bg = rgb;
+		return CSS_B_BG;
 	}
 	if (pn == 11 && starts(p, pn, "line-height"))
 		return line_height(v, vn, &b->lh) ? CSS_B_LH : 0;
@@ -1807,43 +1962,53 @@ static unsigned long box_decl(const char *p, size_t pn, const char *v,
 		}
 		return CSS_B_LH;
 	}
-	if (pn == 5 && starts(p, pn, "width"))
-		return parse_len(v, vn, &b->w) ? CSS_B_W : 0;
-	if (pn == 6 && starts(p, pn, "height"))
-		return parse_len(v, vn, &b->h) ? CSS_B_H : 0;
+	if (pn == 5 && starts(p, pn, "width")) {
+		if (!parse_len(v, vn, &l[0]) || l[0].v < 0)
+			return 0;
+		b->w = l[0];
+		return CSS_B_W;
+	}
+	if (pn == 6 && starts(p, pn, "height")) {
+		if (!parse_len(v, vn, &l[0]) || l[0].v < 0)
+			return 0;
+		b->h = l[0];
+		return CSS_B_H;
+	}
 	if ((pn == 9 || pn == 10) && (starts(p, pn, "min-") || starts(p, pn, "max-"))
 		&& (starts(p + 4, pn - 4, "width") || starts(p + 4, pn - 4, "height"))) {
 		int mx = p[1] == 'a', wd = p[4] == 'w';
 		struct css_len *l = wd ? (mx ? &b->maxw : &b->minw)
 			: (mx ? &b->maxh : &b->minh);
+		struct css_len t;
 
 		/* (none, and auto: no limit) */
-		if (starts(v, vn, "none")) {
-			l->v = 0;
-			l->u = CSS_U_AUTO;
-		} else if (!parse_len(v, vn, l))
+		if (is_kw(v, vn, "none")) {
+			t.v = 0;
+			t.u = CSS_U_AUTO;
+		} else if (!parse_len(v, vn, &t) || t.v < 0)
 			return 0;
+		*l = t;
 		return wd ? (mx ? CSS_B_MAXW : CSS_B_MINW) : (mx ? CSS_B_MAXH : CSS_B_MINH);
 	}
 	if (pn == 5 && starts(p, pn, "float")) {
-		if (starts(v, vn, "left"))
+		if (is_kw(v, vn, "left"))
 			b->fl = CSS_FL_LEFT;
-		else if (starts(v, vn, "right"))
+		else if (is_kw(v, vn, "right"))
 			b->fl = CSS_FL_RIGHT;
-		else if (starts(v, vn, "none"))
+		else if (is_kw(v, vn, "none"))
 			b->fl = CSS_FL_NONE;
 		else
 			return 0;
 		return CSS_B_FLOAT;
 	}
 	if (pn == 5 && starts(p, pn, "clear")) {
-		if (starts(v, vn, "left"))
+		if (is_kw(v, vn, "left"))
 			b->clr = CSS_CL_LEFT;
-		else if (starts(v, vn, "right"))
+		else if (is_kw(v, vn, "right"))
 			b->clr = CSS_CL_RIGHT;
-		else if (starts(v, vn, "both"))
+		else if (is_kw(v, vn, "both"))
 			b->clr = CSS_CL_BOTH;
-		else if (starts(v, vn, "none"))
+		else if (is_kw(v, vn, "none"))
 			b->clr = CSS_CL_NONE;
 		else
 			return 0;
@@ -1854,15 +2019,116 @@ static unsigned long box_decl(const char *p, size_t pn, const char *v,
 			b->disp = CSS_DI_BLOCK;
 		else if (vn == 6 && starts(v, vn, "inline"))
 			b->disp = CSS_DI_INLINE;
-		else if (starts(v, vn, "list-item"))
+		else if (is_kw(v, vn, "list-item"))
 			b->disp = CSS_DI_LIST_ITEM;
-		else if (starts(v, vn, "inline-block"))
+		else if (is_kw(v, vn, "inline-block"))
 			b->disp = CSS_DI_INLINE_BLOCK;
 		else
 			return 0;
 		return CSS_B_DISP;
 	}
 	return 0;
+}
+
+/* where the declaration from p ends: its ';' (not one in a string, in
+ * brackets or escaped), or e */
+static const char *decl_end(const char *p, const char *e)
+{
+	int paren = 0, quote = 0;
+
+	for (; p < e; p++) {
+		if (*p == '\\' && p + 1 < e)
+			p++;
+		else if (quote) {
+			if (*p == quote)
+				quote = 0;
+		} else if (*p == '"' || *p == '\'')
+			quote = *p;
+		else if (*p == '(' || *p == '[')
+			paren++;
+		else if ((*p == ')' || *p == ']') && paren > 0)
+			paren--;
+		else if (*p == ';' && paren == 0)
+			break;
+	}
+	return p;
+}
+
+/*
+ * One declaration, p to e: its name (escapes undone, into nbuf when it
+ * has any) and value, the value's !important cut off and said in *imp.
+ * 0 when browsers drop it: no name, a name that isn't an identifier
+ * ("*zoom", "m\argin" is "m", a newline, "rgin"), no value, or a '!'
+ * not of !important ("red ! error").
+ */
+static int split_decl(const char *p, const char *e, const char **name, size_t *pn,
+	const char **val, size_t *vn, int *imp, char *nbuf, int nbn)
+{
+	const char *colon, *v, *x;
+	int paren = 0, quote = 0;
+	size_t i, n;
+
+	while (p < e && is_space((unsigned char)*p))
+		p++;
+	for (colon = p; colon < e && *colon != ':'; colon++)
+		;
+	if (colon == e)
+		return 0;
+	n = (size_t)(colon - p);
+	while (n && is_space((unsigned char)p[n - 1]))
+		n--;
+	if (n == 0 || (*p >= '0' && *p <= '9'))
+		return 0;
+	for (i = 0; i < n && is_name((unsigned char)p[i]); i++)
+		;
+	if (i < n) {
+		const char *q = p;
+		int k = read_name(&q, p + n, nbuf, nbn);
+
+		if (k < 0 || q != p + n)
+			return 0;
+		p = nbuf;
+		n = (size_t)k;
+	}
+	*name = p;
+	*pn = n;
+	v = colon + 1;
+	while (v < e && is_space((unsigned char)*v))
+		v++;
+	for (x = v; x < e; x++) {
+		if (*x == '\\' && x + 1 < e)
+			x++;
+		else if (quote) {
+			if (*x == quote)
+				quote = 0;
+		} else if (*x == '"' || *x == '\'')
+			quote = *x;
+		else if (*x == '(')
+			paren++;
+		else if (*x == ')' && paren > 0)
+			paren--;
+		else if (*x == '!' && paren == 0)
+			break;
+	}
+	*imp = 0;
+	if (x < e) {
+		const char *k = x + 1, *ke = e;
+
+		while (k < ke && is_space((unsigned char)*k))
+			k++;
+		while (ke > k && is_space((unsigned char)ke[-1]))
+			ke--;
+		if (ke - k != 9 || !starts(k, 9, "important"))
+			return 0;
+		*imp = 1;
+	}
+	n = (size_t)(x - v);
+	while (n && is_space((unsigned char)v[n - 1]))
+		n--;
+	*val = v;
+	*vn = n;
+	/* (a custom property may be empty) */
+	return n > 0 || (*pn > 2 && (*name)[0] == '-' && (*name)[1] == '-');
 }
 
 /* the rule just read: if it says something about display, visibility,
@@ -1887,46 +2153,14 @@ static void end_rule(struct css_sheet *s)
 	memset(&bd, 0, sizeof bd);
 	/* the declarations */
 	for (p = d; p < d + s->dlen; p = e + 1) {
-		const char *colon, *v;
+		const char *v;
 		size_t pn, vn;
-		int paren = 0, quote = 0, imp;
+		int imp;
+		char nbuf[64];
 
-		for (e = p; e < d + s->dlen; e++) {
-			if (quote) {
-				if (*e == quote)
-					quote = 0;
-			} else if (*e == '"' || *e == '\'')
-				quote = *e;
-			else if (*e == '(')
-				paren++;
-			else if (*e == ')')
-				paren--;
-			else if (*e == ';' && paren <= 0)
-				break;
-		}
-		while (p < e && is_space((unsigned char)*p))
-			p++;
-		for (colon = p; colon < e && *colon != ':'; colon++)
-			;
-		if (colon == e)
+		e = decl_end(p, d + s->dlen);
+		if (!split_decl(p, e, &p, &pn, &v, &vn, &imp, nbuf, sizeof nbuf))
 			continue;
-		pn = (size_t)(colon - p);
-		while (pn && is_space((unsigned char)p[pn - 1]))
-			pn--;
-		v = colon + 1;
-		while (v < e && is_space((unsigned char)*v))
-			v++;
-		vn = (size_t)(e - v);
-		imp = has(v, vn, "!important");
-		if (imp) {
-			size_t k = 0;
-
-			while (k < vn && v[k] != '!')
-				k++;
-			vn = k;
-		}
-		while (vn && is_space((unsigned char)v[vn - 1]))
-			vn--;
 		if (pn > 2 && p[0] == '-' && p[1] == '-') {
 			/* a custom property: kept if it's a colour set for the
 			 * whole page, on every screen */
@@ -1968,13 +2202,20 @@ static void end_rule(struct css_sheet *s)
 		if (text_decl(s, p, pn, v, vn, imp, &t))
 			continue;
 		if (pn == 7 && starts(p, pn, "display")) {
-			disp = starts(v, vn, "none") ? CSS_HIDE : CSS_SHOW;
+			if (is_kw(v, vn, "none"))
+				disp = CSS_HIDE;
+			else if (display_ok(v, vn) || starts(v, vn, "var("))
+				disp = CSS_SHOW;	/* (var(): in doubt, shown) */
+			else
+				continue;
 			disp_imp = imp;
 		} else if (pn == 10 && starts(p, pn, "visibility")) {
-			if (starts(v, vn, "hidden") || starts(v, vn, "collapse"))
+			if (is_kw(v, vn, "hidden") || is_kw(v, vn, "collapse"))
 				vis = CSS_HIDE;
-			else if (starts(v, vn, "visible"))
+			else if (is_kw(v, vn, "visible"))
 				vis = CSS_SHOW;
+			else
+				continue;
 			vis_imp = imp;
 		} else if (pn == 10 && starts(p, pn, "list-style")) {
 			ls = list_style(v, vn, 0);
@@ -2076,17 +2317,37 @@ static void end_rule(struct css_sheet *s)
 	}
 }
 
+/* how much of a prelude's start is space, and the marks of an HTML
+ * comment (<!-- -->) a sheet in <style> may still be wrapped in */
+static int cdo_skip(const char *p, int n)
+{
+	int i = 0;
+
+	for (;;) {
+		while (i < n && is_space((unsigned char)p[i]))
+			i++;
+		if (i + 4 <= n && memcmp(p + i, "<!--", 4) == 0)
+			i += 4;
+		else if (i + 3 <= n && memcmp(p + i, "-->", 3) == 0)
+			i += 3;
+		else
+			return i;
+	}
+}
+
 /* a { after a prelude: a rule's declarations, or a group, or a block
  * to skip */
 static void open_block(struct css_sheet *s)
 {
-	const char *p = s->pre;
-	int n = s->plen;
+	const char *p;
+	int n, k = cdo_skip(s->pre, s->plen);
 
-	while (n && is_space((unsigned char)*p)) {
-		p++;
-		n--;
+	if (k) {
+		memmove(s->pre, s->pre + k, (size_t)(s->plen - k));
+		s->plen -= k;
 	}
+	p = s->pre;
+	n = s->plen;
 	s->depth = 0;
 	if (n && *p == '@') {
 		unsigned short m = cur_media(s);
@@ -2152,10 +2413,16 @@ static void put(struct css_sheet *s, int c)
 			open_block(s);
 			return;
 		}
-		if (c == ';') {			/* @import ...; @charset... */
-			s->plen = 0;
-			s->plong = 0;
-			return;
+		if (c == ';') {
+			/* @import ...; @charset...: done. Any other ';' is the
+			 * selector's, which then fails: "a{};b{...}" drops b */
+			int k = cdo_skip(s->pre, s->plen);
+
+			if (k < s->plen && s->pre[k] == '@') {
+				s->plen = 0;
+				s->plong = 0;
+				return;
+			}
 		}
 		if (c == '}') {			/* a group ends */
 			if (s->ngroups > s->base)
@@ -2369,14 +2636,14 @@ static int cmp_match(const struct cmp *c, const struct doc *d, const struct elin
 		if (j == e->ncls)
 			return 0;
 	}
-	if (c->attr) {
-		const char *v = doc_attr(d, e->node, c->attr);
+	for (i = 0; i < c->nattr; i++) {
+		const char *v = doc_attr(d, e->node, c->attr[i]);
 
 		if (v == NULL)
 			return 0;
-		if (c->aop == '=' && hash_bytes(v, strlen(v)) != c->aval)
+		if (c->aop[i] == '=' && hash_bytes(v, strlen(v)) != c->aval[i])
 			return 0;
-		if (c->aop == '~' && !word_in(v, c->aval))
+		if (c->aop[i] == '~' && !word_in(v, c->aval[i]))
 			return 0;
 	}
 	return 1;
@@ -2699,72 +2966,197 @@ int css_box(struct css_sheet *s, const struct doc *d, nodeid node,
 
 void css_inline_box(const char *style, struct css_box *b)
 {
-	const char *p = style, *e;
+	const char *p = style, *e, *end = style ? style + strlen(style) : NULL;
 
-	while (p && *p) {
-		const char *colon, *v, *x;
+	while (p && p < end) {
+		const char *n, *v;
 		size_t pn, vn;
+		int imp;
+		char nbuf[64];
 
-		for (e = p; *e && *e != ';'; e++)
-			;
-		while (p < e && is_space((unsigned char)*p))
-			p++;
-		for (colon = p; colon < e && *colon != ':'; colon++)
-			;
-		if (colon < e) {
+		e = decl_end(p, end);
+		if (split_decl(p, e, &n, &pn, &v, &vn, &imp, nbuf, sizeof nbuf)) {
 			struct css_box t;
 			unsigned long bits;
 			int k;
 
-			pn = (size_t)(colon - p);
-			while (pn && is_space((unsigned char)p[pn - 1]))
-				pn--;
-			v = colon + 1;
-			while (v < e && is_space((unsigned char)*v))
-				v++;
-			for (x = v; x < e && *x != '!'; x++)
-				;
-			vn = (size_t)(x - v);
-			while (vn && is_space((unsigned char)v[vn - 1]))
-				vn--;
+			p = n;
 			memset(&t, 0, sizeof t);
 			bits = box_decl(p, pn, v, vn, &t);
 			for (k = 0; k < CSS_B_NBITS; k++)
 				if (bits & 1UL << k)
 					box_take(b, &t, k);
 		}
-		p = *e ? e + 1 : e;
+		p = e + 1;
 	}
 }
 
-/* the colour in a background (or background-color) value: its first
- * word that is one (not url(...), positions, "no-repeat") */
-static int bg_color(const char *v, size_t vn, unsigned long *rgb)
+/* a gradient's colour, for a screen that doesn't draw them: its colour
+ * stops' average. w: "linear-gradient(...)". 1 and *rgb, or 0 */
+static int grad_color(const char *w, size_t wn, unsigned long *rgb)
 {
-	const char *e = v + vn;
+	const char *p, *e = w + wn;
+	long r = 0, g = 0, b = 0, n = 0;
 
-	while (v < e) {
-		const char *w;
-		int depth = 0;
+	for (p = w; p < e && *p != '('; p++)
+		;
+	while (p < e && *p != ')') {
+		const char *a, *q;
 		struct cval c;
 
-		while (v < e && is_space((unsigned char)*v))
-			v++;
-		for (w = v; w < e && (depth || !is_space((unsigned char)*w)); w++)
-			if (*w == '(')
-				depth++;
-			else if (*w == ')' && depth)
-				depth--;
-		if (w > v && !starts(v, (size_t)(w - v), "url(")) {
-			parse_color(v, (size_t)(w - v), &c, 0);
-			if (c.kind == CV_RGB) {
-				*rgb = c.rgb;
-				return 1;
-			}
+		for (a = ++p; a < e && is_space((unsigned char)*a); a++)
+			;
+		p = arg_end(a, e);
+		for (q = a; q < p && !is_space((unsigned char)*q); q++)
+			;
+		if (is_color(a, (size_t)(q - a), &c) == COL_RGB) {
+			r += (long)(c.rgb >> 16 & 0xFF);
+			g += (long)(c.rgb >> 8 & 0xFF);
+			b += (long)(c.rgb & 0xFF);
+			n++;
 		}
-		v = w;
 	}
-	return 0;
+	if (n == 0)
+		return 0;
+	*rgb = (unsigned long)(r / n) << 16 | (unsigned long)(g / n) << 8
+		| (unsigned long)(b / n);
+	return 1;
+}
+
+/*
+ * A background-color value, or (shorthand 1) a background: 1 when
+ * browsers take it, its colour in *rgb (CSS_BG_NONE: transparent, as the
+ * shorthand is when it names no colour); -1 when they do, but its colour
+ * isn't known here (currentcolor, var()); 0 when they drop it ("red
+ * pink", "url(x) blah"). Of several layers, only the last has a colour.
+ */
+static int bg_value(const char *v, size_t vn, int shorthand, unsigned long *rgb)
+{
+	static const char *const rep[] = { "repeat", "no-repeat", "space", "round", NULL };
+	static const char *const pos[] = { "left", "right", "top", "bottom", "center", NULL };
+	static const char *const boxk[] = { "border-box", "padding-box", "content-box",
+		"text", NULL };
+	const char *e = v + vn, *p;
+	int ncol = 0, nimg = 0, nrep = 0, natt = 0, npos = 0, nsize = 0, nbox = 0;
+	int slash = 0, known = 1, ck = COL_NO, depth = 0, i, grad = 0;
+	unsigned long grgb = 0;
+	struct cval c;
+	struct css_len l;
+
+	if (!shorthand) {
+		if ((ck = is_color(v, vn, &c)) == COL_NO)
+			return 0;
+		goto done;
+	}
+	for (p = v; p < e; p++)
+		if (*p == '(')
+			depth++;
+		else if (*p == ')' && depth)
+			depth--;
+		else if (*p == ',' && depth == 0)
+			v = p + 1;		/* (the last layer) */
+	for (p = v; p < e; ) {
+		const char *w;
+		size_t wn;
+
+		if (is_space((unsigned char)*p)) {
+			p++;
+			continue;
+		}
+		if (*p == '/') {		/* position / size */
+			if (slash || npos == 0)
+				return 0;
+			slash = 1;
+			p++;
+			continue;
+		}
+		for (w = p, depth = 0; p < e && (depth || (!is_space((unsigned char)*p)
+			&& *p != '/')); p++)
+			if (*p == '(')
+				depth++;
+			else if (*p == ')' && depth)
+				depth--;
+		wn = (size_t)(p - w);
+		if (slash == 1) {
+			if (nsize < 2 && (is_kw(w, wn, "cover") || is_kw(w, wn, "contain"))) {
+				if (nsize)
+					return 0;
+				nsize = 2;
+				continue;
+			}
+			if (nsize < 2 && (parse_len(w, wn, &l) || (is_wild(w, wn)
+				&& !starts(w, wn, "var(")))) {
+				nsize++;
+				continue;
+			}
+			if (nsize == 0)
+				return 0;
+			slash = 2;		/* (the size is done) */
+		}
+		if (starts(w, wn, "var(")) {
+			known = 0;		/* (could be any part) */
+			continue;
+		}
+		if (is_kw(w, wn, "none") || starts(w, wn, "url(") || has(w, wn, "gradient(")
+			|| starts(w, wn, "image-set(") || starts(w, wn, "-webkit-image-set(")) {
+			if (nimg++)
+				return 0;
+			if (has(w, wn, "gradient("))
+				grad = grad_color(w, wn, &grgb);
+			continue;
+		}
+		if (is_kw(w, wn, "repeat-x") || is_kw(w, wn, "repeat-y")) {
+			if (nrep)
+				return 0;
+			nrep = 2;
+			continue;
+		}
+		for (i = 0; rep[i] && !is_kw(w, wn, rep[i]); i++)
+			;
+		if (rep[i]) {
+			if (nrep++ == 2)
+				return 0;
+			continue;
+		}
+		if (is_kw(w, wn, "scroll") || is_kw(w, wn, "fixed") || is_kw(w, wn, "local")) {
+			if (natt++)
+				return 0;
+			continue;
+		}
+		for (i = 0; boxk[i] && !is_kw(w, wn, boxk[i]); i++)
+			;
+		if (boxk[i]) {
+			if (nbox++ == 2)
+				return 0;
+			continue;
+		}
+		for (i = 0; pos[i] && !is_kw(w, wn, pos[i]); i++)
+			;
+		if (pos[i] || (parse_len(w, wn, &l) && l.u != CSS_U_AUTO) || is_wild(w, wn)) {
+			if (slash || npos++ == 4)
+				return 0;
+			continue;
+		}
+		if (!ncol && (ck = is_color(w, wn, &c)) != COL_NO) {
+			ncol = 1;
+			continue;
+		}
+		return 0;
+	}
+	if (slash == 1 && nsize == 0)
+		return 0;
+	if (!known)
+		return -1;
+done:
+	if (ck == COL_RGB)
+		*rgb = c.rgb;
+	else if (ck == COL_OTHER)
+		return -1;
+	else if (ck == COL_NO && grad)
+		*rgb = grgb;		/* (the gradient, roughly) */
+	else
+		*rgb = CSS_BG_NONE;	/* (transparent, or no colour) */
+	return 1;
 }
 
 int css_attr_color(const char *v, unsigned long *rgb)
@@ -2804,34 +3196,19 @@ int css_attr_color(const char *v, unsigned long *rgb)
 
 void css_inline_text(struct css_sheet *s, const char *style, struct css_text *t)
 {
-	const char *p = style, *e;
+	const char *p = style, *e, *end = style ? style + strlen(style) : NULL;
 
-	while (p && *p) {
-		const char *colon, *v, *x;
+	while (p && p < end) {
+		const char *n, *v;
 		size_t pn, vn;
 		int imp;
+		char nbuf[64];
 
-		for (e = p; *e && *e != ';'; e++)
-			;
-		while (p < e && is_space((unsigned char)*p))
-			p++;
-		for (colon = p; colon < e && *colon != ':'; colon++)
-			;
-		if (colon < e) {
+		e = decl_end(p, end);
+		if (split_decl(p, e, &n, &pn, &v, &vn, &imp, nbuf, sizeof nbuf)) {
 			struct tdecl td;
 
-			pn = (size_t)(colon - p);
-			while (pn && is_space((unsigned char)p[pn - 1]))
-				pn--;
-			v = colon + 1;
-			while (v < e && is_space((unsigned char)*v))
-				v++;
-			for (x = v; x < e && *x != '!'; x++)
-				;
-			imp = x < e;
-			vn = (size_t)(x - v);
-			while (vn && is_space((unsigned char)v[vn - 1]))
-				vn--;
+			p = n;
 			memset(&td, 0, sizeof td);
 			if (pn == 5 && starts(p, pn, "color")) {
 				/* (as RGB: no palette needed) */
@@ -2856,7 +3233,7 @@ void css_inline_text(struct css_sheet *s, const char *style, struct css_text *t)
 				|| (pn == 10 && starts(p, pn, "background"))) {
 				unsigned long rgb;
 
-				if (bg_color(v, vn, &rgb))
+				if (bg_value(v, vn, pn == 10, &rgb) > 0 && rgb != CSS_BG_NONE)
 					t->bg = CSS_RGB_SET | rgb;
 			} else if (pn == 9 && starts(p, pn, "font-size")) {
 				struct css_len l;
@@ -2881,7 +3258,7 @@ void css_inline_text(struct css_sheet *s, const char *style, struct css_text *t)
 					t->align = td.ta;
 			}
 		}
-		p = *e ? e + 1 : e;
+		p = e + 1;
 	}
 }
 

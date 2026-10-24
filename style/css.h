@@ -139,7 +139,8 @@ enum { CSS_DI_BLOCK = 1, CSS_DI_INLINE, CSS_DI_LIST_ITEM, CSS_DI_INLINE_BLOCK };
 struct css_box {
 	unsigned long set;		/* CSS_B_* */
 	unsigned long bg;		/* 0xRRGGBB, or CSS_BG_NONE */
-	unsigned long bcolor;		/* the border's colour, 0xRRGGBB */
+	unsigned long bcolor;		/* the border's colour, 0xRRGGBB, or
+					 * CSS_BG_NONE: transparent */
 	unsigned char bstyle;		/* the border is drawn (solid...): 1 */
 	unsigned char fl, clr, disp;	/* CSS_FL_*, CSS_CL_*, CSS_DI_* */
 	struct css_len m[4], p[4], bw[4], w, h;
