@@ -206,6 +206,10 @@ struct lay {
 	int ntop_pend;
 	/* positioned elements (with metrics) */
 	int measure;			/* (a cell's: see struct gcell) */
+	int sizing;			/* laid out to find a table's column
+					 * widths (or inside one that is): a
+					 * table's width="50%" isn't yet known */
+	int pct_wide;			/* ... and such a table was in it */
 	int right_measured;		/* a right float was put left to measure */
 	int layers_ok;			/* laid out as layers here (not in a
 					 * grid's cell or a float: in the flow) */
@@ -3046,9 +3050,13 @@ struct gcell {
 	int frame;			/* it frames a page (see FRAME_MIN_EM) */
 	int measure;			/* laid out to measure: right floats go
 					 * left (their width is what counts) */
+	int sizing;			/* laid out for its column's width */
+	int pct_wide;			/* ... a table width="50%" in it then:
+					 * laid again at the column's width */
 	struct page pg;
 	int *lmap;			/* its links' numbers in the page, -1 */
 	unsigned long bg;		/* its background (or its row's), LBOX_NONE */
+	unsigned short bgi;		/* ... its picture (lbox.bgi), 0 */
 	unsigned long box_i;		/* its page's boxes taken into the grid's */
 };
 
@@ -3223,11 +3231,15 @@ static int grid_build(struct lay *L, nodeid table, struct grid *g, int avail)
 				continue;
 			if (el_hidden(L, c))
 				continue;
-			/* a cell framing a page: a grid only where there is room */
+			/* a cell framing a page: a grid only where there is room
+			 * (a box round a little table - a sidebar's - is drawn
+			 * anywhere) */
 			if ((text = subtree_text(d, c, &nested)) > GRID_CELL_TEXT || nested) {
-				if (!frame_room(L, avail))
+				if (frame_room(L, avail))
+					frame = 1;
+				else if (text > GRID_CELL_TEXT || L->m == NULL
+					|| !decorated(d, table))
 					goto linear;
-				frame = 1;
 			}
 			cs = attr_num(d, c, ATTR_COLSPAN, 1, GRID_MAX_COLS);
 			rs = attr_num(d, c, ATTR_ROWSPAN, 1, 64);
@@ -3411,6 +3423,7 @@ static int lay_cell(struct lay *L, struct lay *S, struct gcell *gc, int width,
 	struct style s;
 
 	layout_free(pg);
+	pg->min_w = 0;
 	pg->d = L->d;
 	pg->width = width;
 	pg->cs = L->p->cs;
@@ -3429,6 +3442,7 @@ static int lay_cell(struct lay *L, struct lay *S, struct gcell *gc, int width,
 	S->gdepth = L->gdepth + 1;
 	S->layers_ok = pad != NULL;
 	S->measure = gc->measure;
+	S->sizing = gc->sizing || L->sizing;
 	S->cb_top = -1;
 	S->max_lines = max_lines;
 	S->at_width = at_width;
@@ -3515,16 +3529,60 @@ static int lay_cell(struct lay *L, struct lay *S, struct gcell *gc, int width,
 	S->pend = NULL;
 	S->npend = S->pend_cap = 0;
 	gc->aligned = S->aligned;
+	gc->pct_wide = S->pct_wide;
+	if (S->pct_wide && L->sizing)
+		L->pct_wide = 1;
 	return pg->truncated ? -1 : 0;
 }
 
-/* the cells' widths, the columns' (or -1: they don't fit) */
-static int grid_widths(struct lay *L, struct lay *S, struct grid *g, int avail, int gap)
+/* the columns' share of extra units beyond their widths w: those a cell
+ * gives a % width, in proportion to it; else the auto ones (fixed 0) in
+ * proportion to theirs; else all of them */
+static void grid_spread(struct grid *g, const int *fixed, const int *pct, int extra)
 {
-	int cmin[GRID_MAX_COLS], cmax[GRID_MAX_COLS], i, c, smin = 0, smax = 0;
+	long sum = 0;
+	int c, n = 0, auto_ = 0, some_pct = 0, left = extra, last = -1;
+
+	for (c = 0; c < g->ncols; c++) {
+		if (pct[c])
+			some_pct = 1;
+		if (!fixed[c])
+			auto_ = 1;
+	}
+#define SPREAD_TO(c) (some_pct ? pct[c] > 0 : !auto_ || !fixed[c])
+	for (c = 0; c < g->ncols; c++)
+		if (SPREAD_TO(c)) {
+			sum += some_pct ? pct[c] : g->w[c];
+			n++;
+		}
+	for (c = 0; c < g->ncols; c++) {
+		int k;
+
+		if (!SPREAD_TO(c))
+			continue;
+		k = sum > 0 ? (int)((long)extra * (some_pct ? pct[c] : g->w[c]) / sum)
+			: extra / n;
+		g->w[c] += k;
+		left -= k;
+		if (sum == 0 || g->w[c] > 0 || some_pct)
+			last = c;
+	}
+#undef SPREAD_TO
+	if (last >= 0)
+		g->w[last] += left;	/* (what rounding left) */
+}
+
+/* the cells' widths, the columns' (or -1: they don't fit); want: the
+ * columns' and their gaps' width the table's width= asks (0: as wide as
+ * they would be) */
+static int grid_widths(struct lay *L, struct lay *S, struct grid *g, int avail, int gap,
+	int want)
+{
+	int cmin[GRID_MAX_COLS], cmax[GRID_MAX_COLS], fixed[GRID_MAX_COLS];
+	int pct[GRID_MAX_COLS], i, c, rc, smin = 0, smax = 0;
 
 	for (c = 0; c < g->ncols; c++)
-		cmin[c] = cmax[c] = 0;
+		cmin[c] = cmax[c] = fixed[c] = pct[c] = 0;
 	/* single columns first, then what spans need beyond them */
 	for (i = 0; i < g->ncells; i++) {
 		struct gcell *gc = &g->cell[i];
@@ -3533,7 +3591,10 @@ static int grid_widths(struct lay *L, struct lay *S, struct grid *g, int avail, 
 		/* (a cell framing a page is measured by its first lines: the
 		 * widest is all of avail, the longest word no wider than
 		 * FRAME_WORD_EM; laying all of it out twice costs a 68030) */
-		if (lay_cell(L, S, gc, avail, gc->frame ? FRAME_MEASURE : 0, 0, NULL) < 0)
+		gc->sizing = 1;
+		rc = lay_cell(L, S, gc, avail, gc->frame ? FRAME_MEASURE : 0, 0, NULL);
+		gc->sizing = 0;
+		if (rc < 0)
 			return -1;
 		if (gc->pg.nlines > GRID_CELL_LINES) {
 			if (!frame_room(L, avail))
@@ -3546,6 +3607,8 @@ static int grid_widths(struct lay *L, struct lay *S, struct grid *g, int avail, 
 				gc->rule = 1;
 		if (gc->pg.need_w > gc->maxw)
 			gc->maxw = gc->pg.need_w;
+		if (gc->pg.min_w > gc->maxw)
+			gc->maxw = gc->pg.min_w;
 		for (ln = 0; ln < gc->pg.nlines; ln++) {
 			int w, word;
 
@@ -3559,6 +3622,10 @@ static int grid_widths(struct lay *L, struct lay *S, struct grid *g, int avail, 
 			if (word > gc->minw_cap)
 				gc->minw_cap = word;
 		}
+		if (gc->pg.min_w > gc->minw)
+			gc->minw = gc->pg.min_w;
+		if (gc->pg.min_w > gc->minw_cap)
+			gc->minw_cap = gc->pg.min_w;
 	}
 	/* (a page's frame breaks its longest words rather than not fit:
 	 * the layout breaks a word longer than its line) */
@@ -3568,12 +3635,32 @@ static int grid_widths(struct lay *L, struct lay *S, struct grid *g, int avail, 
 		if (g->frame)
 			gc->minw = gc->minw_cap;
 		if (gc->cs == 1) {
+			const char *wv = doc_attr(L->d, gc->node, ATTR_WIDTH);
+			int cw = 0;
+
 			if (gc->minw > cmin[gc->c])
 				cmin[gc->c] = gc->minw;
 			if (gc->maxw > cmax[gc->c])
 				cmax[gc->c] = gc->maxw;
+			/* its width=: units; a % is a share of what the
+			 * table's width= leaves */
+			if (wv && strchr(wv, '%')) {
+				int k = (int)dim(L, wv, 1000);
+
+				if (k > pct[gc->c])
+					pct[gc->c] = k;
+			} else if (wv)
+				cw = (int)dim(L, wv, 0);
+			if (cw > avail)
+				cw = avail;
+			if (cw > fixed[gc->c])
+				fixed[gc->c] = cw;
 		}
 	}
+	/* a column a cell says the width of: that wide, if its words fit */
+	for (c = 0; c < g->ncols; c++)
+		if (fixed[c])
+			cmax[c] = fixed[c] > cmin[c] ? fixed[c] : cmin[c];
 	for (i = 0; i < g->ncells; i++) {
 		struct gcell *gc = &g->cell[i];
 		int have_min = (gc->cs - 1) * gap, have_max = have_min, extra;
@@ -3608,20 +3695,62 @@ static int grid_widths(struct lay *L, struct lay *S, struct grid *g, int avail, 
 	/* a page's frame: its narrow columns (a sidebar of links, gutters) at
 	 * their widest, the others sharing the rest so */
 	if (g->frame && smax > avail) {
-		int side = FRAME_SIDE_EM * L->em, fixed = 0, rmin = 0, rmax = 0;
+		int side = FRAME_SIDE_EM * L->em, fix = 0, rmin = 0, rmax = 0;
 
 		for (c = 0; c < g->ncols; c++)
 			if (cmax[c] <= side)
-				fixed += cmax[c];
+				fix += cmax[c];
 			else {
 				rmin += cmin[c];
 				rmax += cmax[c];
 			}
-		if (rmax > rmin && fixed + rmin <= avail)
+		if (rmax > rmin && fix + rmin <= avail)
 			for (c = 0; c < g->ncols; c++)
 				g->w[c] = cmax[c] <= side ? cmax[c] : cmin[c]
 					+ (int)((long)(cmax[c] - cmin[c])
-					* (avail - fixed - rmin) / (rmax - rmin));
+					* (avail - fix - rmin) / (rmax - rmin));
+	}
+	/* as wide as the table's width= says: the rest to the columns */
+	if (want > 0) {
+		int sum = 0, ngap = 0, psum = 0, room, np_min = 0, np_max = 0, pw;
+
+		if (want > avail + (g->ncols - 1) * gap)
+			want = avail + (g->ncols - 1) * gap;
+		for (c = 0; c < g->ncols; c++) {
+			sum += g->w[c];
+			ngap += c > 0 && g->w[c - 1] > 0;
+			psum += pct[c];
+			if (!pct[c]) {
+				np_min += cmin[c];
+				np_max += cmax[c];
+			}
+		}
+		room = want - ngap * gap;
+		if (psum && room > smin) {
+			/* columns with a %, theirs first (as browsers): the
+			 * others as wide as they would be in what is left,
+			 * down to their narrowest */
+			if (psum > 1000)
+				psum = 1000;
+			pw = (int)((long)room * psum / 1000);
+			if (pw > room - np_min)
+				pw = room - np_min;
+			for (c = 0; c < g->ncols; c++)
+				if (!pct[c])
+					g->w[c] = np_max <= room - pw ? cmax[c] : cmin[c]
+						+ (np_max > np_min ? (int)((long)(cmax[c]
+						- cmin[c]) * (room - pw - np_min)
+						/ (np_max - np_min)) : 0);
+			for (c = 0, sum = 0; c < g->ncols; c++)
+				if (pct[c])
+					g->w[c] = cmin[c];
+				else
+					sum += g->w[c];
+			for (c = 0; c < g->ncols; c++)
+				sum += pct[c] ? g->w[c] : 0;
+		}
+		if (room > sum)
+			grid_spread(g, fixed, pct, room - sum);
 	}
 	for (c = 0; c < g->ncols; c++)
 		g->x[c] = c ? g->x[c - 1] + g->w[c - 1]
@@ -3803,7 +3932,10 @@ struct gdecor {
 	int spacing, padding;		/* cellspacing=, cellpadding= */
 	int hin;			/* a cell's box reaches this far beside its text */
 	int margin;			/* the cells' text this far in from the table's box */
+	int gap;			/* between columns' text, when boxed */
+	int boxed;			/* boxes drawn: spaced as HTML says */
 	unsigned long bg, border_rgb;	/* the table's; LBOX_NONE: none */
+	unsigned short bgi;		/* its picture (lbox.bgi), 0 */
 };
 
 #define BORDER_GREY	0x808080UL	/* (browsers' raised and sunken greys) */
@@ -3837,29 +3969,58 @@ static unsigned long style_bg(const char *st)
 	return ct.bg & CSS_RGB_SET ? ct.bg & 0xFFFFFFUL : LBOX_NONE;
 }
 
-/* a cell's background: its own (bgcolor=, style=""), else its row's */
-static unsigned long cell_bg(const struct doc *d, nodeid cell)
+/* a table's, a row's or a cell's background into *rgb (LBOX_NONE: none)
+ * and its picture into *bgi (0: none): bgcolor= and background=, which
+ * the sheet and style="" say over. 1 if either */
+static int el_back(struct lay *L, nodeid id, unsigned long *rgb, unsigned short *bgi)
 {
-	nodeid row = d->nodes[cell].parent;
-	unsigned long rgb;
+	const struct doc *d = L->d;
+	struct eattr ea;
+	struct css_box b;
+	const char *v;
 
-	if (css_attr_color(doc_attr(d, cell, ATTR_BGCOLOR), &rgb))
-		return rgb;
-	if ((rgb = style_bg(doc_attr(d, cell, ATTR_STYLE))) != LBOX_NONE)
-		return rgb;
-	if (row && d->nodes[row].tag == TAG_TR) {
-		if (css_attr_color(doc_attr(d, row, ATTR_BGCOLOR), &rgb))
-			return rgb;
-		return style_bg(doc_attr(d, row, ATTR_STYLE));
+	*bgi = 0;
+	if (!css_attr_color(doc_attr(d, id, ATTR_BGCOLOR), rgb))
+		*rgb = LBOX_NONE;
+	scan_attrs(d, id, &ea);
+	if (!el_box(L, id, &ea, &b)) {
+		/* (no boxes from sheets: style="" all the same) */
+		unsigned long c = style_bg(ea.style);
+
+		if (c != LBOX_NONE)
+			*rgb = c;
+	} else if (b.set & CSS_B_BG)
+		*rgb = b.bg == CSS_BG_NONE ? LBOX_NONE : b.bg & 0xFFFFFFUL;
+	if (!has_pic(&b) && (v = doc_attr(d, id, ATTR_BACKGROUND)) != NULL && *v) {
+		b.bgsrc = v;
+		b.bgsrc_n = (unsigned short)strlen(v);
+		b.bgbase = NULL;
+		b.bgrep = CSS_BR_REPEAT;
+		b.bgfixed = 0;
+		b.bgpos[0].u = b.bgpos[1].u = CSS_U_PCT;
+		b.bgpos[0].v = b.bgpos[1].v = 0;
+		b.set2 |= CSS_B2_BGI;
 	}
-	return LBOX_NONE;
+	*bgi = bg_pic(L, &b, NULL);
+	return *rgb != LBOX_NONE || *bgi;
 }
 
-/* too dark for the screen's darkened text colours to be read on */
+/* a cell's background: its own, else its row's */
+static void cell_bg(struct lay *L, struct gcell *gc)
+{
+	nodeid row = L->d->nodes[gc->node].parent;
+
+	if (!el_back(L, gc->node, &gc->bg, &gc->bgi) && row
+		&& L->d->nodes[row].tag == TAG_TR)
+		el_back(L, row, &gc->bg, &gc->bgi);
+}
+
+/* too dark for the screen's darkened text colours (no brighter than 150)
+ * to be read on: the page's own are kept (white on orange) */
 static int dark(unsigned long rgb)
 {
 	return rgb != LBOX_NONE && ((rgb >> 16 & 255) * 299 + (rgb >> 8 & 255) * 587
-		+ (rgb & 255) * 114) / 1000 < 110;
+		+ (rgb & 255) * 114) / 1000 < 200;
 }
 
 /* table id's look into *dc, its cells' backgrounds into its cells */
@@ -3873,8 +4034,10 @@ static void grid_decor(struct lay *L, nodeid id, struct grid *g, int gap,
 
 	memset(dc, 0, sizeof *dc);
 	dc->bg = dc->border_rgb = LBOX_NONE;
-	for (i = 0; i < g->ncells; i++)
+	for (i = 0; i < g->ncells; i++) {
 		g->cell[i].bg = LBOX_NONE;
+		g->cell[i].bgi = 0;
+	}
 	if (L->m == NULL)
 		return;
 	dc->border = b == NULL ? 0 : *b == '\0' ? 1 : attr_units(d, id, ATTR_BORDER, 1);
@@ -3886,21 +4049,24 @@ static void grid_decor(struct lay *L, nodeid id, struct grid *g, int gap,
 		dc->spacing = 40;
 	if (dc->padding > 40)
 		dc->padding = 40;
-	if (css_attr_color(doc_attr(d, id, ATTR_BGCOLOR), &rgb))
-		dc->bg = rgb;
-	else
-		dc->bg = style_bg(doc_attr(d, id, ATTR_STYLE));
+	el_back(L, id, &dc->bg, &dc->bgi);
 	dc->border_rgb = css_attr_color(doc_attr(d, id, ATTR_BORDERCOLOR), &rgb)
 		? rgb : BORDER_GREY;
-	any = dc->bg != LBOX_NONE;
-	for (i = 0; i < g->ncells; i++)
-		if ((g->cell[i].bg = cell_bg(d, g->cell[i].node)) != LBOX_NONE)
+	any = dc->bg != LBOX_NONE || dc->bgi;
+	for (i = 0; i < g->ncells; i++) {
+		cell_bg(L, &g->cell[i]);
+		if (g->cell[i].bg != LBOX_NONE || g->cell[i].bgi)
 			any = 1;
-	/* (a box for each cell: room for it either side of the text) */
-	if (dc->border || any) {
-		dc->hin = gap > dc->spacing ? (gap - dc->spacing) / 2 : 0;
-		dc->margin = dc->hin + dc->border;
 	}
+	/* (boxes: each cell's text its padding (and border) inside its box,
+	 * the boxes cellspacing apart, and from the table's border) */
+	if (dc->border || any) {
+		dc->hin = dc->padding + (dc->border ? 1 : 0);
+		dc->margin = dc->hin + dc->spacing + dc->border;
+		dc->gap = 2 * dc->hin + dc->spacing;
+		dc->boxed = 1;
+	}
+	(void)gap;
 }
 
 static void add_box(struct lay *L, unsigned long line, long dy, int x, int w,
@@ -4114,7 +4280,7 @@ static int compose_bands(struct lay *L, struct grid *g, const struct gdecor *dc,
 			base = p->nlines;
 			x0 = L->col + shift + dc->margin;
 			add_box(L, base, 0, x0 - dc->margin, gw + 2 * dc->margin, H,
-				dc->bg, dc->border, dc->border_rgb, 0);
+				dc->bg, dc->border, dc->border_rgb, dc->bgi);
 			for (i = 0; i < g->ncells; i++) {
 				const struct gcell *gc = &g->cell[i];
 				int last = gc->r + gc->rs - 1;
@@ -4123,7 +4289,7 @@ static int compose_bands(struct lay *L, struct grid *g, const struct gdecor *dc,
 
 				add_box(L, base, ra[gc->r], x0 + g->x[gc->c] - dc->hin,
 					w + 2 * dc->hin, ra[last] + rh[last] - ra[gc->r],
-					gc->bg, cb, dc->border_rgb, 0);
+					gc->bg, cb, dc->border_rgb, gc->bgi);
 			}
 		}
 		over = 0;
@@ -4204,7 +4370,7 @@ static int grid_table(struct lay *L, nodeid id)
 	struct gdecor dc;
 	struct lay *S;
 	int gap = L->m ? L->em : 2, avail, i, c, total, attr = L->attr, face = L->face;
-	int cell = L->cell, was_align = L->align, align = L->align, shift = 0, gw;
+	int cell = L->cell, was_align = L->align, align = L->align, shift = 0, gw, want;
 	const char *ta;
 	unsigned short link = L->link;
 	unsigned long base = 0, ln;
@@ -4214,6 +4380,15 @@ static int grid_table(struct lay *L, nodeid id)
 		return 0;
 	float_flush(L);
 	avail = L->width - (L->indent > L->width / 2 ? L->width / 2 : L->indent);
+	{
+		/* a width= in units: as wide as that, where there's room
+		 * (grid or not) */
+		const char *wv = doc_attr(L->d, id, ATTR_WIDTH);
+		long tw = wv && !strchr(wv, '%') && L->m ? dim(L, wv, 0) : 0;
+
+		if (tw > 0 && tw <= avail && L->indent + tw > L->p->min_w)
+			L->p->min_w = (int)(L->indent + tw);
+	}
 	if (grid_build(L, id, &g, avail) < 0)
 		return 0;
 	if ((S = xmalloc(sizeof *S)) == NULL) {
@@ -4221,7 +4396,19 @@ static int grid_table(struct lay *L, nodeid id)
 		return 0;
 	}
 	grid_decor(L, id, &g, gap, &dc);
-	if (grid_widths(L, S, &g, avail - 2 * dc.margin, gap) < 0) {
+	if (dc.boxed)
+		gap = dc.gap;
+	{
+		/* its width= (a % of the room it has, once that is known) */
+		const char *wv = doc_attr(L->d, id, ATTR_WIDTH);
+
+		want = 0;
+		if (wv && strchr(wv, '%') && L->sizing)
+			L->pct_wide = 1;
+		else if (wv)
+			want = (int)dim(L, wv, avail) - 2 * dc.margin;
+	}
+	if (grid_widths(L, S, &g, avail - 2 * dc.margin, gap, want) < 0) {
 		xfree(S);
 		grid_free(&g);
 		return 0;
@@ -4232,6 +4419,7 @@ static int grid_table(struct lay *L, nodeid id)
 		int w = g.x[gc->c + gc->cs - 1] + g.w[gc->c + gc->cs - 1] - g.x[gc->c];
 
 		if ((gc->maxw > w || (gc->rule && gc->laid_w != w) || gc->pg.partial
+			|| (gc->pct_wide && gc->laid_w != w)
 			|| (gc->aligned && !gc->at_width))
 			&& lay_cell(L, S, gc, w, 0, 1, NULL) < 0) {
 			xfree(S);

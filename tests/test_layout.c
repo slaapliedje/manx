@@ -629,6 +629,65 @@ static int has_side(const struct page *pg, unsigned long bg, int side, int c0, i
 }
 
 /* what Acid2 asks of boxes */
+/* two boxes side by side: bg1's x and width, bg2 right after it and
+ * width w2 (-1: any) */
+static void check_pair(const char *name, const char *html, unsigned long bg1,
+	unsigned long bg2, int x1, int w1, int w2)
+{
+	struct page pg;
+	struct doc d;
+	const struct lbox *a, *b;
+
+	lay_px(html, &pg, &d);
+	a = box_bg(&pg, bg1);
+	b = box_bg(&pg, bg2);
+	runs++;
+	if (a == NULL || b == NULL || a->x != x1 || (w1 >= 0 && a->w != w1)
+		|| b->x != a->x + a->w || (w2 >= 0 && b->w != w2)) {
+		fails++;
+		printf("FAIL %s: %d+%d, %d+%d\n", name, a ? a->x : -1, a ? a->w : -1,
+			b ? b->x : -1, b ? b->w : -1);
+	}
+	layout_free(&pg);
+	doc_free(&d);
+}
+
+/* HTML tables: width=, cells' widths, backgrounds from sheets */
+static void check_table_widths(void)
+{
+	struct page pg;
+	struct doc d;
+	int ok;
+
+	check_pair("table width=100%", "<table width=100% cellspacing=0 cellpadding=0>"
+		"<tr><td bgcolor=#f00>ab<td bgcolor=#00f>abcdef</table>", 0xff0000UL, 0xffUL,
+		0, -1, -1);
+	check_minmax("table width=100%: all of it", "<table width=100% cellspacing=0 "
+		"cellpadding=0 bgcolor=#0f0><tr><td>ab<td>abcdef</table>", 0xff00UL, 0, 400, -1);
+	check_pair("a cell's width=", "<table width=300 cellspacing=0 cellpadding=0><tr>"
+		"<td width=100 bgcolor=#f00>a<td bgcolor=#00f>b</table>", 0xff0000UL, 0xffUL,
+		0, 100, 200);
+	check_pair("a cell's 100% first", "<table width=100% cellspacing=0 cellpadding=0>"
+		"<tr><td width=100 bgcolor=#f00>a<td width=100% bgcolor=#00f>b</table>",
+		0xff0000UL, 0xffUL, 0, 10, 390);
+	check_pair("a table width= inside: no narrower", "<table width=100% cellspacing=0 "
+		"cellpadding=0><tr><td bgcolor=#f00><table width=200><tr><td>a b c</table>"
+		"<td width=100% bgcolor=#00f>x</table>", 0xff0000UL, 0xffUL, 0, 200, 200);
+	check_minmax("cellpadding and cellspacing", "<table cellspacing=4 cellpadding=3>"
+		"<tr><td bgcolor=#f00>ab<td>c</table>", 0xff0000UL, 4, 26, 18);
+	/* the sheet's backgrounds; background= */
+	lay_px("<style>.h{background:#f00}</style><table><tr><td class=h>a<td "
+		"background=t.gif>b</table>", &pg, &d);
+	ok = box_bg(&pg, 0xff0000UL) != NULL && boxes_with(&pg, bgi_of(&pg, "t.gif")) == 1;
+	runs++;
+	if (!ok) {
+		fails++;
+		printf("FAIL cells' backgrounds from the sheet, background=\n");
+	}
+	layout_free(&pg);
+	doc_free(&d);
+}
+
 static void check_acid2_boxes(void)
 {
 	struct page pg;
@@ -730,6 +789,7 @@ static void check_acid2_boxes(void)
 int main(void)
 {
 	check_acid2_boxes();
+	check_table_widths();
 	check_grid_bands();
 	check_bg_pics();
 	check_acid1_floats();

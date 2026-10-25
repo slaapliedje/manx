@@ -83,7 +83,8 @@ Aztec C built a good share of the Amiga's and the Atari ST's software.
   `::after`.
 
 What it doesn't do: JavaScript, much of CSS layout (flexbox, grid, CSS
-tables, overflow, background sizes and gradients), SVG and WebP pictures.
+tables of more than one row, overflow other than hidden, background sizes
+and gradients), SVG and WebP pictures.
 
 ## On the TT030 (68030, 32 MHz)
 

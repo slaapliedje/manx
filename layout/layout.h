@@ -184,6 +184,8 @@ struct page {
 	int need_w;			/* (with metrics) as wide as its lines
 					 * need, boxes' right sides (padding,
 					 * border, margin) beside them included */
+	int min_w;			/* ... and can't be narrower than: a
+					 * table's width= in units */
 	struct llayer *layers;		/* NULL without metrics, or none */
 	unsigned long nlayers, layers_cap;
 	unsigned long page_bg;		/* the page's background (the root's or
