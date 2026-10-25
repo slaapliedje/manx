@@ -56,6 +56,11 @@ struct cell {
 
 static Display *dpy;
 static Window win;
+/* the window's visual, depth and colormap: the screen's, or (when that is
+ * a palette, an 8-bit desktop's) its deepest TrueColor one */
+static Visual *vis;
+static int vdepth;
+static Colormap vcmap;
 static GC gc;
 static GC sgc;				/* scrolling: reports what it can't copy */
 static XFontStruct *font, *bold;	/* bold: NULL to overstrike */
@@ -134,10 +139,10 @@ static int controls_dirty = 1, scroll_dirty = 1;
  * whose colour database knows only names) */
 static unsigned long color(const char *name, unsigned long fallback, int *ok)
 {
-	Colormap cm = DefaultColormap(dpy, DefaultScreen(dpy));
+	Colormap cm = vcmap;
 	XColor c;
 
-	if (scr_color && DefaultDepth(dpy, DefaultScreen(dpy)) > 1
+	if (scr_color && vdepth > 1
 		&& XParseColor(dpy, cm, (char *)name, &c) && XAllocColor(dpy, cm, &c)) {
 		if (ok)
 			*ok = 1;
@@ -294,6 +299,34 @@ static int xtrace_after(Display *d)
 	return 0;
 }
 
+/*
+ * The visual to draw in: the screen's, unless that is a palette (or a
+ * TrueColor shallower than 15 bits) and the server has a deeper TrueColor
+ * one, as an SGI's 8-bit desktop has 24-bit ones beside it: then that,
+ * with a colormap of its own (MANX_VISUAL=default keeps the screen's).
+ */
+static void pick_visual(int scr)
+{
+	static const int depths[3] = { 24, 16, 15 };
+	const char *e = getenv("MANX_VISUAL");
+	XVisualInfo vi;
+	int i;
+
+	vis = DefaultVisual(dpy, scr);
+	vdepth = DefaultDepth(dpy, scr);
+	vcmap = DefaultColormap(dpy, scr);
+	if (!scr_color || (e && strcmp(e, "default") == 0)
+		|| (vis->class == TrueColor && vdepth >= 15))
+		return;
+	for (i = 0; i < 3; i++)
+		if (XMatchVisualInfo(dpy, scr, depths[i], TrueColor, &vi)) {
+			vis = vi.visual;
+			vdepth = vi.depth;
+			vcmap = XCreateColormap(dpy, RootWindow(dpy, scr), vis, AllocNone);
+			return;
+		}
+}
+
 int scr_open(const char *cs_env)
 {
 	XSetWindowAttributes wa;
@@ -313,6 +346,7 @@ int scr_open(const char *cs_env)
 		XSetAfterFunction(dpy, xtrace_after);
 	}
 	scr = DefaultScreen(dpy);
+	pick_visual(scr);
 	font = XLoadQueryFont(dpy, (char *)(scr_font && *scr_font ? scr_font : "fixed"));
 	if (font == NULL && (font = XLoadQueryFont(dpy, "fixed")) == NULL) {
 		XCloseDisplay(dpy);
@@ -326,8 +360,9 @@ int scr_open(const char *cs_env)
 	bh = ch + 6;
 	place_controls();
 
-	px_fg = color("black", BlackPixel(dpy, scr), NULL);
-	px_bg = color("white", WhitePixel(dpy, scr), NULL);
+	px_fg = color("black", vis == DefaultVisual(dpy, scr) ? BlackPixel(dpy, scr) : 0, NULL);
+	px_bg = color("white", vis == DefaultVisual(dpy, scr) ? WhitePixel(dpy, scr)
+		: vis->red_mask | vis->green_mask | vis->blue_mask, NULL);
 	px_mark = color("#ffff60", px_bg, NULL);
 	link_px_ok = 1;
 	for (i = 0; i < 8; i++) {
@@ -371,10 +406,11 @@ int scr_open(const char *cs_env)
 	wa.border_pixel = px_fg;
 	wa.event_mask = KeyPressMask | ButtonPressMask | ButtonReleaseMask
 		| ButtonMotionMask | ExposureMask | StructureNotifyMask;
+	wa.colormap = vcmap;
 	win = XCreateWindow(dpy, RootWindow(dpy, scr), gx_at > 0 ? gx_at : 0,
 		gy_at > 0 ? gy_at : 0,
-		(unsigned)win_w, (unsigned)win_h, 1, CopyFromParent, InputOutput,
-		CopyFromParent, CWBackPixel | CWBorderPixel | CWEventMask, &wa);
+		(unsigned)win_w, (unsigned)win_h, 1, vdepth, InputOutput,
+		vis, CWBackPixel | CWBorderPixel | CWEventMask | CWColormap, &wa);
 
 	/* the window manager: steps of one cell, at least 40x5 */
 	if ((sh = XAllocSizeHints()) != NULL) {
@@ -1296,7 +1332,7 @@ static int on_x_error(Display *d, XErrorEvent *e)
 static int make_cube(void)
 {
 	static const int tries[5] = { 6, 5, 4, 3, 2 };
-	Colormap cm = DefaultColormap(dpy, DefaultScreen(dpy));
+	Colormap cm = vcmap;
 	int t;
 
 	for (t = 0; t < 5; t++) {
@@ -1328,7 +1364,7 @@ static int make_cube(void)
 static int make_ramp(void)
 {
 	static const int tries[5] = { 64, 32, 16, 8, 4 };
-	Colormap cm = DefaultColormap(dpy, DefaultScreen(dpy));
+	Colormap cm = vcmap;
 	int t;
 
 	for (t = 0; t < 5; t++) {
@@ -1356,8 +1392,8 @@ static int make_ramp(void)
 
 static int make_format(void)
 {
-	int s = DefaultScreen(dpy), depth = DefaultDepth(dpy, s);
-	Visual *v = DefaultVisual(dpy, s);
+	int s = DefaultScreen(dpy), depth = vdepth;
+	Visual *v = vis;
 	XImage *t;
 
 	memset(&pxf, 0, sizeof pxf);
@@ -1514,8 +1550,8 @@ void scr_image_free(void *img)
 
 void *scr_image_new(int w, int h, int masked)
 {
-	int s = DefaultScreen(dpy), depth = DefaultDepth(dpy, s);
-	Visual *v = DefaultVisual(dpy, s);
+	int depth = vdepth;
+	Visual *v = vis;
 	struct ximg *im;
 
 	if (scr_pixels() == NULL || w <= 0 || h <= 0 || w > 8192 || h > 8192
@@ -1725,7 +1761,7 @@ static unsigned long pixel_rgb(unsigned long px)
 	}
 	/* (a colormap: read once) */
 	if (ncmap < 0) {
-		int s = DefaultScreen(dpy), n = DefaultVisual(dpy, s)->map_entries;
+		int n = vis->map_entries;
 		XColor *c;
 
 		ncmap = 0;
@@ -1733,7 +1769,7 @@ static unsigned long pixel_rgb(unsigned long px)
 			if ((cmap = xmalloc((size_t)n * sizeof *cmap)) != NULL) {
 				for (i = 0; i < n; i++)
 					c[i].pixel = (unsigned long)i;
-				XQueryColors(dpy, DefaultColormap(dpy, s), c, n);
+				XQueryColors(dpy, vcmap, c, n);
 				for (i = 0; i < n; i++)
 					cmap[i] = (unsigned long)(c[i].red >> 8) << 16
 						| (unsigned long)(c[i].green >> 8) << 8 | (c[i].blue >> 8);
@@ -1852,7 +1888,7 @@ static void paint_image(const struct idraw *d, int b0, int b1)
 		copy_rows(d, b0 - d->y, b1 - d->y);
 	else if (d->w > 2 && d->h > 2) {
 		/* not here yet: a frame */
-		XSetForeground(dpy, gc, DefaultDepth(dpy, DefaultScreen(dpy)) > 1 ?
+		XSetForeground(dpy, gc, vdepth > 1 ?
 			px_bg3 : px_fg);
 		XDrawRectangle(dpy, win, gc, x, y, (unsigned)(d->w - 1),
 			(unsigned)(d->h - 1));
