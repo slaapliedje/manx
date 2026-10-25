@@ -63,6 +63,9 @@ static struct url g_base;		/* what its links are relative to */
 static char g_ctype[128];
 static long g_top;			/* first line shown */
 static long g_sel = -1;			/* selected link, 0-based */
+static int g_sel_shown = 1;		/* ... marked: always in a terminal;
+					 * in a window (with a mouse) only once
+					 * keys have moved among the links */
 static char g_find[128];
 static long g_find_line = -1, g_find_off;
 static char g_msg[300];			/* the status line's message */
@@ -200,7 +203,7 @@ static int cell_attr(int sa, int link)
 		a |= CA_FIELD;
 	if (link) {
 		a |= CA_LINK;
-		if (link - 1 == g_sel)
+		if (link - 1 == g_sel && g_sel_shown)
 			a |= CA_REV;
 	}
 	return a;
@@ -1072,6 +1075,7 @@ static void doc_reset(void)
 	g_bytes = 0;
 	g_top = 0;
 	g_sel = -1;
+	g_sel_shown = scr_pixels() == NULL;
 	g_info[0] = '\0';
 }
 
@@ -2431,6 +2435,7 @@ static void click(int row, int col)
 	if (k < 0)
 		return;
 	g_sel = k;
+	g_sel_shown = 1;	/* (a field clicked into: marked as it's used) */
 	draw(0);
 	follow();
 }
@@ -3227,6 +3232,15 @@ int main(int argc, char **argv)
 		if (!g_msg_sticky)
 			g_msg[0] = '\0';
 		g_msg_sticky = 0;
+		/* in a window, a page's selected link unmarked until keys
+		 * move among the links: the first of them marks it */
+		if (!g_sel_shown && g_sel >= 0 && (k == K_DOWN || k == K_UP || k == '\t'
+			|| k == K_BTAB || k == K_RIGHT || k == '\r')) {
+			g_sel_shown = 1;
+			continue;
+		}
+		if (k == K_DOWN || k == K_UP || k == '\t' || k == K_BTAB)
+			g_sel_shown = 1;
 		if (view_key(k))	/* (any key: g_frag dropped there) */
 			continue;
 		switch (k) {
