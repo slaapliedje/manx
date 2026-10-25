@@ -102,6 +102,8 @@ void pcss_begin(struct doc *d, const struct url *base, const char *page_url)
 	}
 }
 
+static unsigned long g_fetch_len;	/* of the fetch under way */
+
 void pcss_count(int *total, int *done)
 {
 	int i;
@@ -111,6 +113,11 @@ void pcss_count(int *total, int *done)
 	for (i = 0; i < g_n; i++)
 		if (g_s[i].state == S_DONE)
 			(*done)++;
+}
+
+unsigned long pcss_fetching(void)
+{
+	return g_fetch_len;
 }
 
 void pcss_cancel(void)
@@ -190,6 +197,7 @@ static int on_body(void *ctx, const unsigned char *b, size_t n)
 	}
 	memcpy(f->buf + f->len, b, n);
 	f->len += n;
+	g_fetch_len = f->len;
 	if (f->poll(f->ctx, 0) < 0) {
 		f->stopped = 1;
 		return -1;
@@ -377,7 +385,9 @@ int pcss_step(int (*poll)(void *ctx, int shown), void *ctx)
 	opts.referer = g_referer[0] ? g_referer : NULL;
 	if ((res = xmalloc(sizeof *res)) == NULL)
 		return PCSS_WORKED;
+	g_fetch_len = 0;
 	rc = fetch_ex(url, "GET", &opts, &cb, res);
+	g_fetch_len = 0;
 	if (f.stopped) {
 		xfree(f.buf);
 		xfree(res);

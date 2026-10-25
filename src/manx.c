@@ -79,6 +79,9 @@ static int g_img_busy;			/* the page's images aren't all in */
 static int g_css_busy;			/* nor its linked style sheets */
 static int g_img_relayout;		/* sizes came in: lay out again */
 static unsigned long g_img_drawn, g_img_relaid;	/* when last drawn, laid out */
+static unsigned long g_img_flushed;	/* when the status (and an image's new
+					 * rows) last went out */
+static int g_img_framed;		/* the frame has the image being decoded */
 static int g_keyq[16];			/* keys read while loading */
 static int g_nkeyq;
 /* the #fragment the page was opened at: gone back to as images come in
@@ -517,8 +520,11 @@ static void draw_status(void)
 	scr_fill(r, 0, scr_cols, ' ', 0);
 	if (g_msg[0])
 		to_term(g_msg, buf, sizeof buf);
-	else if (g_sel >= 0 && (unsigned long)g_sel < g_page.nlinks) {
-		/* the selected link's URL */
+	else if (g_sel >= 0 && (unsigned long)g_sel < g_page.nlinks
+		&& (g_sel_shown || !(g_css_busy || g_img_busy))) {
+		/* the selected link's URL (in a window, while the page's
+		 * pictures are coming and no key has moved among the links:
+		 * how far they are instead) */
 		const struct llink *k = &g_page.links[g_sel];
 		const char *h = k->kind == LK_HREF ?
 			doc_attr(&g_doc, k->node, k->node
@@ -532,18 +538,23 @@ static void draw_status(void)
 		else if (k->kind == LK_FIELD)
 			describe_field(k->node, buf, sizeof buf);
 		xfree(u);
-	} else if (g_css_busy) {
+	} else if (g_css_busy || g_img_busy) {
+		/* (and how much of the one being fetched is in: on a slow
+		 * link a fetch is minutes, and this shows it moving) */
+		unsigned long b = g_css_busy ? pcss_fetching() : pimg_fetching();
+		char prog[40];
 		int total, done;
 
-		pcss_count(&total, &done);
-		snprintf(buf, sizeof buf, "%s%sstyle sheets %d of %d  (z: stop)", g_info,
-			g_info[0] ? "  " : "", done, total);
-	} else if (g_img_busy) {
-		int total, done;
-
-		pimg_count(&total, &done);
-		snprintf(buf, sizeof buf, "%s%simages %d of %d  (z: stop)", g_info,
-			g_info[0] ? "  " : "", done, total);
+		if (g_css_busy)
+			pcss_count(&total, &done);
+		else
+			pimg_count(&total, &done);
+		prog[0] = '\0';
+		if (b)
+			snprintf(prog, sizeof prog, "  %lu KB", b / 1024);
+		snprintf(buf, sizeof buf, "%s%s%s %d of %d%s  (z: stop)", g_info,
+			g_info[0] ? "  " : "", g_css_busy ? "style sheets" : "images",
+			done, total, prog);
 	} else
 		snprintf(buf, sizeof buf, "%s", g_info);
 	scr_put(r, 0, buf, (int)strlen(buf), 0);
@@ -3020,15 +3031,32 @@ static int img_poll(void *ctx, int shown)
 	while ((k = scr_getkey(0)) >= 0) {
 		if (view_key(k)) {
 			draw(0);
+			g_img_framed = 1;
 			continue;
 		}
 		if (g_nkeyq < (int)(sizeof g_keyq / sizeof g_keyq[0]))
 			g_keyq[g_nkeyq++] = k;
 		return -1;
 	}
-	if (shown && (now = os_msec()) - g_img_drawn > 400) {
-		g_img_drawn = now;
-		draw(0);
+	now = os_msec();
+	if (shown) {
+		/* the image's rows as they come: a frame once it is in one,
+		 * then only the new rows go out (a frame is the whole page
+		 * again: a slow machine's decoding would be mostly that) */
+		if (!g_img_framed || now - g_img_drawn > 3000) {
+			g_img_drawn = g_img_flushed = now;
+			g_img_framed = 1;
+			draw(0);
+		} else if (now - g_img_flushed > 400) {
+			g_img_flushed = now;
+			draw_status();
+			scr_flush(0);
+		}
+	} else if (now - g_img_flushed > 1000) {
+		/* a fetch: how far it is (the page itself stays as it is) */
+		g_img_flushed = now;
+		draw_status();
+		scr_flush(0);
 	}
 	return 0;
 }
@@ -3039,6 +3067,9 @@ static void img_work(void)
 	unsigned long now;
 	int r;
 
+	/* (one piece of work: a fetch, or one image's decoding, which the
+	 * frame doesn't hold until it is drawn with it) */
+	g_img_framed = 0;
 	if (g_css_busy) {
 		/* the style sheets first: they say what is laid out at all,
 		 * images included */

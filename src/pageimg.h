@@ -55,4 +55,7 @@ void pimg_cancel(void);
 /* How many images the page has, and how many are fetched (or failed). */
 void pimg_count(int *total, int *done);
 
+/* Bytes of the image being fetched so far (0: none is). */
+unsigned long pimg_fetching(void);
+
 #endif /* MANX_PAGEIMG_H */

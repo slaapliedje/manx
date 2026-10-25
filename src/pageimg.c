@@ -75,6 +75,7 @@ static int g_local;		/* the page is a file: subresources may be */
 static char g_referer[URL_MAX];
 static size_t g_held;
 static unsigned g_gen;
+static unsigned long g_fetch_len;	/* of the fetch under way */
 
 /* --- the entries ------------------------------------------------------------ */
 
@@ -401,6 +402,11 @@ void pimg_count(int *total, int *done)
 	}
 }
 
+unsigned long pimg_fetching(void)
+{
+	return g_fetch_len;
+}
+
 /* --- fetching ---------------------------------------------------------------- */
 
 struct fetching {
@@ -475,6 +481,7 @@ static int on_body(void *ctx, const unsigned char *b, size_t n)
 		f->too_big = 1;
 		return -1;
 	}
+	g_fetch_len = f->e->len;
 	if (f->poll(f->ctx, 0) < 0) {
 		f->stopped = 1;
 		return -1;
@@ -638,7 +645,9 @@ static int fetch_one(struct pent *e, int (*poll)(void *ctx, int shown), void *ct
 		/* (a fetch_result is big: not on the stack) */
 		if ((res = xmalloc(sizeof *res)) == NULL)
 			return PIMG_WORKED;
+		g_fetch_len = 0;
 		rc = fetch_ex(url, "GET", &opts, &cb, res);
+		g_fetch_len = 0;
 		snprintf(final, sizeof final, "%s", res->url[0] ? res->url : url);
 		xfree(res);
 		if (f.stopped) {

@@ -32,6 +32,9 @@ int pcss_step(int (*poll)(void *ctx, int shown), void *ctx);
 /* How many sheets the page links, and how many are read (or failed). */
 void pcss_count(int *total, int *done);
 
+/* Bytes of the sheet being fetched so far (0: none is). */
+unsigned long pcss_fetching(void);
+
 /* Fetch no more of them (the user said stop). */
 void pcss_cancel(void);
 

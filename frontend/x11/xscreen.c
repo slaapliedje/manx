@@ -933,8 +933,72 @@ static int pane_y(void) { return gy + ch; }
 static int pane_wpx(void) { return scr_cols * cw; }
 static int pane_hpx(void) { return (scr_rows - 2) * ch; }
 
+/*
+ * The pixel sizes the server has of a family, weight and slant, asked
+ * once (XListFonts). Asking for a font by name that isn't there is a
+ * search of the server's whole font path each time, seconds on a TT,
+ * and a look the page wants in a size the server lacks asked for that
+ * way (the sizes around it, two slants, a second family) was minutes of
+ * a stalled browser, so names are only asked for when the list has them.
+ */
+struct fsizes {
+	char key[40];			/* family-weight-slant */
+	int n, any;			/* sizes; any: a scalable one too */
+	int px[48];
+};
+
+static struct fsizes fsz[24];
+static int nfsz;
+static int font_log = -1;		/* MANX_FONTLOG: lists and loads to stderr */
+
+static struct fsizes *font_sizes(const char *family, int bold, char slant)
+{
+	struct fsizes *s;
+	char pat[200], **names;
+	int n, i;
+
+	if (font_log < 0)
+		font_log = getenv("MANX_FONTLOG") != NULL;
+	snprintf(pat, sizeof pat, "%.30s-%d-%c", family, bold, slant);
+	for (i = 0; i < nfsz; i++)
+		if (strcmp(fsz[i].key, pat) == 0)
+			return &fsz[i];
+	if (nfsz == (int)(sizeof fsz / sizeof fsz[0]))
+		return NULL;
+	s = &fsz[nfsz++];
+	memset(s, 0, sizeof *s);
+	strcpy(s->key, pat);
+	sprintf(pat, "-*-%s-%s-%c-normal--*-*-*-*-*-*-iso8859-1", family,
+		bold ? "bold" : "medium", slant);
+	names = XListFonts(dpy, pat, 1024, &n);
+	for (i = 0; names && i < n; i++) {
+		/* XLFD: the pixel size is the seventh field */
+		const char *p = names[i];
+		int field, px, k;
+
+		for (field = 0; *p && field < 7; p++)
+			if (*p == '-')
+				field++;
+		px = atoi(p);
+		if (px <= 0) {
+			s->any = 1;
+			continue;
+		}
+		for (k = 0; k < s->n && s->px[k] != px; k++)
+			;
+		if (k == s->n && s->n < (int)(sizeof s->px / sizeof s->px[0]))
+			s->px[s->n++] = px;
+	}
+	if (names)
+		XFreeFontNames(names);
+	if (font_log)
+		fprintf(stderr, "fonts %s: %d names, %d sizes%s\n", pat, n, s->n,
+			s->any ? ", scalable" : "");
+	return s;
+}
+
 /* a font for the look, by XLFD: family, weight, slant and pixel size,
- * trying the sizes around it */
+ * the sizes around it when the server lacks that one */
 static XFontStruct *find_font(const char *family, int bold, int slant, int px)
 {
 	static const int near[] = { 0, -1, 1, -2, 2, 3, -3 };
@@ -943,14 +1007,30 @@ static XFontStruct *find_font(const char *family, int bold, int slant, int px)
 	size_t i, j;
 	XFontStruct *f;
 
-	for (j = 0; slants[slant ? 1 : 0][j]; j++)
+	for (j = 0; slants[slant ? 1 : 0][j]; j++) {
+		struct fsizes *s = font_sizes(family, bold, slants[slant ? 1 : 0][j]);
+
+		if (s == NULL)
+			continue;
 		for (i = 0; i < sizeof near / sizeof near[0]; i++) {
+			int want = px + near[i], k;
+
+			if (want <= 0)
+				continue;
+			for (k = 0; k < s->n && s->px[k] != want; k++)
+				;
+			if (k == s->n && !s->any)
+				continue;
 			sprintf(name, "-*-%s-%s-%c-normal--%d-*-*-*-*-*-iso8859-1",
 				family, bold ? "bold" : "medium",
-				slants[slant ? 1 : 0][j], px + near[i]);
-			if ((f = XLoadQueryFont(dpy, name)) != NULL)
+				slants[slant ? 1 : 0][j], want);
+			f = XLoadQueryFont(dpy, name);
+			if (font_log)
+				fprintf(stderr, "font %s: %s\n", f ? "ok" : "no", name);
+			if (f != NULL)
 				return f;
 		}
+	}
 	return NULL;
 }
 

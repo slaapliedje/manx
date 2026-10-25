@@ -65,3 +65,8 @@ void pimg_count(int *total, int *done)
 {
 	*total = *done = 0;
 }
+
+unsigned long pimg_fetching(void)
+{
+	return 0;
+}
