@@ -467,10 +467,19 @@ int scr_open(const char *cs_env)
 		return -1;
 	}
 	XMapWindow(dpy, win);
-	/* wait until it is there to be drawn on */
-	do
-		XWindowEvent(dpy, win, ExposureMask, &ev);
-	while (ev.xexpose.count != 0);
+	/* wait until it is there to be drawn on: mapped, taking the size
+	 * the window manager gave it on the way. (Not its first Expose: a
+	 * screen the server has blanked sends none until it wakes, and the
+	 * page would wait for that before it was even fetched; the Expose
+	 * is painted from the event loop as any other.) */
+	do {
+		XWindowEvent(dpy, win, StructureNotifyMask, &ev);
+		if (ev.type == ConfigureNotify) {
+			win_w = ev.xconfigure.width;
+			win_h = ev.xconfigure.height;
+			sb_x = win_w - SBW;
+		}
+	} while (ev.type != MapNotify);
 	scr_flush(1);
 	return 0;
 }
