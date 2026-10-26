@@ -633,6 +633,11 @@ int tls_connect(struct tls_conn *c, int fd, const char *host, unsigned port,
 	/* the fastest code measured on the TT: signatures checked by rsavrfy
 	 * and ecvrfy (on the 68030's mulu.l; P-521 through to i31), the key
 	 * exchange on m31 curves */
+#if !MANX_NO_C68K && !BR_NO_U64 && C68K_CHAPOL
+	/* and the record cipher and MAC on the 68030 (crypt68k) */
+	br_ssl_engine_set_chacha20(&c->sc.eng, c68k_br_chacha20_run);
+	br_ssl_engine_set_poly1305(&c->sc.eng, c68k_br_poly1305_run);
+#endif
 	br_ssl_engine_set_rsavrfy(&c->sc.eng, t_rsavrfy);
 	br_ssl_engine_set_ecdsa(&c->sc.eng, t_ecvrfy);
 	br_x509_minimal_set_rsa(&c->xc, t_rsavrfy);

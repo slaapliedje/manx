@@ -16,14 +16,29 @@ for each:
 | ECDSA P-256 check | 5.49 s (`p256_m31`) | 1.89 s |
 | ECDSA P-384 check | 42.2 s (`prime_i31`) | 5.59 s |
 | X25519 | 2.60 s (`c25519_m31`) | 1.22 s |
+| ChaCha20-Poly1305, a 4096-byte record | 58 KB/s (`ctmul`) | 76 KB/s |
+| ChaCha20 alone | 128 KB/s (`ct`) | 167 KB/s |
 
 (crypt68k's `bench`; BearSSL's own `tlsbench` figures from Manx, the
-same machine. The X25519 pair comes from one `tlsbench` run, several
+same machine; the ChaCha20-Poly1305 rows are `tlsbench sym` there. The X25519 pair comes from one `tlsbench` run, several
 operations each, on a busier TT than the rest: compare the ratio.)
 
 In [Manx](https://github.com/slaapliedje/manx), the browser it comes
 from, a TT's first visit to a site with a Let's Encrypt P-384 chain went
 from 147 s to 27 s.
+
+## The record cipher
+
+`chapol_m68k.c` adds ChaCha20 and Poly1305 for the 68020/030/040 as
+BearSSL's `br_chacha20_run` and `br_poly1305_run`, for
+`br_ssl_engine_set_chacha20` and `br_ssl_engine_set_poly1305`. The gain
+is smaller than the public-key code's because a 68030 bounds both: on
+the TT a rotate costs 12 cycles whatever the count and a 32x32-bit
+multiply 78, so ChaCha20's quarter round (five rotates) and Poly1305's
+block (25 multiplies) have floors the C code is not far above. What the
+assembly saves is the memory traffic: ChaCha20's state stays in
+registers (the add-only words in address registers), and Poly1305 keeps
+its sums in register pairs.
 
 ## Time
 

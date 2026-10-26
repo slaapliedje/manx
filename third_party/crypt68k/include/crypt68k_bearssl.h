@@ -34,6 +34,24 @@ uint32_t c68k_br_rsa_pkcs1_vrfy(const unsigned char *x, size_t xlen,
  * curve25519 to it and the other curves to br_ec_all_m31. */
 extern const br_ec_impl c68k_br_ec_c25519;
 
+/* C68K_CHAPOL: whether the 68020/030/040 ChaCha20 and Poly1305 are built
+ * (the compiler targets one of them) */
+#if defined(__GNUC__) && !defined(__mc68060__) && (defined(__mc68020__) \
+	|| defined(__mc68030__) || defined(__mc68040__))
+#define C68K_CHAPOL	1
+#else
+#define C68K_CHAPOL	0
+#endif
+
+/* ChaCha20 and Poly1305 on the 68020/030/040 (chapol_m68k.c), as
+ * br_chacha20_run and br_poly1305_run: for br_ssl_engine_set_chacha20 and
+ * br_ssl_engine_set_poly1305, or poly1305's ichacha */
+uint32_t c68k_br_chacha20_run(const void *key, const void *iv, uint32_t cc,
+	void *data, size_t len);
+void c68k_br_poly1305_run(const void *key, const void *iv, void *data, size_t len,
+	const void *aad, size_t aad_len, void *tag, br_chacha20_run ichacha,
+	int encrypt);
+
 /* br_ecdsa_vrfy's: ASN.1 (DER) and raw signatures */
 uint32_t c68k_br_ecdsa_vrfy_asn1(const br_ec_impl *impl, const void *hash, size_t hash_len,
 	const br_ec_public_key *pk, const void *sig, size_t sig_len);

@@ -133,7 +133,7 @@ NET_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard net/*.c))
 MAIL_OBJ := $(patsubst %.c,$(B)/%.o,$(wildcard mail/*.c))
 # crypt68k's X25519 (the key exchange), as a BearSSL br_ec_impl
 C68K_OBJ := $(B)/$(CRYPT68K)/src/x25519.o $(B)/$(CRYPT68K)/src/fe_m68k.o \
-	$(B)/$(CRYPT68K)/src/bearssl_x25519.o
+	$(B)/$(CRYPT68K)/src/bearssl_x25519.o $(B)/$(CRYPT68K)/src/chapol_m68k.o
 ifeq ($(TARGET),no64)
 C68K_OBJ :=		# (68030 assembly: BearSSL's X25519 instead)
 endif

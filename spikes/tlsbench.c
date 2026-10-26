@@ -181,6 +181,7 @@ static const unsigned char g_iv[12] = { 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 1, 2 };
 struct aead {
 	const char *name;
 	br_poly1305_run poly;			/* ChaCha20-Poly1305 */
+	br_chacha20_run chacha;			/* its cipher (ct when NULL) */
 	const br_block_ctr_class *aes;		/* or AES-GCM */
 	br_ghash ghash;
 };
@@ -189,7 +190,7 @@ static void aead_run(const struct aead *a, unsigned char *tag)
 {
 	if (a->poly)
 		a->poly(g_key, g_iv, g_buf, sizeof g_buf, "aad", 3, tag,
-			br_chacha20_ct_run, 1);
+			a->chacha ? a->chacha : br_chacha20_ct_run, 1);
 	else {
 		br_aes_gen_ctr_keys keys;
 		br_gcm_context gcm;
@@ -211,15 +212,28 @@ static void op_aead(void *arg)
 	aead_run(arg, tag);
 }
 
+/* the cipher alone: one 4 KB block run */
+static void op_chacha(void *arg)
+{
+	br_chacha20_run f = (br_chacha20_run)arg;
+
+	f(g_key, g_iv, 1, g_buf, sizeof g_buf);
+}
+
 static const struct aead g_aeads[] = {
-	{ "ChaCha20-Poly1305 ctmul", br_poly1305_ctmul_run, 0, 0 },
-	{ "ChaCha20-Poly1305 ctmul32", br_poly1305_ctmul32_run, 0, 0 },
-	{ "ChaCha20-Poly1305 i15", br_poly1305_i15_run, 0, 0 },
-	{ "AES128-GCM big/ctmul", 0, &br_aes_big_ctr_vtable, br_ghash_ctmul },
-	{ "AES128-GCM big/ctmul32", 0, &br_aes_big_ctr_vtable, br_ghash_ctmul32 },
-	{ "AES128-GCM small/ctmul32", 0, &br_aes_small_ctr_vtable, br_ghash_ctmul32 },
-	{ "AES128-GCM ct/ctmul", 0, &br_aes_ct_ctr_vtable, br_ghash_ctmul },
-	{ "AES128-GCM ct/ctmul32", 0, &br_aes_ct_ctr_vtable, br_ghash_ctmul32 },
+	{ "ChaCha20-Poly1305 ctmul", br_poly1305_ctmul_run, 0, 0, 0 },
+	{ "ChaCha20-Poly1305 ctmul32", br_poly1305_ctmul32_run, 0, 0, 0 },
+	{ "ChaCha20-Poly1305 i15", br_poly1305_i15_run, 0, 0, 0 },
+#if C68K_CHAPOL
+	{ "ChaCha20 ct + Poly1305 68k", c68k_br_poly1305_run, 0, 0, 0 },
+	{ "ChaCha20 68k + Poly1305 ctmul", br_poly1305_ctmul_run, c68k_br_chacha20_run, 0, 0 },
+	{ "ChaCha20-Poly1305 68k", c68k_br_poly1305_run, c68k_br_chacha20_run, 0, 0 },
+#endif
+	{ "AES128-GCM big/ctmul", 0, 0, &br_aes_big_ctr_vtable, br_ghash_ctmul },
+	{ "AES128-GCM big/ctmul32", 0, 0, &br_aes_big_ctr_vtable, br_ghash_ctmul32 },
+	{ "AES128-GCM small/ctmul32", 0, 0, &br_aes_small_ctr_vtable, br_ghash_ctmul32 },
+	{ "AES128-GCM ct/ctmul", 0, 0, &br_aes_ct_ctr_vtable, br_ghash_ctmul },
+	{ "AES128-GCM ct/ctmul32", 0, 0, &br_aes_ct_ctr_vtable, br_ghash_ctmul32 },
 };
 #define NAEAD	(sizeof g_aeads / sizeof g_aeads[0])
 
@@ -255,6 +269,10 @@ static void group_sym(void)
 	fp_print("sym");
 	for (i = 0; i < NAEAD; i++)
 		bench(g_aeads[i].name, op_aead, (void *)&g_aeads[i], sizeof g_buf);
+	bench("ChaCha20 ct alone", op_chacha, (void *)br_chacha20_ct_run, sizeof g_buf);
+#if C68K_CHAPOL
+	bench("ChaCha20 68k alone", op_chacha, (void *)c68k_br_chacha20_run, sizeof g_buf);
+#endif
 }
 
 /* --- key exchange: X25519 and P-256 ----------------------------------------- */
