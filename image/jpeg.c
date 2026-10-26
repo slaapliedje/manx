@@ -665,17 +665,6 @@ static void idct2(const long *in, unsigned char *out, int stride)
  * most of the fast IDCT's error.) */
 #define AAN_SCALE(v, z)	((mul16(v, aanscale[z]) + 2048) >> 12)
 
-/* coefficient value r at zigzag position k dequantized with a table that
- * has a value past 16 bits: for a full-size block (full) the fast
- * IDCT's domain, else the exact one's */
-static long deq_big(const struct jpeg *j, const struct comp *c, long r, int k,
-	int full)
-{
-	long v = coef(r * j->qt[c->tq][k]);
-
-	return full ? AAN_SCALE(v, zz[k]) : v;
-}
-
 /*
  * One block of component c into its plane at block bx, by. j->co is all
  * zeros on the way in and out: the coefficients set are cleared after.
@@ -683,8 +672,8 @@ static long deq_big(const struct jpeg *j, const struct comp *c, long r, int k,
 static int block(struct jpeg *j, struct comp *c, int bx, int by)
 {
 	long *co = j->co, dc;
-	int full = j->S == 8, qbig = j->qbig[c->tq];
 	const unsigned short *q = j->qt[c->tq];
+	int qbig = j->qbig[c->tq];
 	const struct huff *ac = &j->ac[c->ta];
 	unsigned char set[64];		/* natural positions written */
 	int s, k, r, sym, n = 0, i, S = j->S;
@@ -703,9 +692,7 @@ static int block(struct jpeg *j, struct comp *c, int bx, int by)
 		RECEIVE(sym, r);
 		c->pred += r;
 	}
-	dc = qbig ? deq_big(j, c, c->pred, 0, full) : coef(mul16(c->pred, q[0]));
-	if (full)
-		dc = AAN_SCALE(dc, 0);
+	dc = coef(qbig ? (long)c->pred * q[0] : mul16(c->pred, q[0]));
 	for (k = 1; k < 64; k++) {
 		HUFF(ac, sym);
 		if (sym < 0)
@@ -725,16 +712,14 @@ static int block(struct jpeg *j, struct comp *c, int bx, int by)
 		if (S > 1) {
 			int z = zz[k];
 
-			co[z] = qbig ? deq_big(j, c, r, k, full) : coef(mul16(r, q[k]));
-			if (full)
-				co[z] = AAN_SCALE(co[z], z);
+			co[z] = coef(qbig ? (long)r * q[k] : mul16(r, q[k]));
 			set[n++] = (unsigned char)z;
 		}
 	}
 	SYNC_OUT();
 	if (n == 0) {
 		/* the DC term alone (common): a flat block, at its mean */
-		unsigned char v = clamp(DESCALE(dc, full ? 5 : 3) + 128);
+		unsigned char v = clamp(DESCALE(dc, 3) + 128);
 
 		for (i = 0; i < j->S; i++, o += c->pw) {
 			int x;
@@ -745,9 +730,16 @@ static int block(struct jpeg *j, struct comp *c, int bx, int by)
 		return IMG_OK;
 	}
 	co[0] = dc;
-	if (j->S == 8)
+	if (j->S == 8) {
+		/* (the fast IDCT's scaling of the coefficients set: here,
+		 * not in the decoding loop, which has to fit the
+		 * instruction cache; and only here, the reduced IDCTs
+		 * being exact) */
+		co[0] = dc * 4;
+		for (i = 0; i < n; i++)
+			co[set[i]] = AAN_SCALE(co[set[i]], set[i]);
 		idct(co, o, c->pw);
-	else if (j->S == 4)
+	} else if (j->S == 4)
 		idct4(co, o, c->pw);
 	else
 		idct2(co, o, c->pw);
@@ -1151,8 +1143,8 @@ static int prog_output(struct img_dec *d, struct jpeg *j)
 	for (my = 0; my < j->mcus_y; my++) {
 		for (i = 0; i < j->ncomp; i++) {
 			struct comp *c = &j->c[i];
-			int full = S2 == 8, qbig = j->qbig[c->tq];
 			const unsigned short *q = j->qt[c->tq];
+			int qbig = j->qbig[c->tq];
 			int bx, by;
 
 			for (by = 0; by < c->v; by++)
@@ -1168,18 +1160,14 @@ static int prog_output(struct img_dec *d, struct jpeg *j)
 
 					for (k = 0; k <= j->maxk; k++)
 						if (j->kidx[k] > 0 && v[j->kidx[k]]) {
-							co[zz[k]] = qbig ? deq_big(j, c, v[j->kidx[k]], k, full)
-								: coef(mul16(v[j->kidx[k]], q[k]));
-							if (full && !qbig)
-								co[zz[k]] = AAN_SCALE(co[zz[k]], zz[k]);
+							co[zz[k]] = coef(qbig ? (long)v[j->kidx[k]] * q[k]
+								: mul16(v[j->kidx[k]], q[k]));
 							any = 1;
 						}
-					co[0] = qbig ? deq_big(j, c, v[0], 0, full) : coef(mul16(v[0], q[0]));
-					if (full && !qbig)
-						co[0] = AAN_SCALE(co[0], 0);
+					co[0] = coef(qbig ? (long)v[0] * q[0] : mul16(v[0], q[0]));
 					if (!any) {
 						/* the DC term alone: a flat block */
-						unsigned char flat = clamp(DESCALE(co[0], full ? 5 : 3) + 128);
+						unsigned char flat = clamp(DESCALE(co[0], 3) + 128);
 						int y, x;
 
 						for (y = 0; y < S; y++, o += c->pw)
@@ -1188,8 +1176,14 @@ static int prog_output(struct img_dec *d, struct jpeg *j)
 					} else {
 						int y, x;
 
-						if (S2 == 8)
+						if (S2 == 8) {
+							/* (scaled for the fast IDCT; see block()) */
+							for (k = 0; k <= j->maxk; k++)
+								if (j->kidx[k] > 0 && v[j->kidx[k]])
+									co[zz[k]] = AAN_SCALE(co[zz[k]], zz[k]);
+							co[0] *= 4;
 							idct(co, out, stride);
+						}
 						else if (S2 == 4)
 							idct4(co, out, stride);
 						else

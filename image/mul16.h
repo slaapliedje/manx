@@ -15,14 +15,17 @@
 
 #if defined(__GNUC__) && (defined(__mc68020__) || defined(__mc68030__) \
 	|| defined(__mc68040__))
-static inline long mul16(long a, long b)
+/* (always inline: a profiling build's -fno-inline would otherwise make
+ * each a call, and charge the time to whatever symbol precedes it) */
+static inline __attribute__((always_inline)) long mul16(long a, long b)
 {
 	long r = a;
 
 	__asm__("muls.w %[b],%[r]" : [r] "+d" (r) : [b] "d" (b) : "cc");
 	return r;
 }
-static inline unsigned long mulu16(unsigned long a, unsigned long b)
+static inline __attribute__((always_inline)) unsigned long mulu16(unsigned long a,
+	unsigned long b)
 {
 	unsigned long r = a;
 
