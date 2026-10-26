@@ -1647,10 +1647,9 @@ static void scan_attrs(const struct doc *d, nodeid id, struct eattr *a)
 
 	a->hidden = a->style = a->id = a->name = a->href = a->cls = a->align = NULL;
 	while (p < e && *p) {
-		int k = *p++;
-		const char *v = (const char *)p;
+		const char *v = (const char *)p + ATTR_HDR;
 
-		switch (k) {
+		switch (*p) {
 		case ATTR_HIDDEN: a->hidden = v; break;
 		case ATTR_STYLE: a->style = v; break;
 		case ATTR_ID: a->id = v; break;
@@ -1659,9 +1658,7 @@ static void scan_attrs(const struct doc *d, nodeid id, struct eattr *a)
 		case ATTR_CLASS: a->cls = v; break;
 		case ATTR_ALIGN: a->align = v; break;
 		}
-		while (*p)
-			p++;
-		p++;
+		p = ATTR_NEXT(p);
 	}
 }
 
