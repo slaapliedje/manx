@@ -81,6 +81,20 @@ struct jpeg {
 	int done;
 };
 
+/* the AAN IDCT's scale of each frequency (natural order), in 14 bits:
+ * 16384 times the row's and the column's factor, 1 for 0 and sqrt 2
+ * times cos(k pi / 16) for k */
+static const unsigned short aanscale[64] = {
+	16384, 22725, 21407, 19266, 16384, 12873,  8867,  4520,
+	22725, 31521, 29692, 26722, 22725, 17855, 12299,  6270,
+	21407, 29692, 27969, 25172, 21407, 16819, 11585,  5906,
+	19266, 26722, 25172, 22654, 19266, 15137, 10426,  5315,
+	16384, 22725, 21407, 19266, 16384, 12873,  8867,  4520,
+	12873, 17855, 16819, 15137, 12873, 10114,  6967,  3552,
+	 8867, 12299, 11585, 10426,  8867,  6967,  4799,  2446,
+	 4520,  6270,  5906,  5315,  4520,  3552,  2446,  1247
+};
+
 static const unsigned char zz[64] = {
 	0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5,
 	12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13, 6, 7, 14, 21, 28,
@@ -481,110 +495,104 @@ static int decode_long(struct jpeg *j, const struct huff *t)
 /* --- the IDCTs ---------------------------------------------------------- */
 
 /*
- * The full-size IDCT is libjpeg's exact one (jidctint.c). Its fast one
- * (jidctfst.c, AAN: 5 multiplies a pass instead of 12, the rest folded
- * into dequantization) measured slower on the 68030, 3.9 s against 2.9 s
- * for a 320x240 photo, as well as less exact. The multiplies are 16 x 16
- * bits (mul16.h): a coefficient is within 12 bits and the constants
- * within 15, and the first pass's results, which the second multiplies,
- * are within 13 bits for anything that came from 8-bit samples.
+ * The full-size IDCT is libjpeg's fast one (jidctfst.c, Arai, Agui and
+ * Nakajima): 5 multiplies a pass instead of the exact one's 12, the
+ * rest folded into the coefficients' scaling (AAN_SCALE). It is a
+ * shade less exact, within a few levels of the exact one. The
+ * multiplies are 16 x 16 bits (mul16.h) of values within 16 bits for
+ * anything that came from 8-bit samples, the constants in 8 fractional
+ * bits. On the 68030 the exact one's multiplies were a third of its
+ * time, and this one's inner loops are smaller too. The reduced IDCTs
+ * below are exact, in the unscaled domain.
  */
 #define CONST_BITS	13
 #define PASS1_BITS	2
 #define DESCALE(x, n)	(((x) + (1L << ((n) - 1))) >> (n))
 /* (a negative value is multiplied up, not shifted: that is undefined) */
 
-#define FIX_0_298631336	2446L
-#define FIX_0_390180644	3196L
-#define FIX_0_541196100	4433L
-#define FIX_0_765366865	6270L
-#define FIX_0_899976223	7373L
-#define FIX_1_175875602	9633L
-#define FIX_1_501321110	12299L
-#define FIX_1_847759065	15137L
-#define FIX_1_961570560	16069L
-#define FIX_2_053119869	16819L
-#define FIX_2_562915447	20995L
-#define FIX_3_072711026	25172L
+#define AAN_1_414	362L		/* sqrt 2, in 8 fractional bits */
+#define AAN_1_847	473L		/* 2 c2 */
+#define AAN_1_082	277L		/* 2 (c2 - c6) */
+#define AAN_2_613	669L		/* 2 (c2 + c6) */
+#define AMUL(v, c)	(mul16(v, c) >> 8)
 /* the 1-D transform of src[0], src[d], ... src[7d] into dst[0], dst[ds],
  * ... dst[7ds], each result through OUTX (both passes are this) */
-#define ISLOW_1D(src, d, dst, ds, OUTX) do {				\
-	long z1, z2, z3, z4, z5, t0, t1, t2, t3, t10, t11, t12, t13;	\
+#define AAN_1D(src, d, dst, ds, RND, OUTX) do {			\
+	long t0, t1, t2, t3, t4, t5, t6, t7, t10, t11, t12, t13;	\
+	long z5, z10, z11, z12, z13;					\
 									\
-	/* even part */							\
-	z2 = src[2 * (d)];						\
-	z3 = src[6 * (d)];						\
-	z1 = mul16(z2 + z3, FIX_0_541196100);				\
-	t2 = z1 + mul16(z3, -FIX_1_847759065);				\
-	t3 = z1 + mul16(z2, FIX_0_765366865);				\
-	t0 = (src[0] + src[4 * (d)]) * (1L << CONST_BITS);		\
-	t1 = (src[0] - src[4 * (d)]) * (1L << CONST_BITS);		\
-	t10 = t0 + t3;							\
-	t13 = t0 - t3;							\
-	t11 = t1 + t2;							\
-	t12 = t1 - t2;							\
+	/* even part (rnd: every result has t0 in it once, so what	\
+	 * rounds the pass's descaling goes in here) */			\
+	t0 = src[0] + (RND);						\
+	t1 = src[2 * (d)];						\
+	t2 = src[4 * (d)];						\
+	t3 = src[6 * (d)];						\
+	t10 = t0 + t2;							\
+	t11 = t0 - t2;							\
+	t13 = t1 + t3;							\
+	t12 = AMUL(t1 - t3, AAN_1_414) - t13;				\
+	t0 = t10 + t13;							\
+	t3 = t10 - t13;							\
+	t1 = t11 + t12;							\
+	t2 = t11 - t12;							\
 	/* odd part */							\
-	t0 = src[7 * (d)];						\
-	t1 = src[5 * (d)];						\
-	t2 = src[3 * (d)];						\
-	t3 = src[(d)];							\
-	z1 = t0 + t3;							\
-	z2 = t1 + t2;							\
-	z3 = t0 + t2;							\
-	z4 = t1 + t3;							\
-	z5 = mul16(z3 + z4, FIX_1_175875602);				\
-	t0 = mul16(t0, FIX_0_298631336);				\
-	t1 = mul16(t1, FIX_2_053119869);				\
-	t2 = mul16(t2, FIX_3_072711026);				\
-	t3 = mul16(t3, FIX_1_501321110);				\
-	z1 = mul16(z1, -FIX_0_899976223);				\
-	z2 = mul16(z2, -FIX_2_562915447);				\
-	z3 = mul16(z3, -FIX_1_961570560) + z5;				\
-	z4 = mul16(z4, -FIX_0_390180644) + z5;				\
-	t0 += z1 + z3;							\
-	t1 += z2 + z4;							\
-	t2 += z2 + z3;							\
-	t3 += z1 + z4;							\
-	dst[0] = OUTX(t10 + t3);					\
-	dst[7 * (ds)] = OUTX(t10 - t3);					\
-	dst[(ds)] = OUTX(t11 + t2);					\
-	dst[6 * (ds)] = OUTX(t11 - t2);					\
-	dst[2 * (ds)] = OUTX(t12 + t1);					\
-	dst[5 * (ds)] = OUTX(t12 - t1);					\
-	dst[3 * (ds)] = OUTX(t13 + t0);					\
-	dst[4 * (ds)] = OUTX(t13 - t0);					\
+	t4 = src[(d)];							\
+	t5 = src[3 * (d)];						\
+	t6 = src[5 * (d)];						\
+	t7 = src[7 * (d)];						\
+	z13 = t6 + t5;							\
+	z10 = t6 - t5;							\
+	z11 = t4 + t7;							\
+	z12 = t4 - t7;							\
+	t7 = z11 + z13;							\
+	t11 = AMUL(z11 - z13, AAN_1_414);				\
+	z5 = AMUL(z10 + z12, AAN_1_847);				\
+	t10 = AMUL(z12, AAN_1_082) - z5;				\
+	t12 = AMUL(z10, -AAN_2_613) + z5;				\
+	t6 = t12 - t7;							\
+	t5 = t11 - t6;							\
+	t4 = t10 + t5;							\
+	dst[0] = OUTX(t0 + t7);						\
+	dst[7 * (ds)] = OUTX(t0 - t7);					\
+	dst[(ds)] = OUTX(t1 + t6);					\
+	dst[6 * (ds)] = OUTX(t1 - t6);					\
+	dst[2 * (ds)] = OUTX(t2 + t5);					\
+	dst[5 * (ds)] = OUTX(t2 - t5);					\
+	dst[4 * (ds)] = OUTX(t3 + t4);					\
+	dst[3 * (ds)] = OUTX(t3 - t4);					\
 } while (0)
-#define P1(v)	DESCALE(v, CONST_BITS - PASS1_BITS)
-#define P2(v)	clamp(DESCALE(v, CONST_BITS + PASS1_BITS + 3) + 128)
+#define P1(v)	((short)(v))
+#define P2(v)	clamp(((v) >> (PASS1_BITS + 3)) + 128)
+#define P2_RND	(1L << (PASS1_BITS + 2))
 
 static void idct(const long *in, unsigned char *out, int stride)
 {
-	long ws[64];
+	short ws[64];
 	int i;
 
 	for (i = 0; i < 8; i++) {
 		const long *p = in + i;
-		long *w = ws + i;
+		short *w = ws + i;
 
 		if (!p[8] && !p[16] && !p[24] && !p[32] && !p[40] && !p[48] && !p[56]) {
-			long dc = p[0] * (1L << PASS1_BITS);
+			short dc = (short)p[0];
 
 			w[0] = w[8] = w[16] = w[24] = w[32] = w[40] = w[48] = w[56] = dc;
 			continue;
 		}
-		ISLOW_1D(p, 8, w, 8, P1);
+		AAN_1D(p, 8, w, 8, 0, P1);
 	}
 	for (i = 0; i < 8; i++) {
-		const long *w = ws + i * 8;
+		const short *w = ws + i * 8;
 		unsigned char *o = out + i * stride;
 
 		if (!w[1] && !w[2] && !w[3] && !w[4] && !w[5] && !w[6] && !w[7]) {
-			unsigned char v = clamp(DESCALE(w[0], PASS1_BITS + 3) + 128);
+			unsigned char v = P2(w[0] + P2_RND);
 
 			o[0] = o[1] = o[2] = o[3] = o[4] = o[5] = o[6] = o[7] = v;
 			continue;
 		}
-		ISLOW_1D(w, 1, o, 1, P2);
+		AAN_1D(w, 1, o, 1, P2_RND, P2);
 	}
 }
 
@@ -650,6 +658,24 @@ static void idct2(const long *in, unsigned char *out, int stride)
 	out[stride + 1] = clamp(DESCALE(mul16(a1, K_A) - mul16(b1, K_A), CONST_BITS + PASS1_BITS) + 128);
 }
 
+/* a dequantized coefficient (within 12 bits) at natural position z,
+ * scaled for the fast IDCT: by its frequency's factor, 14 bits, less the
+ * 2 the IDCT's scaling folds in. (Not folded into the quantization
+ * table, as libjpeg does: at a table's small values that rounding was
+ * most of the fast IDCT's error.) */
+#define AAN_SCALE(v, z)	((mul16(v, aanscale[z]) + 2048) >> 12)
+
+/* coefficient value r at zigzag position k dequantized with a table that
+ * has a value past 16 bits: for a full-size block (full) the fast
+ * IDCT's domain, else the exact one's */
+static long deq_big(const struct jpeg *j, const struct comp *c, long r, int k,
+	int full)
+{
+	long v = coef(r * j->qt[c->tq][k]);
+
+	return full ? AAN_SCALE(v, zz[k]) : v;
+}
+
 /*
  * One block of component c into its plane at block bx, by. j->co is all
  * zeros on the way in and out: the coefficients set are cleared after.
@@ -657,8 +683,8 @@ static void idct2(const long *in, unsigned char *out, int stride)
 static int block(struct jpeg *j, struct comp *c, int bx, int by)
 {
 	long *co = j->co, dc;
+	int full = j->S == 8, qbig = j->qbig[c->tq];
 	const unsigned short *q = j->qt[c->tq];
-	int qbig = j->qbig[c->tq];
 	const struct huff *ac = &j->ac[c->ta];
 	unsigned char set[64];		/* natural positions written */
 	int s, k, r, sym, n = 0, i, S = j->S;
@@ -677,7 +703,9 @@ static int block(struct jpeg *j, struct comp *c, int bx, int by)
 		RECEIVE(sym, r);
 		c->pred += r;
 	}
-	dc = coef(qbig ? (long)c->pred * q[0] : mul16(c->pred, q[0]));
+	dc = qbig ? deq_big(j, c, c->pred, 0, full) : coef(mul16(c->pred, q[0]));
+	if (full)
+		dc = AAN_SCALE(dc, 0);
 	for (k = 1; k < 64; k++) {
 		HUFF(ac, sym);
 		if (sym < 0)
@@ -697,14 +725,16 @@ static int block(struct jpeg *j, struct comp *c, int bx, int by)
 		if (S > 1) {
 			int z = zz[k];
 
-			co[z] = coef(qbig ? (long)r * q[k] : mul16(r, q[k]));
+			co[z] = qbig ? deq_big(j, c, r, k, full) : coef(mul16(r, q[k]));
+			if (full)
+				co[z] = AAN_SCALE(co[z], z);
 			set[n++] = (unsigned char)z;
 		}
 	}
 	SYNC_OUT();
 	if (n == 0) {
 		/* the DC term alone (common): a flat block, at its mean */
-		unsigned char v = clamp(DESCALE(dc, 3) + 128);
+		unsigned char v = clamp(DESCALE(dc, full ? 5 : 3) + 128);
 
 		for (i = 0; i < j->S; i++, o += c->pw) {
 			int x;
@@ -1121,8 +1151,8 @@ static int prog_output(struct img_dec *d, struct jpeg *j)
 	for (my = 0; my < j->mcus_y; my++) {
 		for (i = 0; i < j->ncomp; i++) {
 			struct comp *c = &j->c[i];
+			int full = S2 == 8, qbig = j->qbig[c->tq];
 			const unsigned short *q = j->qt[c->tq];
-			int qbig = j->qbig[c->tq];
 			int bx, by;
 
 			for (by = 0; by < c->v; by++)
@@ -1138,14 +1168,18 @@ static int prog_output(struct img_dec *d, struct jpeg *j)
 
 					for (k = 0; k <= j->maxk; k++)
 						if (j->kidx[k] > 0 && v[j->kidx[k]]) {
-							co[zz[k]] = coef(qbig ? (long)v[j->kidx[k]] * q[k]
-								: mul16(v[j->kidx[k]], q[k]));
+							co[zz[k]] = qbig ? deq_big(j, c, v[j->kidx[k]], k, full)
+								: coef(mul16(v[j->kidx[k]], q[k]));
+							if (full && !qbig)
+								co[zz[k]] = AAN_SCALE(co[zz[k]], zz[k]);
 							any = 1;
 						}
-					co[0] = coef(qbig ? (long)v[0] * q[0] : mul16(v[0], q[0]));
+					co[0] = qbig ? deq_big(j, c, v[0], 0, full) : coef(mul16(v[0], q[0]));
+					if (full && !qbig)
+						co[0] = AAN_SCALE(co[0], 0);
 					if (!any) {
 						/* the DC term alone: a flat block */
-						unsigned char flat = clamp(DESCALE(co[0], 3) + 128);
+						unsigned char flat = clamp(DESCALE(co[0], full ? 5 : 3) + 128);
 						int y, x;
 
 						for (y = 0; y < S; y++, o += c->pw)

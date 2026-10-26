@@ -227,8 +227,10 @@ def smooth(w, h):
              ((x + y) * 255 // max(1, w + h - 2))) for y in range(h) for x in range(w)]
 
 
-def jpeg_case(name, w, h, mode="RGB", subsampling=0, shift=0, tol=1, expect="ok",
+def jpeg_case(name, w, h, mode="RGB", subsampling=0, shift=0, tol=4, expect="ok",
               gentle=False, **opts):
+    # (tol: the full-size IDCT is the fast one, within 3 of libjpeg's
+    # exact decode on these; the reduced-size ones are exact)
     im = Image.new("RGB", (w, h))
     im.putdata(smooth(w, h) if gentle else [p[:3] for p in pattern(w, h, 5)])
     if mode == "L":
