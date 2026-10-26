@@ -129,11 +129,39 @@ void pimg_limit(unsigned long bytes)
 	g_scr_limit = bytes;
 }
 
+/* How far off the screen counts as near, in lines: a screenful of them
+ * above the lines shown (top, rows of them) and one below, by their
+ * heights where the layout has them (a screenful may be a line or two,
+ * when they hold tall pictures), else rows; the next line at the least. */
+static void near_lines(const struct page *p, long top, long rows, long *above,
+	long *below)
+{
+	long ln, n;
+	int h, y;
+
+	*above = *below = rows;
+	if (p->heights == NULL)
+		return;
+	h = scr_pane_h();
+	for (ln = top - 1, n = 0, y = 0; ln >= 0; ln--, n++) {
+		y += p->heights[ln].height;
+		if (y > h)
+			break;
+	}
+	*above = n > 0 ? n : 1;
+	for (ln = top + rows, n = 0, y = 0; ln < (long)p->nlines; ln++, n++) {
+		y += p->heights[ln].height;
+		if (y > h)
+			break;
+	}
+	*below = n > 0 ? n : 1;
+}
+
 /* Over the limit: the images farthest from the lines shown (top, rows of
  * them) off the screen until under it. Those not laid out as images at all
- * (alt text, after a new layout) go first; one within a screenful of the
- * lines shown, or a layer's, never. */
-static void trim(long top, long rows)
+ * (alt text, after a new layout) go first; one near the lines shown (above
+ * lines up, below down), or a layer's, never. */
+static void trim(long top, long rows, long above, long below)
 {
 	while (g_scr_limit && g_scr_bytes > g_scr_limit) {
 		struct pent *best = NULL;
@@ -152,13 +180,15 @@ static void trim(long top, long rows)
 				d = LONG_MAX;
 			else if (e->line < 0)
 				continue;
-			else if (e->line < top)
+			else if (e->line < top) {
 				d = top - e->line;
-			else if (e->line >= top + rows)
+				if (d <= above)
+					continue;
+			} else if (e->line >= top + rows) {
 				d = e->line - (top + rows) + 1;
-			else
-				continue;
-			if (d <= rows)
+				if (d <= below)
+					continue;
+			} else
 				continue;
 			if (d > bestd) {
 				best = e;
@@ -985,7 +1015,7 @@ static int layers_bg(const struct page *top, const struct page *p,
 int pimg_step(const struct page *p, long top, long rows,
 	int (*poll)(void *ctx, int shown), void *ctx)
 {
-	long k, best = -1, bestd = 0;
+	long k, best = -1, bestd = 0, above, below;
 	unsigned long ln, b;
 	int i, r;
 
@@ -1004,7 +1034,8 @@ int pimg_step(const struct page *p, long top, long rows,
 		}
 	}
 	layers_mark(p);
-	trim(top, rows);
+	near_lines(p, top, rows, &above, &below);
+	trim(top, rows, above, below);
 	/* those shown */
 	for (k = 0; k < (long)p->nimages; k++) {
 		ln = p->images[k].line;
@@ -1042,12 +1073,15 @@ int pimg_step(const struct page *p, long top, long rows,
 	for (k = 0; k < (long)p->nimages; k++) {
 		struct pent *e;
 		long d;
+		int far;
 
 		if (needs(p, k, &e) == 0)
 			continue;
 		ln = p->images[k].line;
 		d = (long)ln < top ? top - (long)ln : (long)ln - top;
-		if (d > rows && g_scr_limit && !(e->scr && e->sw == p->images[k].w
+		far = (long)ln < top ? d > above
+			: (long)ln >= top + rows && (long)ln - (top + rows) + 1 > below;
+		if (far && g_scr_limit && !(e->scr && e->sw == p->images[k].w
 				&& e->sh == p->images[k].h)
 			&& g_scr_bytes + scr_image_size((int)p->images[k].w,
 				(int)p->images[k].h, 0) > g_scr_limit)

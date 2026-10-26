@@ -724,6 +724,35 @@ static long max_top(void)
 	return m < 0 ? 0 : m;
 }
 
+/* where a page down from line top goes: the last line shown whole at the
+ * top (one line in common); a line on at the least, as when the one at
+ * the top alone fills the pane (a tall picture) */
+static long page_down_from(long top)
+{
+	int n = lines_fit(top);
+
+	return top + (n > 1 ? n - 1 : 1);
+}
+
+/* ... and a page up: the line at the top shown whole at the bottom */
+static long page_up_from(long top)
+{
+	long ln = top;
+
+	if (scr_metrics() && g_have_page && g_page.heights
+		&& top >= 0 && top < (long)g_page.nlines) {
+		int h = scr_pane_h(), y = g_page.heights[top].height;
+
+		for (ln = top; ln > 0; ln--) {
+			y += g_page.heights[ln - 1].height;
+			if (y > h)
+				break;
+		}
+	} else
+		ln = top - (lines_fit(top) - 1);
+	return ln < top ? ln : top - 1;
+}
+
 static int link_visible(long k)
 {
 	long ln;
@@ -2486,7 +2515,7 @@ static void move_link(int dir)
 		scr_bell();
 		return;
 	}
-	scroll_to(g_top + dir * (rows - 2));
+	scroll_to(dir > 0 ? page_down_from(g_top) : page_up_from(g_top));
 	if (k >= 0 && k < (long)g_page.nlinks && link_visible(k))
 		g_sel = k;
 }
@@ -2978,10 +3007,10 @@ static int view_key(int k)
 		jump_link(-1);
 		return 1;
 	case ' ': case K_PGDN: case 6:
-		scroll_to(g_top + view_rows() - 1);
+		scroll_to(page_down_from(g_top));
 		return 1;
 	case 'b': case K_PGUP: case 2:
-		scroll_to(g_top - (view_rows() - 1));
+		scroll_to(page_up_from(g_top));
 		return 1;
 	case 'j': case 5:
 		scroll_to(g_top + 1);
