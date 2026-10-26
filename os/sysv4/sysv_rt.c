@@ -8,11 +8,49 @@
  */
 #include <string.h>
 #include <sys/utsname.h>
+#include <sys/resource.h>
 #include <netconfig.h>
 
+int getrlimit(int, struct rlimit *);
+int setrlimit(int, const struct rlimit *);
+
+/*
+ * The memory limits. AMIX and Atari System V give a process 16 MB of
+ * data (RLIMIT_DATA, what brk may grow to) and 16 MB of address space
+ * in all (RLIMIT_VMEM, what the kernel maps for it), soft and hard
+ * limits alike: a page's images and the server's copies of them reach
+ * that. Both are raised to RT_MEM_MB where the process may (root may
+ * raise the hard limits; anyone the soft ones up to the hard ones), and
+ * a higher limit from the shell is kept.
+ */
+#define RT_MEM_MB	128
+
+static void raise_limit(int res)
+{
+	struct rlimit rl;
+	rlim_t want = (rlim_t)RT_MEM_MB << 20;
+
+	if (getrlimit(res, &rl) != 0 || rl.rlim_cur >= want)
+		return;
+	if (rl.rlim_max < want) {
+		rl.rlim_max = want;
+		rl.rlim_cur = want;
+		if (setrlimit(res, &rl) == 0)
+			return;
+		getrlimit(res, &rl);		/* not root: the hard limit stays */
+	}
+	rl.rlim_cur = rl.rlim_max < want ? rl.rlim_max : want;
+	setrlimit(res, &rl);
+}
+
 /* GCC for an a.out target calls __main at the top of main() to run
- * constructors; there are none. */
-void __main(void) { }
+ * constructors; there are none. The memory limits are raised here, before
+ * anything of size is allocated. */
+void __main(void)
+{
+	raise_limit(RLIMIT_DATA);
+	raise_limit(RLIMIT_VMEM);
+}
 
 /*
  * libsocket.a's socket() finds its transport device (/dev/tcp ...) in the
