@@ -751,6 +751,11 @@ static void scroll_to(long top)
 		top = max_top();
 	if (top < 0)
 		top = 0;
+	if (top != g_top && g_have_page && g_lm.image) {
+		/* (images left off the screen for lack of room there, or
+		 * dropped from it, may be in view now) */
+		g_img_busy = 1;
+	}
 	g_top = top;
 	if (!link_visible(g_sel))
 		g_sel = first_visible();
@@ -1004,6 +1009,8 @@ static const char help_html[] =
 	"geometry = 120x40+0+0  xmanx: the window's columns, rows (and place;\n"
 	"                       or: xmanx -geometry 120x40 URL)\n"
 	"images = off           xmanx: no pictures, only their alt text\n"
+	"image_kb = 8192        xmanx: pictures the X server holds at once; the\n"
+	"                       farthest off the screen go first (0: all)\n"
 	"stylesheets = off      ignore pages' &lt;style&gt; (what they hide shows)\n"
 	"cache_kb = 2048        the disk cache's size (0: none)\n"
 	"cafile = FILE          the PEM bundle of trusted roots\n"
@@ -3192,6 +3199,9 @@ int main(int argc, char **argv)
 	scr_geometry = geometry ? geometry : config_str("geometry", NULL);
 	scr_proportional = config_bool("proportional", 1);
 	g_images = config_bool("images", 1);
+	/* (what a long page's pictures may take in the X server; a 16 MB
+	 * server holds the default twice over) */
+	pimg_limit((unsigned long)config_long("image_kb", 8192) * 1024UL);
 	html_stylesheets = config_bool("stylesheets", 1);
 	{
 		/* link_color: a colour name, or 0-7 (unset: the screen's own,

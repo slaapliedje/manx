@@ -1595,6 +1595,23 @@ void scr_palette(const unsigned long *rgb, int n)
 	}
 }
 
+unsigned long scr_image_size(int w, int h, int masked)
+{
+	unsigned long px;
+
+	if (w <= 0 || h <= 0)
+		return 0;
+	px = (unsigned long)w * (unsigned long)h;
+	return px * (unsigned long)((pxf.bpp + 7) / 8) + (masked ? (px + 7) / 8 : 0);
+}
+
+unsigned long scr_image_bytes(const void *img)
+{
+	const struct ximg *im = img;
+
+	return im == NULL ? 0 : scr_image_size(im->w, im->h, im->mask != None);
+}
+
 void scr_image_free(void *img)
 {
 	struct ximg *im = img;

@@ -61,6 +61,11 @@ void pimg_cancel(void)
 {
 }
 
+void pimg_limit(unsigned long bytes)
+{
+	(void)bytes;
+}
+
 void pimg_count(int *total, int *done)
 {
 	*total = *done = 0;

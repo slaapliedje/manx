@@ -22,7 +22,16 @@
  * (until it is, the layout shows their alt text, and they may be
  * anywhere); then the rest, nearest the lines shown first; then the
  * other background pictures.
+ *
+ * The screen keeps a decoded image (a pixmap in the X server, as big as
+ * the image at its depth); a long page's add up to more than a small
+ * server has. Past the limit pimg_limit() sets, the images farthest from
+ * the lines shown are dropped from the screen (never one within a
+ * screenful of them, nor a positioned layer's), farthest first, and
+ * decoded again when scrolled back to; a dropped file comes from the disk
+ * cache again. MANX_IMGLOG=1 logs the drops.
  */
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -63,6 +72,8 @@ struct pent {
 	void *scr;			/* on the screen, sw x sh */
 	int sw, sh, bw, bh;
 	unsigned gen;			/* g_gen: laid out as an image */
+	long line;			/* where this layout shows it (-1: a
+					 * layer's, or not as an image) */
 };
 
 static struct pent *g_e;
@@ -76,8 +87,19 @@ static char g_referer[URL_MAX];
 static size_t g_held;
 static unsigned g_gen;
 static unsigned long g_fetch_len;	/* of the fetch under way */
+static unsigned long g_scr_limit;	/* bytes of pictures the screen may
+					 * hold (0: as many as it will) */
+static unsigned long g_scr_bytes;	/* what it holds now */
+static int g_log = -1;			/* MANX_IMGLOG */
 
 /* --- the entries ------------------------------------------------------------ */
+
+static int logging(void)
+{
+	if (g_log < 0)
+		g_log = getenv("MANX_IMGLOG") != NULL;
+	return g_log;
+}
 
 static void drop_data(struct pent *e)
 {
@@ -91,11 +113,65 @@ static void drop_data(struct pent *e)
 
 static void drop_scr(struct pent *e)
 {
-	if (e->scr)
+	if (e->scr) {
+		unsigned long b = scr_image_bytes(e->scr);
+
+		g_scr_bytes -= b < g_scr_bytes ? b : g_scr_bytes;
 		scr_image_free(e->scr);
+	}
 	e->scr = NULL;
 	e->sw = e->sh = 0;
 	e->whole = 0;
+}
+
+void pimg_limit(unsigned long bytes)
+{
+	g_scr_limit = bytes;
+}
+
+/* Over the limit: the images farthest from the lines shown (top, rows of
+ * them) off the screen until under it. Those not laid out as images at all
+ * (alt text, after a new layout) go first; one within a screenful of the
+ * lines shown, or a layer's, never. */
+static void trim(long top, long rows)
+{
+	while (g_scr_limit && g_scr_bytes > g_scr_limit) {
+		struct pent *best = NULL;
+		long bestd = -1;
+		int i;
+
+		for (i = 0; i < g_n; i++) {
+			struct pent *e = &g_e[i];
+			long d;
+
+			/* (a small one frees next to nothing: not worth the
+			 * decoding again) */
+			if (e->scr == NULL || scr_image_bytes(e->scr) < 8192)
+				continue;
+			if (e->gen != g_gen)
+				d = LONG_MAX;
+			else if (e->line < 0)
+				continue;
+			else if (e->line < top)
+				d = top - e->line;
+			else if (e->line >= top + rows)
+				d = e->line - (top + rows) + 1;
+			else
+				continue;
+			if (d <= rows)
+				continue;
+			if (d > bestd) {
+				best = e;
+				bestd = d;
+			}
+		}
+		if (best == NULL)
+			return;
+		if (logging())
+			fprintf(stderr, "pimg: drop %dx%d at line %ld (%lu KB on the screen, limit %lu)\n",
+				best->sw, best->sh, best->line, g_scr_bytes >> 10, g_scr_limit >> 10);
+		drop_scr(best);
+	}
 }
 
 void pimg_end(void)
@@ -120,6 +196,7 @@ void pimg_end(void)
 	g_nb = g_bcap = 0;
 	g_d = NULL;
 	g_held = 0;
+	g_scr_bytes = 0;
 }
 
 /* a width/height attribute of 1 or less: a tracking pixel */
@@ -703,6 +780,7 @@ static int dec_size(void *ctx, int w, int h, int masked)
 		return -1;
 	g->e->sw = w;
 	g->e->sh = h;
+	g_scr_bytes += scr_image_bytes(g->e->scr);
 	return 0;
 }
 
@@ -913,15 +991,20 @@ int pimg_step(const struct page *p, long top, long rows,
 
 	if (g_n == 0 && g_nb == 0)
 		return PIMG_IDLE;
-	/* which are laid out as images (the others show alt text) */
+	/* which are laid out as images (the others show alt text), and where */
 	g_gen++;
+	for (i = 0; i < g_n; i++)
+		g_e[i].line = -1;
 	for (k = 0; k < (long)p->nimages; k++) {
 		struct pent *e = find(p->images[k].node);
 
-		if (e)
+		if (e) {
 			e->gen = g_gen;
+			e->line = (long)p->images[k].line;
+		}
 	}
 	layers_mark(p);
+	trim(top, rows);
 	/* those shown */
 	for (k = 0; k < (long)p->nimages; k++) {
 		ln = p->images[k].line;
@@ -953,7 +1036,9 @@ int pimg_step(const struct page *p, long top, long rows,
 			r = fetch_one(&g_e[i], poll, ctx);
 			return r == PIMG_WORKED && g_e[i].state == P_HAVE ? PIMG_SIZED : r;
 		}
-	/* the rest, nearest first */
+	/* the rest, nearest first; but not one more than a screenful away
+	 * that the screen has no room for (it would be dropped again as soon
+	 * as it was decoded) */
 	for (k = 0; k < (long)p->nimages; k++) {
 		struct pent *e;
 		long d;
@@ -962,6 +1047,11 @@ int pimg_step(const struct page *p, long top, long rows,
 			continue;
 		ln = p->images[k].line;
 		d = (long)ln < top ? top - (long)ln : (long)ln - top;
+		if (d > rows && g_scr_limit && !(e->scr && e->sw == p->images[k].w
+				&& e->sh == p->images[k].h)
+			&& g_scr_bytes + scr_image_size((int)p->images[k].w,
+				(int)p->images[k].h, 0) > g_scr_limit)
+			continue;
 		if (best < 0 || d < bestd) {
 			best = k;
 			bestd = d;

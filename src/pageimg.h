@@ -52,6 +52,11 @@ int pimg_step(const struct page *p, long top, long rows,
 /* Fetch no more of this page's images (the user said stop). */
 void pimg_cancel(void);
 
+/* The screen holds at most this many bytes of decoded images (0: no
+ * limit); past it, those farthest from the lines shown are dropped and
+ * decoded again when scrolled to. */
+void pimg_limit(unsigned long bytes);
+
 /* How many images the page has, and how many are fetched (or failed). */
 void pimg_count(int *total, int *done);
 

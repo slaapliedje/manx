@@ -201,6 +201,7 @@ Settings go in `~/.manx/config`, one `key = value` a line, or as
 | `proportional` | `off`: `xmanx` shows the page in that font too, as on a terminal |
 | `geometry` | `xmanx`'s window in columns and rows, `120x40` or `120x40+0+0` (also `xmanx -geometry 120x40 URL`); `Z` makes it fill the screen, and back |
 | `cookies` | `off` for none |
+| `image_kb` | how much of a page's pictures `xmanx` keeps decoded in the X server at once (8192; 0 for all of them): past it, those farthest from the lines shown are dropped and decoded again when scrolled back to |
 | `cache_kb` | the disk cache's size (2048; 0 for none) |
 | `cafile` | a PEM bundle to build the roots from |
 | `early_requests` | `off`: send nothing before the certificate is checked |

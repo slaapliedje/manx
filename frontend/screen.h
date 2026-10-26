@@ -162,6 +162,10 @@ void scr_image_row(void *img, int y, const unsigned char *px,
 	const unsigned char *mask);
 void scr_image_draw(void *img, int x, int y, int w, int h, int attr);
 void scr_image_free(void *img);
+/* What an image takes in the X server: its pixmap at the screen's depth
+ * and its mask; what one w x h would take, before it is made. */
+unsigned long scr_image_bytes(const void *img);
+unsigned long scr_image_size(int w, int h, int masked);
 /* Row y of an image again as RGBA, after scr_image_row: its pixels
  * partly transparent are blended with what's under them (a small
  * image's; others' stay all or nothing). */
