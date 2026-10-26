@@ -84,6 +84,7 @@ static unsigned pane_gen;
 static int px_mode;			/* the page in fonts, in a pane */
 static struct lmetrics metrics;		/* ... measured with these */
 static XFontStruct *find_font(const char *family, int bold, int slant, int px);
+static const short *font_widths(XFontStruct *f);
 static XFontStruct *face_font(int attr, int face);
 static int m_width(void *ctx, int attr, int face, const char *s, int n);
 static int toggle_of(const char *t, int n);
@@ -951,6 +952,8 @@ struct wtab {
 };
 static struct wtab wtabs[48];
 static int nwtabs;
+static const short *facew[2][256];	/* each face's, with faces[][] (NULL:
+					 * measured by XTextWidth) */
 
 static int pane_x(void) { return gx; }
 static int pane_y(void) { return gy + ch; }
@@ -1087,6 +1090,7 @@ static XFontStruct *face_font(int attr, int face)
 	if (faces[b][k] == NULL)
 		/* no such font here: the cells' own */
 		faces[b][k] = b && bold ? bold : font;
+	facew[b][k] = font_widths(faces[b][k]);
 	return faces[b][k];
 }
 
@@ -1112,15 +1116,11 @@ static const char *x_text(const char *s, int n)
  * XTextWidth itself */
 static const short *font_widths(XFontStruct *f)
 {
-	static XFontStruct *last;
-	static const short *last_w;
 	struct wtab *t;
 	const XCharStruct *def = NULL;
 	unsigned lo = f->min_char_or_byte2, hi = f->max_char_or_byte2, c;
 	int i;
 
-	if (f == last)
-		return last_w;
 	for (i = 0; i < nwtabs && wtabs[i].f != f; i++)
 		;
 	if (i == nwtabs) {
@@ -1149,20 +1149,22 @@ static const short *font_widths(XFontStruct *f)
 		}
 		t->w[0xA0] = t->w[' '];
 	}
-	last = f;
-	last_w = wtabs[i].w;
-	return last_w;
+	return wtabs[i].w;
 }
 
-/* how wide n bytes of page text are in f: what drawing them (through
- * x_text) takes */
-static int text_width(XFontStruct *f, const char *s, int n)
+/* how wide n bytes of page text are in a look (attr CA_*, face LF_*):
+ * what drawing them (through x_text) takes. (The layout asks for every
+ * run, on some paths every character: the look's table is at hand once
+ * its font is, with no call between.) */
+static int look_width(int attr, int face, const char *s, int n)
 {
-	const short *w = font_widths(f);
-	int i, x = 0;
+	int b = (attr & CA_BOLD) != 0, k = face & ~LF_IMAGE & 0xFF, i, x = 0;
+	const short *w;
 
-	if (w == NULL)
-		return XTextWidth(f, (char *)x_text(s, n), n);
+	if (faces[b][k] == NULL)
+		face_font(attr, face);
+	if ((w = facew[b][k]) == NULL)
+		return XTextWidth(faces[b][k], (char *)x_text(s, n), n);
 	for (i = 0; i < n; i++)
 		x += w[(unsigned char)s[i]];
 	return x;
@@ -1170,12 +1172,12 @@ static int text_width(XFontStruct *f, const char *s, int n)
 
 static int m_width(void *ctx, int attr, int face, const char *s, int n)
 {
-	XFontStruct *f = face_font(attr & SA_BOLD ? CA_BOLD : 0, face);
+	int b = attr & SA_BOLD ? CA_BOLD : 0;
 
 	(void)ctx;
 	if ((attr & SA_FIELD) && toggle_of(s, n))
-		return toggle_d(f) + 6;		/* (its frame, when selected) */
-	return text_width(f, s, n);
+		return toggle_d(face_font(b, face)) + 6;	/* (its frame, when selected) */
+	return look_width(b, face, s, n);
 }
 
 static int m_height(void *ctx, int attr, int face, int *ascent)
@@ -1385,7 +1387,7 @@ static int paint_toggle(const struct run *r, const char *t, int x, int base,
 	on = t[k + 1] == '*' || t[k + 1] == 'x';
 	/* on the baseline, in the middle of its place (m_width's) */
 	d = toggle_d(f);
-	x += text_width(f, t, k) + 3;
+	x += look_width(r->attr, r->face, t, k) + 3;
 	y = base - d;
 	XSetForeground(dpy, gc, px_bg);
 	if (radio)	/* (inside its outline: on a dark box none shows past) */
@@ -1431,7 +1433,7 @@ static void paint_run(const struct run *r, const char *text)
 	XFontStruct *f = face_font(r->attr, r->face);
 	int x = pane_x() + PANE_IN + r->x, base = pane_y() + r->y + r->a;
 	char *t = (char *)x_text(text + r->off, (int)r->n);
-	int w = text_width(f, text + r->off, (int)r->n);
+	int w = look_width(r->attr, r->face, text + r->off, (int)r->n);
 	unsigned long fg = px_fg, bg = px_bg;
 	int fill = 0;
 
