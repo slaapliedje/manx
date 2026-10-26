@@ -136,6 +136,13 @@ struct elinfo {
 	unsigned long cls[EL_CLASSES];
 };
 
+/* a box css_box worked out, kept for the nodes it holds for */
+struct bxent {
+	struct css_box b;
+	int next;			/* 1 + the next of its hash's chain, 0: last */
+};
+#define BX_HASH		512
+
 struct css_sheet {
 	struct rule *rules;
 	int nrules, rules_cap;
@@ -186,6 +193,14 @@ struct css_sheet {
 	unsigned long memo_n;
 	unsigned memo_gen;
 	int memo_vw;
+	/* ... and of its box, as the rules put it over nothing: bmemo[node]
+	 * is 1 + its index in bx[] (0: not asked, or nothing said); nodes
+	 * whose boxes come out the same share one, and most do. Reset with
+	 * memo. */
+	unsigned short *bmemo;
+	struct bxent *bx;
+	int nbx, bx_cap;
+	int bx_head[BX_HASH];		/* 1 + the first of each hash's chain */
 };
 
 /* --- small things -------------------------------------------------------- */
@@ -298,6 +313,8 @@ void css_free(struct css_sheet *s)
 		xfree(s->urls[--s->nurls]);
 	xfree(s->vars);
 	xfree(s->memo);
+	xfree(s->bmemo);
+	xfree(s->bx);
 	xfree(s);
 }
 
@@ -3401,14 +3418,30 @@ int css_style(struct css_sheet *s, const struct doc *d, nodeid node,
 		unsigned long *q = xrealloc(s->memo, c * sizeof *q);
 
 		if (q) {
+			unsigned short *bq = xrealloc(s->bmemo, c * sizeof *bq);
+			unsigned long had = s->bmemo ? s->memo_n : 0;
+
 			memset(q + s->memo_n, 0, (c - s->memo_n) * sizeof *q);
 			s->memo = q;
 			s->memo_n = c;
+			/* (the boxes' memo goes with it, or without: not
+			 * remembered then) */
+			if (bq) {
+				memset(bq + had, 0, (c - had) * sizeof *bq);
+				s->bmemo = bq;
+			} else {
+				xfree(s->bmemo);
+				s->bmemo = NULL;
+			}
 		}
 	}
 	if (s->memo_gen != s->gen || s->memo_vw != vw) {
 		if (s->memo)
 			memset(s->memo, 0, s->memo_n * sizeof *s->memo);
+		if (s->bmemo)
+			memset(s->bmemo, 0, s->memo_n * sizeof *s->bmemo);
+		s->nbx = 0;
+		memset(s->bx_head, 0, sizeof s->bx_head);
 		s->memo_gen = s->gen;
 		s->memo_vw = vw;
 		s->sib_at = 0;
@@ -3519,27 +3552,76 @@ static void bg_url(const struct css_sheet *s, struct css_box *b)
 	b->bgi = 0;
 }
 
+/* what box t says, over *b */
+static void box_over(struct css_box *b, const struct css_box *t)
+{
+	int k;
+
+	for (k = 0; k < BOX_NBITS; k++)
+		if (box_bit(t->set, t->set2, k))
+			box_take(b, t, k);
+}
+
+/* box t among s->bx[] (one the same already there, or added): 1 + its
+ * index, 0 when there is no room for it */
+static int bx_keep(struct css_sheet *s, const struct css_box *t)
+{
+	unsigned h = (unsigned)hash_bytes((const char *)t, sizeof *t) & (BX_HASH - 1);
+	int i;
+
+	for (i = s->bx_head[h]; i > 0; i = s->bx[i - 1].next)
+		if (memcmp(&s->bx[i - 1].b, t, sizeof *t) == 0)
+			return i;
+	if (s->nbx >= 65535)
+		return 0;
+	if (s->nbx == s->bx_cap) {
+		int c = s->bx_cap ? s->bx_cap * 2 : 64;
+		struct bxent *q = xrealloc(s->bx, (size_t)c * sizeof *q);
+
+		if (q == NULL)
+			return 0;
+		s->bx = q;
+		s->bx_cap = c;
+	}
+	s->bx[s->nbx].b = *t;
+	s->bx[s->nbx].next = s->bx_head[h];
+	s->bx_head[h] = ++s->nbx;
+	return s->nbx;
+}
+
 int css_box(struct css_sheet *s, const struct doc *d, nodeid node,
 	const char *id, const char *cls, int vw, struct css_box *b)
 {
 	struct winners w;
 	struct elinfo me;
-	int k;
+	struct css_box t;
+	int k, memo = 0;
 
 	if (s == NULL || s->nboxes == 0 || node == 0 || node >= d->nnodes)
 		return 0;
-	/* (css_style remembered whether any rule about boxes holds) */
-	if (s->memo && node < s->memo_n && s->memo[node]
-		&& s->memo_gen == s->gen && s->memo_vw == vw
-		&& !(s->memo[node] & M_BOXED))
-		return 0;
+	/* (css_style remembered whether any rule about boxes holds; the
+	 * layout asks again at each of its runs, so what they said is
+	 * remembered too: matching is most of a run's style work) */
+	if (s->memo && node < s->memo_n && s->memo_gen == s->gen && s->memo_vw == vw) {
+		if (s->memo[node] && !(s->memo[node] & M_BOXED))
+			return 0;
+		if (s->bmemo && s->bmemo[node]) {
+			box_over(b, &s->bx[s->bmemo[node] - 1].b);
+			return 1;
+		}
+		memo = s->bmemo != NULL;
+	}
 	match_all(s, d, node, id, cls, vw, &me, &w);
 	if (!w.boxed)
 		return 0;
+	memset(&t, 0, sizeof t);
 	for (k = 0; k < BOX_NBITS; k++)
 		if (w.box[k])
-			box_take(b, &s->boxes[w.box[k]->box].b, k);
-	bg_url(s, b);
+			box_take(&t, &s->boxes[w.box[k]->box].b, k);
+	bg_url(s, &t);
+	if (memo)
+		s->bmemo[node] = (unsigned short)bx_keep(s, &t);
+	box_over(b, &t);
 	return 1;
 }
 
