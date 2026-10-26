@@ -76,6 +76,11 @@ static int ctrl_h, bh, gx, gy, sb_x;
 static int gx_at = -1, gy_at = -1;	/* where geometry asked to be put */
 
 static struct cell *cur, *nxt;		/* in the window / being built */
+/* the pane's frame as built: bumped by whatever puts something in it, so
+ * that a flush of the status row alone (a fetch's progress, every second
+ * of a slow page's load) needn't sum the pane again to see nothing
+ * changed in it */
+static unsigned pane_gen;
 static int px_mode;			/* the page in fonts, in a pane */
 static struct lmetrics metrics;		/* ... measured with these */
 static XFontStruct *find_font(const char *family, int bold, int slant, int px);
@@ -1204,6 +1209,7 @@ void scr_rect(int x, int y, int w, int h, unsigned long fill, int border,
 {
 	struct rdraw *r;
 
+	pane_gen++;
 	if (!px_mode || w <= 0 || h <= 0)
 		return;
 	if (nrdraws == rdraws_cap) {
@@ -1255,6 +1261,7 @@ void scr_text(int x, int y, int ascent, const char *s, int n, int attr,
 {
 	struct run *r;
 
+	pane_gen++;
 	if (!px_mode) {
 		scr_put(1 + y, x, s, n, attr);
 		return;
@@ -1295,6 +1302,7 @@ void scr_text(int x, int y, int ascent, const char *s, int n, int attr,
 }
 
 static int cells_over;			/* cells drawn over the pane this frame */
+static unsigned sum_gen = (unsigned)-1;	/* pane_gen the checksum is of */
 
 /* a checksum of the frame's pane: its runs, its images' places, and the
  * cells over it (not the images' rows: those come in as they decode, and
@@ -1821,6 +1829,7 @@ void scr_image_draw(void *img, int x, int y, int w, int h, int attr)
 {
 	struct idraw *d;
 
+	pane_gen++;
 	if (!px_mode || w <= 0 || h <= 0)
 		return;
 	if (nidraws == idraws_cap) {
@@ -1883,6 +1892,7 @@ void scr_tile(int x, int y, int w, int h, void *img, int tx, int ty, int rep)
 {
 	struct rdraw *r;
 
+	pane_gen++;
 	if (!px_mode || w <= 0 || h <= 0 || img == NULL)
 		return;
 	if (nrdraws == rdraws_cap) {
@@ -2739,7 +2749,10 @@ static void flush_pane(int full)
 	struct fview v;
 	int W = pane_wpx(), H = pane_hpx(), i;
 
-	pane_sum = pane_checksum();
+	if (sum_gen != pane_gen) {
+		pane_sum = pane_checksum();
+		sum_gen = pane_gen;
+	}
 	nbands = 0;
 	if (full || !shown_ok || shown_w != W || shown_h != H)
 		damage(0, H);
@@ -2781,6 +2794,7 @@ void scr_erase(void)
 	nidraws = 0;
 	nrdraws = 0;
 	rtext_len = 0;
+	pane_gen++;
 }
 
 int scr_put(int row, int col, const char *s, int n, int attr)
@@ -2791,6 +2805,8 @@ int scr_put(int row, int col, const char *s, int n, int attr)
 	if (row < 0 || row >= scr_rows || col < 0)
 		return 0;
 	line = nxt + (size_t)row * (size_t)scr_cols;
+	if (row > 0 && row < scr_rows - 1)
+		pane_gen++;	/* (over the pane) */
 	for (; n > 0 && col < scr_cols; n--, col++) {
 		line[col].ch = (unsigned char)*s++;
 		line[col].a = (unsigned char)attr;
@@ -2806,6 +2822,8 @@ void scr_fill(int row, int col, int ncols, int c, int attr)
 	if (row < 0 || row >= scr_rows)
 		return;
 	line = nxt + (size_t)row * (size_t)scr_cols;
+	if (row > 0 && row < scr_rows - 1)
+		pane_gen++;
 	for (; ncols > 0 && col < scr_cols; ncols--, col++) {
 		line[col].ch = (unsigned char)c;
 		line[col].a = (unsigned char)attr;
