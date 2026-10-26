@@ -34,7 +34,7 @@ struct doc {
 	char *text;			/* NUL-terminated UTF-8 runs */
 	unsigned long text_len, text_cap;
 	unsigned char *attr;		/* (id, value NUL)... 0 per element */
-	unsigned long attr_len, attr_cap;
+	unsigned long attr_len, attr_cap;	/* (see ATTR_LEN below) */
 	size_t byte_cap;		/* all three together */
 	int truncated;			/* hit a limit: the rest was dropped */
 	nodeid last_text;		/* the text node that ends the text pool */
@@ -59,6 +59,14 @@ void doc_free(struct doc *d);
  * doc_attr_end. */
 nodeid doc_add_elem(struct doc *d, nodeid parent, int tag);
 void doc_attr_add(struct doc *d, int attr, const char *value);
+/* An element's attributes, from attr + its node's data: each an ATTR_*
+ * byte, its value's length in three bytes (high first), the value and a
+ * NUL; a 0 byte ends the list. ATTR_LEN(p): the length of the attribute
+ * at p (unsigned char *); ATTR_NEXT(p): the one after it. */
+#define ATTR_VALUE_MAX	0xFFFFFFUL
+#define ATTR_HDR	4
+#define ATTR_LEN(p)	((unsigned long)(p)[1] << 16 | (unsigned long)(p)[2] << 8 | (p)[3])
+#define ATTR_NEXT(p)	((p) + ATTR_HDR + ATTR_LEN(p) + 1)
 void doc_attr_end(struct doc *d);
 
 /*

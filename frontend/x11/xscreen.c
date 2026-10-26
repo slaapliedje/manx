@@ -76,6 +76,11 @@ static int ctrl_h, bh, gx, gy, sb_x;
 static int gx_at = -1, gy_at = -1;	/* where geometry asked to be put */
 
 static struct cell *cur, *nxt;		/* in the window / being built */
+/* the pane's frame as built: bumped by whatever puts something in it, so
+ * that a flush of the status row alone (a fetch's progress, every second
+ * of a slow page's load) needn't sum the pane again to see nothing
+ * changed in it */
+static unsigned pane_gen;
 static int px_mode;			/* the page in fonts, in a pane */
 static struct lmetrics metrics;		/* ... measured with these */
 static XFontStruct *find_font(const char *family, int bold, int slant, int px);
@@ -937,6 +942,16 @@ static int shown_over;			/* with cells over the pane */
 static XFontStruct *faces[2][256];
 static unsigned char face_tried[2][256];
 
+/* a font's widths of the 256 bytes, as XTextWidth adds them up: the
+ * layout measures every run of text, and on a slow machine a call into
+ * Xlib for each was a cost in itself */
+struct wtab {
+	XFontStruct *f;
+	short w[256];
+};
+static struct wtab wtabs[48];
+static int nwtabs;
+
 static int pane_x(void) { return gx; }
 static int pane_y(void) { return gy + ch; }
 static int pane_wpx(void) { return scr_cols * cw; }
@@ -1090,6 +1105,69 @@ static const char *x_text(const char *s, int n)
 	return buf;
 }
 
+/* f's widths of the 256 bytes, as XTextWidth adds them: a character
+ * the font lacks takes its default character's width, or none, and a
+ * no-break space a space's (x_text draws it as one); NULL for a font of
+ * two-byte characters (the cells' own may be one), which is measured by
+ * XTextWidth itself */
+static const short *font_widths(XFontStruct *f)
+{
+	static XFontStruct *last;
+	static const short *last_w;
+	struct wtab *t;
+	const XCharStruct *def = NULL;
+	unsigned lo = f->min_char_or_byte2, hi = f->max_char_or_byte2, c;
+	int i;
+
+	if (f == last)
+		return last_w;
+	for (i = 0; i < nwtabs && wtabs[i].f != f; i++)
+		;
+	if (i == nwtabs) {
+		if (f->min_byte1 != 0 || f->max_byte1 != 0
+			|| nwtabs == (int)(sizeof wtabs / sizeof wtabs[0]))
+			return NULL;
+		t = &wtabs[nwtabs++];
+		t->f = f;
+		if (f->default_char >= lo && f->default_char <= hi) {
+			def = f->per_char ? &f->per_char[f->default_char - lo]
+				: &f->min_bounds;
+			if (def->width == 0 && (def->rbearing | def->lbearing
+					| def->ascent | def->descent) == 0)
+				def = NULL;	/* (an empty one: none) */
+		}
+		for (c = 0; c < 256; c++) {
+			const XCharStruct *cs = def;
+
+			if (c >= lo && c <= hi) {
+				cs = f->per_char ? &f->per_char[c - lo] : &f->min_bounds;
+				if (cs->width == 0 && (cs->rbearing | cs->lbearing
+						| cs->ascent | cs->descent) == 0)
+					cs = def;
+			}
+			t->w[c] = cs ? cs->width : 0;
+		}
+		t->w[0xA0] = t->w[' '];
+	}
+	last = f;
+	last_w = wtabs[i].w;
+	return last_w;
+}
+
+/* how wide n bytes of page text are in f: what drawing them (through
+ * x_text) takes */
+static int text_width(XFontStruct *f, const char *s, int n)
+{
+	const short *w = font_widths(f);
+	int i, x = 0;
+
+	if (w == NULL)
+		return XTextWidth(f, (char *)x_text(s, n), n);
+	for (i = 0; i < n; i++)
+		x += w[(unsigned char)s[i]];
+	return x;
+}
+
 static int m_width(void *ctx, int attr, int face, const char *s, int n)
 {
 	XFontStruct *f = face_font(attr & SA_BOLD ? CA_BOLD : 0, face);
@@ -1097,7 +1175,7 @@ static int m_width(void *ctx, int attr, int face, const char *s, int n)
 	(void)ctx;
 	if ((attr & SA_FIELD) && toggle_of(s, n))
 		return toggle_d(f) + 6;		/* (its frame, when selected) */
-	return XTextWidth(f, (char *)x_text(s, n), n);
+	return text_width(f, s, n);
 }
 
 static int m_height(void *ctx, int attr, int face, int *ascent)
@@ -1131,6 +1209,7 @@ void scr_rect(int x, int y, int w, int h, unsigned long fill, int border,
 {
 	struct rdraw *r;
 
+	pane_gen++;
 	if (!px_mode || w <= 0 || h <= 0)
 		return;
 	if (nrdraws == rdraws_cap) {
@@ -1182,6 +1261,7 @@ void scr_text(int x, int y, int ascent, const char *s, int n, int attr,
 {
 	struct run *r;
 
+	pane_gen++;
 	if (!px_mode) {
 		scr_put(1 + y, x, s, n, attr);
 		return;
@@ -1222,6 +1302,7 @@ void scr_text(int x, int y, int ascent, const char *s, int n, int attr,
 }
 
 static int cells_over;			/* cells drawn over the pane this frame */
+static unsigned sum_gen = (unsigned)-1;	/* pane_gen the checksum is of */
 
 /* a checksum of the frame's pane: its runs, its images' places, and the
  * cells over it (not the images' rows: those come in as they decode, and
@@ -1304,7 +1385,7 @@ static int paint_toggle(const struct run *r, const char *t, int x, int base,
 	on = t[k + 1] == '*' || t[k + 1] == 'x';
 	/* on the baseline, in the middle of its place (m_width's) */
 	d = toggle_d(f);
-	x += XTextWidth(f, (char *)t, k) + 3;
+	x += text_width(f, t, k) + 3;
 	y = base - d;
 	XSetForeground(dpy, gc, px_bg);
 	if (radio)	/* (inside its outline: on a dark box none shows past) */
@@ -1350,7 +1431,7 @@ static void paint_run(const struct run *r, const char *text)
 	XFontStruct *f = face_font(r->attr, r->face);
 	int x = pane_x() + PANE_IN + r->x, base = pane_y() + r->y + r->a;
 	char *t = (char *)x_text(text + r->off, (int)r->n);
-	int w = XTextWidth(f, t, (int)r->n);
+	int w = text_width(f, text + r->off, (int)r->n);
 	unsigned long fg = px_fg, bg = px_bg;
 	int fill = 0;
 
@@ -1748,6 +1829,7 @@ void scr_image_draw(void *img, int x, int y, int w, int h, int attr)
 {
 	struct idraw *d;
 
+	pane_gen++;
 	if (!px_mode || w <= 0 || h <= 0)
 		return;
 	if (nidraws == idraws_cap) {
@@ -1810,6 +1892,7 @@ void scr_tile(int x, int y, int w, int h, void *img, int tx, int ty, int rep)
 {
 	struct rdraw *r;
 
+	pane_gen++;
 	if (!px_mode || w <= 0 || h <= 0 || img == NULL)
 		return;
 	if (nrdraws == rdraws_cap) {
@@ -2666,7 +2749,10 @@ static void flush_pane(int full)
 	struct fview v;
 	int W = pane_wpx(), H = pane_hpx(), i;
 
-	pane_sum = pane_checksum();
+	if (sum_gen != pane_gen) {
+		pane_sum = pane_checksum();
+		sum_gen = pane_gen;
+	}
 	nbands = 0;
 	if (full || !shown_ok || shown_w != W || shown_h != H)
 		damage(0, H);
@@ -2708,6 +2794,7 @@ void scr_erase(void)
 	nidraws = 0;
 	nrdraws = 0;
 	rtext_len = 0;
+	pane_gen++;
 }
 
 int scr_put(int row, int col, const char *s, int n, int attr)
@@ -2718,6 +2805,8 @@ int scr_put(int row, int col, const char *s, int n, int attr)
 	if (row < 0 || row >= scr_rows || col < 0)
 		return 0;
 	line = nxt + (size_t)row * (size_t)scr_cols;
+	if (row > 0 && row < scr_rows - 1)
+		pane_gen++;	/* (over the pane) */
 	for (; n > 0 && col < scr_cols; n--, col++) {
 		line[col].ch = (unsigned char)*s++;
 		line[col].a = (unsigned char)attr;
@@ -2733,6 +2822,8 @@ void scr_fill(int row, int col, int ncols, int c, int attr)
 	if (row < 0 || row >= scr_rows)
 		return;
 	line = nxt + (size_t)row * (size_t)scr_cols;
+	if (row > 0 && row < scr_rows - 1)
+		pane_gen++;
 	for (; ncols > 0 && col < scr_cols; ncols--, col++) {
 		line[col].ch = (unsigned char)c;
 		line[col].a = (unsigned char)attr;

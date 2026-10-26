@@ -348,9 +348,16 @@ void doc_attr_add(struct doc *d, int attr, const char *value)
 		if (attr != ATTR_DATA_SRC && (value = doc_srcset_pick(value, d->img_w, &n)) == NULL)
 			return;
 	}
-	if (grow(d, (void **)&d->attr, &d->attr_cap, d->attr_len + n + 3, 1) < 0)
+	if (n > ATTR_VALUE_MAX)
+		n = ATTR_VALUE_MAX;
+	if (grow(d, (void **)&d->attr, &d->attr_cap, d->attr_len + n + 6, 1) < 0)
 		return;
+	/* (its length first: a lookup steps over the others' values
+	 * without reading them) */
 	d->attr[d->attr_len++] = (unsigned char)attr;
+	d->attr[d->attr_len++] = (unsigned char)(n >> 16);
+	d->attr[d->attr_len++] = (unsigned char)(n >> 8);
+	d->attr[d->attr_len++] = (unsigned char)n;
 	memcpy(d->attr + d->attr_len, value, n);
 	d->attr[d->attr_len + n] = '\0';
 	d->attr_len += n + 1;
@@ -443,8 +450,8 @@ const char *doc_attr(const struct doc *d, nodeid id, int attr)
 	p = d->attr + d->nodes[id].data;
 	while (p < d->attr + d->attr_len && *p) {
 		if (*p == attr)
-			return (const char *)p + 1;
-		p += 1 + strlen((const char *)p + 1) + 1;
+			return (const char *)p + ATTR_HDR;
+		p = ATTR_NEXT(p);
 	}
 	return NULL;
 }
@@ -519,8 +526,8 @@ static void dump(const struct doc *d, nodeid id, int depth, FILE *f)
 			const unsigned char *p = d->attr + n->data;
 
 			while (p < d->attr + d->attr_len && *p) {
-				fprintf(f, " %s=\"%s\"", attr_name(*p), p + 1);
-				p += 1 + strlen((const char *)p + 1) + 1;
+				fprintf(f, " %s=\"%s\"", attr_name(*p), p + ATTR_HDR);
+				p = ATTR_NEXT(p);
 			}
 		}
 		fputs(">\n", f);

@@ -365,16 +365,16 @@ static nodeid copy_elem(struct tree *b, nodeid parent, nodeid old)
 	d->nodes[id].flags = NF_COPY;
 	while (off < d->attr_len && d->attr[off]) {
 		int a = d->attr[off];
-		size_t n = strlen((const char *)d->attr + off + 1);
+		size_t n = ATTR_LEN(d->attr + off);
 		char *v = xmalloc(n + 1);
 
 		/* (copied out: adding may move the pool) */
 		if (v) {
-			memcpy(v, d->attr + off + 1, n + 1);
+			memcpy(v, d->attr + off + ATTR_HDR, n + 1);
 			doc_attr_add(d, a, v);
 			xfree(v);
 		}
-		off += n + 2;
+		off += ATTR_HDR + n + 1;
 	}
 	doc_attr_end(d);
 	return id;

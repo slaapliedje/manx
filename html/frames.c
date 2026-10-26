@@ -133,8 +133,8 @@ static void write_node(struct sbuf *b, const struct doc *d, nodeid id,
 		put(b, "<");
 		put(b, tag_name(n->tag));
 		for (p = d->attr + n->data; p < d->attr + d->attr_len && *p;
-			p += 2 + strlen((const char *)p + 1)) {
-			const char *v = (const char *)p + 1;
+			p = ATTR_NEXT(p)) {
+			const char *v = (const char *)p + ATTR_HDR;
 
 			if (*p == ATTR_SRCSET || *p == ATTR_DATA_SRCSET)
 				continue;	/* (its pick is in src) */
