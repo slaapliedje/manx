@@ -23,6 +23,7 @@
  */
 #include <string.h>
 #include "image_int.h"
+#include "mul16.h"
 
 struct huff {
 	unsigned char fast_len[512];	/* codes of up to 9 bits: length, */
@@ -50,6 +51,7 @@ struct jpeg {
 	unsigned char *buf;
 	size_t len, cap;
 	unsigned short qt[4][64];
+	unsigned char qbig[4];		/* ... with a value past 16 bits */
 	int qset;
 	struct huff dc[4], ac[4];
 	int w, h, ncomp, hmax, vmax;
@@ -199,9 +201,12 @@ static int read_dqt(struct jpeg *j, size_t at, size_t end)
 		at++;
 		if (tq > 3 || at + (size_t)(pq ? 128 : 64) > end)
 			return IMG_BAD;
+		j->qbig[tq] = 0;
 		for (i = 0; i < 64; i++) {
 			j->qt[tq][i] = (unsigned short)(pq ? j->buf[at] << 8
 				| j->buf[at + 1] : j->buf[at]);
+			if (j->qt[tq][i] > 32767)
+				j->qbig[tq] = 1;
 			at += (size_t)(pq ? 2 : 1);
 		}
 		j->qset |= 1 << tq;
@@ -479,7 +484,10 @@ static int decode_long(struct jpeg *j, const struct huff *t)
  * The full-size IDCT is libjpeg's exact one (jidctint.c). Its fast one
  * (jidctfst.c, AAN: 5 multiplies a pass instead of 12, the rest folded
  * into dequantization) measured slower on the 68030, 3.9 s against 2.9 s
- * for a 320x240 photo, as well as less exact.
+ * for a 320x240 photo, as well as less exact. The multiplies are 16 x 16
+ * bits (mul16.h): a coefficient is within 12 bits and the constants
+ * within 15, and the first pass's results, which the second multiplies,
+ * are within 13 bits for anything that came from 8-bit samples.
  */
 #define CONST_BITS	13
 #define PASS1_BITS	2
@@ -506,9 +514,9 @@ static int decode_long(struct jpeg *j, const struct huff *t)
 	/* even part */							\
 	z2 = src[2 * (d)];						\
 	z3 = src[6 * (d)];						\
-	z1 = (z2 + z3) * FIX_0_541196100;				\
-	t2 = z1 + z3 * -FIX_1_847759065;				\
-	t3 = z1 + z2 * FIX_0_765366865;					\
+	z1 = mul16(z2 + z3, FIX_0_541196100);				\
+	t2 = z1 + mul16(z3, -FIX_1_847759065);				\
+	t3 = z1 + mul16(z2, FIX_0_765366865);				\
 	t0 = (src[0] + src[4 * (d)]) * (1L << CONST_BITS);		\
 	t1 = (src[0] - src[4 * (d)]) * (1L << CONST_BITS);		\
 	t10 = t0 + t3;							\
@@ -524,15 +532,15 @@ static int decode_long(struct jpeg *j, const struct huff *t)
 	z2 = t1 + t2;							\
 	z3 = t0 + t2;							\
 	z4 = t1 + t3;							\
-	z5 = (z3 + z4) * FIX_1_175875602;				\
-	t0 *= FIX_0_298631336;						\
-	t1 *= FIX_2_053119869;						\
-	t2 *= FIX_3_072711026;						\
-	t3 *= FIX_1_501321110;						\
-	z1 *= -FIX_0_899976223;						\
-	z2 *= -FIX_2_562915447;						\
-	z3 = z3 * -FIX_1_961570560 + z5;				\
-	z4 = z4 * -FIX_0_390180644 + z5;				\
+	z5 = mul16(z3 + z4, FIX_1_175875602);				\
+	t0 = mul16(t0, FIX_0_298631336);				\
+	t1 = mul16(t1, FIX_2_053119869);				\
+	t2 = mul16(t2, FIX_3_072711026);				\
+	t3 = mul16(t3, FIX_1_501321110);				\
+	z1 = mul16(z1, -FIX_0_899976223);				\
+	z2 = mul16(z2, -FIX_2_562915447);				\
+	z3 = mul16(z3, -FIX_1_961570560) + z5;				\
+	z4 = mul16(z4, -FIX_0_390180644) + z5;				\
 	t0 += z1 + z3;							\
 	t1 += z2 + z4;							\
 	t2 += z2 + z3;							\
@@ -602,10 +610,10 @@ static void idct4(const long *in, unsigned char *out, int stride)
 	for (i = 0; i < 4; i++) {
 		const long *p = in + i;
 
-		e0 = p[0] * K_A + p[16] * K_A;
-		e1 = p[0] * K_A - p[16] * K_A;
-		o0 = p[8] * K_C1 + p[24] * K_C3;
-		o1 = p[8] * K_C3 - p[24] * K_C1;
+		e0 = mul16(p[0], K_A) + mul16(p[16], K_A);
+		e1 = mul16(p[0], K_A) - mul16(p[16], K_A);
+		o0 = mul16(p[8], K_C1) + mul16(p[24], K_C3);
+		o1 = mul16(p[8], K_C3) - mul16(p[24], K_C1);
 		t[i] = DESCALE(e0 + o0, CONST_BITS - PASS1_BITS);
 		t[12 + i] = DESCALE(e0 - o0, CONST_BITS - PASS1_BITS);
 		t[4 + i] = DESCALE(e1 + o1, CONST_BITS - PASS1_BITS);
@@ -615,10 +623,10 @@ static void idct4(const long *in, unsigned char *out, int stride)
 		const long *p = t + i * 4;
 		unsigned char *o = out + i * stride;
 
-		e0 = p[0] * K_A + p[2] * K_A;
-		e1 = p[0] * K_A - p[2] * K_A;
-		o0 = p[1] * K_C1 + p[3] * K_C3;
-		o1 = p[1] * K_C3 - p[3] * K_C1;
+		e0 = mul16(p[0], K_A) + mul16(p[2], K_A);
+		e1 = mul16(p[0], K_A) - mul16(p[2], K_A);
+		o0 = mul16(p[1], K_C1) + mul16(p[3], K_C3);
+		o1 = mul16(p[1], K_C3) - mul16(p[3], K_C1);
 		o[0] = clamp(DESCALE(e0 + o0, CONST_BITS + PASS1_BITS) + 128);
 		o[3] = clamp(DESCALE(e0 - o0, CONST_BITS + PASS1_BITS) + 128);
 		o[1] = clamp(DESCALE(e1 + o1, CONST_BITS + PASS1_BITS) + 128);
@@ -628,18 +636,18 @@ static void idct4(const long *in, unsigned char *out, int stride)
 
 static void idct2(const long *in, unsigned char *out, int stride)
 {
-	long a0 = in[0] * K_A + in[8] * K_A, a1 = in[0] * K_A - in[8] * K_A;
-	long b0 = in[1] * K_A + in[9] * K_A, b1 = in[1] * K_A - in[9] * K_A;
+	long a0 = mul16(in[0], K_A) + mul16(in[8], K_A), a1 = mul16(in[0], K_A) - mul16(in[8], K_A);
+	long b0 = mul16(in[1], K_A) + mul16(in[9], K_A), b1 = mul16(in[1], K_A) - mul16(in[9], K_A);
 
 	/* (columns, then the rows of the 2x2) */
 	a0 = DESCALE(a0, CONST_BITS - PASS1_BITS);
 	a1 = DESCALE(a1, CONST_BITS - PASS1_BITS);
 	b0 = DESCALE(b0, CONST_BITS - PASS1_BITS);
 	b1 = DESCALE(b1, CONST_BITS - PASS1_BITS);
-	out[0] = clamp(DESCALE(a0 * K_A + b0 * K_A, CONST_BITS + PASS1_BITS) + 128);
-	out[1] = clamp(DESCALE(a0 * K_A - b0 * K_A, CONST_BITS + PASS1_BITS) + 128);
-	out[stride] = clamp(DESCALE(a1 * K_A + b1 * K_A, CONST_BITS + PASS1_BITS) + 128);
-	out[stride + 1] = clamp(DESCALE(a1 * K_A - b1 * K_A, CONST_BITS + PASS1_BITS) + 128);
+	out[0] = clamp(DESCALE(mul16(a0, K_A) + mul16(b0, K_A), CONST_BITS + PASS1_BITS) + 128);
+	out[1] = clamp(DESCALE(mul16(a0, K_A) - mul16(b0, K_A), CONST_BITS + PASS1_BITS) + 128);
+	out[stride] = clamp(DESCALE(mul16(a1, K_A) + mul16(b1, K_A), CONST_BITS + PASS1_BITS) + 128);
+	out[stride + 1] = clamp(DESCALE(mul16(a1, K_A) - mul16(b1, K_A), CONST_BITS + PASS1_BITS) + 128);
 }
 
 /*
@@ -650,6 +658,7 @@ static int block(struct jpeg *j, struct comp *c, int bx, int by)
 {
 	long *co = j->co, dc;
 	const unsigned short *q = j->qt[c->tq];
+	int qbig = j->qbig[c->tq];
 	const struct huff *ac = &j->ac[c->ta];
 	unsigned char set[64];		/* natural positions written */
 	int s, k, r, sym, n = 0, i, S = j->S;
@@ -668,7 +677,7 @@ static int block(struct jpeg *j, struct comp *c, int bx, int by)
 		RECEIVE(sym, r);
 		c->pred += r;
 	}
-	dc = coef((long)c->pred * q[0]);
+	dc = coef(qbig ? (long)c->pred * q[0] : mul16(c->pred, q[0]));
 	for (k = 1; k < 64; k++) {
 		HUFF(ac, sym);
 		if (sym < 0)
@@ -688,7 +697,7 @@ static int block(struct jpeg *j, struct comp *c, int bx, int by)
 		if (S > 1) {
 			int z = zz[k];
 
-			co[z] = coef((long)r * q[k]);
+			co[z] = coef(qbig ? (long)r * q[k] : mul16(r, q[k]));
 			set[n++] = (unsigned char)z;
 		}
 	}
@@ -1113,6 +1122,7 @@ static int prog_output(struct img_dec *d, struct jpeg *j)
 		for (i = 0; i < j->ncomp; i++) {
 			struct comp *c = &j->c[i];
 			const unsigned short *q = j->qt[c->tq];
+			int qbig = j->qbig[c->tq];
 			int bx, by;
 
 			for (by = 0; by < c->v; by++)
@@ -1128,10 +1138,11 @@ static int prog_output(struct img_dec *d, struct jpeg *j)
 
 					for (k = 0; k <= j->maxk; k++)
 						if (j->kidx[k] > 0 && v[j->kidx[k]]) {
-							co[zz[k]] = coef((long)v[j->kidx[k]] * q[k]);
+							co[zz[k]] = coef(qbig ? (long)v[j->kidx[k]] * q[k]
+								: mul16(v[j->kidx[k]], q[k]));
 							any = 1;
 						}
-					co[0] = coef((long)v[0] * q[0]);
+					co[0] = coef(qbig ? (long)v[0] * q[0] : mul16(v[0], q[0]));
 					if (!any) {
 						/* the DC term alone: a flat block */
 						unsigned char flat = clamp(DESCALE(co[0], 3) + 128);

@@ -21,6 +21,7 @@
 #include <string.h>
 #include "os.h"
 #include "pixels.h"
+#include "mul16.h"
 
 #define PX_MAX_SIDE	8192
 
@@ -73,8 +74,8 @@ static unsigned avg(unsigned long s, unsigned long n)
 {
 	if (n == 1)
 		return (unsigned)s;
-	if (n <= 256)
-		return (unsigned)((s * recip[n] + 32768UL) >> 16);
+	if (n <= 256)	/* (s under 65536, recip[n] under 32769: 16 bits each) */
+		return (unsigned)((mulu16(s, recip[n]) + 32768UL) >> 16);
 	return (unsigned)((s + n / 2) / n);
 }
 
