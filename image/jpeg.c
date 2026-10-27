@@ -522,6 +522,52 @@ static void idct2(const long *in, unsigned char *out, int stride);
 #define AAN_SCALE(v, z)	((mul16(v, aanscale[z]) + 2048) >> 12)
 
 /*
+ * The AC coefficients of a block: those an S x S IDCT reads into j->co
+ * (their natural positions into set[]), the rest parsed past; how many,
+ * or -1 for bad data. A function of its own, not inlined, so that its
+ * text is small and in one piece: on the 68030 it has to live in the
+ * 256-byte instruction cache, and as part of block() its paths were
+ * spread over 600 bytes and landed on each other's lines, differently
+ * with every change to the code around.
+ */
+static NOINLINE int ac_coefs(struct jpeg *j, const struct huff *ac,
+	const unsigned short *q, int qbig, int S, unsigned char *set)
+{
+	long *co = j->co;
+	unsigned int bits = j->bits;
+	int nbits = j->nbits;
+	int k, s, r, sym, z, n = 0;
+
+	for (k = 1; k < 64; k++) {
+		HUFF(ac, sym);
+		if (sym < 0)
+			return -1;
+		r = sym >> 4;
+		s = sym & 15;
+		if (s == 0) {
+			if (r != 15)
+				break;		/* end of block */
+			k += 15;
+			continue;
+		}
+		k += r;
+		if (k > 63)
+			return -1;
+		RECEIVE(s, r);
+		z = zz[k];
+		/* (kept if the IDCT reads it: a reduced one, S x S, only
+		 * the frequencies under S each way; a thumbnail's blocks
+		 * are mostly decoded for their end) */
+		if ((z & 7) < S && (z >> 3) < S) {
+			co[z] = coef(qbig ? (long)r * q[k] : mul16(r, q[k]));
+			set[n++] = (unsigned char)z;
+		}
+	}
+	SYNC_OUT();
+	return n;
+}
+
+/*
  * One block of component c into its plane at block bx, by. j->co is all
  * zeros on the way in and out: the coefficients set are cleared after.
  */
@@ -532,7 +578,7 @@ static int block(struct jpeg *j, struct comp *c, int bx, int by)
 	int qbig = j->qbig[c->tq];
 	const struct huff *ac = &j->ac[c->ta];
 	unsigned char set[64];		/* natural positions written */
-	int s, k, r, sym, n = 0, i, S = j->S, z;
+	int r, sym, n, i, S = j->S;
 	unsigned int bits = j->bits;
 	int nbits = j->nbits;
 	unsigned char *o = c->plane + (size_t)by * S * (size_t)c->pw + (size_t)bx * S;
@@ -549,32 +595,9 @@ static int block(struct jpeg *j, struct comp *c, int bx, int by)
 		c->pred += r;
 	}
 	dc = coef(qbig ? (long)c->pred * q[0] : mul16(c->pred, q[0]));
-	for (k = 1; k < 64; k++) {
-		HUFF(ac, sym);
-		if (sym < 0)
-			return IMG_BAD;
-		r = sym >> 4;
-		s = sym & 15;
-		if (s == 0) {
-			if (r != 15)
-				break;		/* end of block */
-			k += 15;
-			continue;
-		}
-		k += r;
-		if (k > 63)
-			return IMG_BAD;
-		RECEIVE(s, r);
-		z = zz[k];
-		/* (kept if the IDCT reads it: a reduced one, S x S, only
-		 * the frequencies under S each way; a thumbnail's blocks
-		 * are mostly decoded for their end) */
-		if ((z & 7) < S && (z >> 3) < S) {
-			co[z] = coef(qbig ? (long)r * q[k] : mul16(r, q[k]));
-			set[n++] = (unsigned char)z;
-		}
-	}
 	SYNC_OUT();
+	if ((n = ac_coefs(j, ac, q, qbig, S, set)) < 0)
+		return IMG_BAD;
 	if (n == 0) {
 		/* the DC term alone (common): a flat block, at its mean */
 		unsigned char v = clamp(DESCALE(dc, 3) + 128);
