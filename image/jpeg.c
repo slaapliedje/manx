@@ -395,12 +395,20 @@ static int read_sof(struct img_dec *d, struct jpeg *j, size_t at, size_t end)
  * must fit the 256-byte instruction cache, or every symbol misses it: so
  * block() keeps the buffer in locals and decodes through the macros below,
  * with only the rare cases (long codes, 0xFF bytes, markers, the end) out
- * of line.
+ * of line. Out of line for real: gcc inlined refill at each of the loop's
+ * NEED16s (and the loop itself into jpeg_finish), which made the loop's
+ * text 560 bytes, and on the TT030 each block fetched it from memory
+ * again.
  */
+#if defined(__GNUC__)
+#define NOINLINE	__attribute__((noinline))
+#else
+#define NOINLINE
+#endif
 
 /* the next byte for the buffer, when it is 0xFF or there is none: a
  * stuffed 0xFF, or zeros from a marker (which stays put) or the end */
-static unsigned special(struct jpeg *j)
+static NOINLINE unsigned special(struct jpeg *j)
 {
 	unsigned m;
 
@@ -418,7 +426,7 @@ static unsigned special(struct jpeg *j)
 }
 
 /* top the buffer up to more than 24 bits */
-static void refill(struct jpeg *j)
+static NOINLINE void refill(struct jpeg *j)
 {
 	while (j->nbits <= 24) {
 		unsigned b;
@@ -433,7 +441,7 @@ static void refill(struct jpeg *j)
 }
 
 /* a symbol whose code is longer than the fast table's 9 bits, or -1 */
-static int decode_long(struct jpeg *j, const struct huff *t)
+static NOINLINE int decode_long(struct jpeg *j, const struct huff *t)
 {
 	int len;
 
@@ -524,7 +532,7 @@ static int block(struct jpeg *j, struct comp *c, int bx, int by)
 	int qbig = j->qbig[c->tq];
 	const struct huff *ac = &j->ac[c->ta];
 	unsigned char set[64];		/* natural positions written */
-	int s, k, r, sym, n = 0, i, S = j->S;
+	int s, k, r, sym, n = 0, i, S = j->S, z;
 	unsigned int bits = j->bits;
 	int nbits = j->nbits;
 	unsigned char *o = c->plane + (size_t)by * S * (size_t)c->pw + (size_t)bx * S;
@@ -557,9 +565,11 @@ static int block(struct jpeg *j, struct comp *c, int bx, int by)
 		if (k > 63)
 			return IMG_BAD;
 		RECEIVE(s, r);
-		if (S > 1) {
-			int z = zz[k];
-
+		z = zz[k];
+		/* (kept if the IDCT reads it: a reduced one, S x S, only
+		 * the frequencies under S each way; a thumbnail's blocks
+		 * are mostly decoded for their end) */
+		if ((z & 7) < S && (z >> 3) < S) {
 			co[z] = coef(qbig ? (long)r * q[k] : mul16(r, q[k]));
 			set[n++] = (unsigned char)z;
 		}
