@@ -489,15 +489,24 @@ static NOINLINE int decode_long(struct jpeg *j, const struct huff *t)
 } while (0)
 
 /* v = the next n (1-16) bits as a signed value of size n (JPEG's
- * "receive" and "extend") */
+ * "receive" and "extend": a field whose first bit is 0 is negative, the
+ * value less 2^n - 1; the first bit is the buffer's top one, read
+ * before the shift, and the subtrahend comes from a table: on the
+ * 68030 a shift by a variable costs what a load does) */
+static const int ext_sub[17] = {
+	0, 1, 3, 7, 15, 31, 63, 127, 255, 511, 1023, 2047, 4095, 8191,
+	16383, 32767, 65535
+};
 #define RECEIVE(n, v) do {						\
-	unsigned int u_;						\
+	int neg_;							\
 									\
 	NEED16();							\
-	u_ = bits >> (32 - (n));					\
+	neg_ = (int)bits >= 0;						\
+	(v) = (int)(bits >> (32 - (n)));				\
 	bits <<= (n);							\
 	nbits -= (n);							\
-	(v) = u_ < (1U << ((n) - 1)) ? (int)u_ - (1 << (n)) + 1 : (int)u_; \
+	if (neg_)							\
+		(v) -= ext_sub[n];					\
 } while (0)
 
 /* the IDCTs (after block(), so that the decoding loop and refill, its
@@ -522,21 +531,21 @@ static void idct2(const long *in, unsigned char *out, int stride);
 #define AAN_SCALE(v, z)	((mul16(v, aanscale[z]) + 2048) >> 12)
 
 /*
- * The AC coefficients of a block: those an S x S IDCT reads into j->co
- * (their natural positions into set[]), the rest parsed past; how many,
- * or -1 for bad data. A function of its own, not inlined, so that its
- * text is small and in one piece: on the 68030 it has to live in the
+ * The AC coefficients of a block, as decoded: their values into vals[]
+ * and their zigzag positions into ks[]; how many, or -1 for bad data.
+ * Nothing else: a function of its own, not inlined, so that its text is
+ * small and in one piece, for on the 68030 it has to live in the
  * 256-byte instruction cache, and as part of block() its paths were
  * spread over 600 bytes and landed on each other's lines, differently
- * with every change to the code around.
+ * with every change to the code around. Dequantization and the rest
+ * are block()'s, after.
  */
-static NOINLINE int ac_coefs(struct jpeg *j, const struct huff *ac,
-	const unsigned short *q, int qbig, int S, unsigned char *set)
+static NOINLINE int ac_coefs(struct jpeg *j, const struct huff *ac, short *vals,
+	unsigned char *ks)
 {
-	long *co = j->co;
 	unsigned int bits = j->bits;
 	int nbits = j->nbits;
-	int k, s, r, sym, z, n = 0;
+	int k, s, r, sym, n = 0;
 
 	for (k = 1; k < 64; k++) {
 		HUFF(ac, sym);
@@ -554,14 +563,8 @@ static NOINLINE int ac_coefs(struct jpeg *j, const struct huff *ac,
 		if (k > 63)
 			return -1;
 		RECEIVE(s, r);
-		z = zz[k];
-		/* (kept if the IDCT reads it: a reduced one, S x S, only
-		 * the frequencies under S each way; a thumbnail's blocks
-		 * are mostly decoded for their end) */
-		if ((z & 7) < S && (z >> 3) < S) {
-			co[z] = coef(qbig ? (long)r * q[k] : mul16(r, q[k]));
-			set[n++] = (unsigned char)z;
-		}
+		vals[n] = (short)r;
+		ks[n++] = (unsigned char)k;
 	}
 	SYNC_OUT();
 	return n;
@@ -578,7 +581,9 @@ static int block(struct jpeg *j, struct comp *c, int bx, int by)
 	int qbig = j->qbig[c->tq];
 	const struct huff *ac = &j->ac[c->ta];
 	unsigned char set[64];		/* natural positions written */
-	int r, sym, n, i, S = j->S;
+	unsigned char ks[64];		/* the AC coefficients' zigzag positions */
+	short vals[64];			/* ... and values, as decoded */
+	int r, sym, n = 0, nz, i, S = j->S;
 	unsigned int bits = j->bits;
 	int nbits = j->nbits;
 	unsigned char *o = c->plane + (size_t)by * S * (size_t)c->pw + (size_t)bx * S;
@@ -596,8 +601,22 @@ static int block(struct jpeg *j, struct comp *c, int bx, int by)
 	}
 	dc = coef(qbig ? (long)c->pred * q[0] : mul16(c->pred, q[0]));
 	SYNC_OUT();
-	if ((n = ac_coefs(j, ac, q, qbig, S, set)) < 0)
+	if ((nz = ac_coefs(j, ac, vals, ks)) < 0)
 		return IMG_BAD;
+	/* those the IDCT reads (a reduced one, S x S, only the frequencies
+	 * under S each way; a thumbnail's blocks are mostly decoded for
+	 * their end), dequantized, into co (a full-size block's scaled
+	 * for the fast IDCT) */
+	for (i = 0; i < nz; i++) {
+		int k = ks[i], z = zz[k];
+
+		if ((z & 7) < S && (z >> 3) < S) {
+			long v = coef(qbig ? (long)vals[i] * q[k] : mul16(vals[i], q[k]));
+
+			co[z] = S == 8 ? AAN_SCALE(v, z) : v;
+			set[n++] = (unsigned char)z;
+		}
+	}
 	if (n == 0) {
 		/* the DC term alone (common): a flat block, at its mean */
 		unsigned char v = clamp(DESCALE(dc, 3) + 128);
@@ -610,17 +629,10 @@ static int block(struct jpeg *j, struct comp *c, int bx, int by)
 		}
 		return IMG_OK;
 	}
-	co[0] = dc;
-	if (j->S == 8) {
-		/* (the fast IDCT's scaling of the coefficients set: here,
-		 * not in the decoding loop, which has to fit the
-		 * instruction cache; and only here, the reduced IDCTs
-		 * being exact) */
-		co[0] = dc * 4;
-		for (i = 0; i < n; i++)
-			co[set[i]] = AAN_SCALE(co[set[i]], set[i]);
+	co[0] = S == 8 ? dc * 4 : dc;	/* (the fast IDCT's scale of the DC) */
+	if (S == 8)
 		idct(co, o, c->pw);
-	} else if (j->S == 4)
+	else if (S == 4)
 		idct4(co, o, c->pw);
 	else
 		idct2(co, o, c->pw);
