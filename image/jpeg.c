@@ -492,6 +492,111 @@ static int decode_long(struct jpeg *j, const struct huff *t)
 	(v) = u_ < (1U << ((n) - 1)) ? (int)u_ - (1 << (n)) + 1 : (int)u_; \
 } while (0)
 
+/* the IDCTs (after block(), so that the decoding loop and refill, its
+ * one call on the common path, are next to each other in the text: on
+ * the 68030 they have to share a 256-byte direct-mapped instruction
+ * cache, and the transforms' code between them moved the loop's lines
+ * onto refill's) */
+static void idct(const long *in, unsigned char *out, int stride);
+static void idct4(const long *in, unsigned char *out, int stride);
+static void idct2(const long *in, unsigned char *out, int stride);
+
+#define CONST_BITS	13
+#define PASS1_BITS	2
+#define DESCALE(x, n)	(((x) + (1L << ((n) - 1))) >> (n))
+/* (a negative value is multiplied up, not shifted: that is undefined) */
+
+/* a dequantized coefficient (within 12 bits) at natural position z,
+ * scaled for the fast IDCT: by its frequency's factor, 14 bits, less the
+ * 2 the IDCT's scaling folds in. (Not folded into the quantization
+ * table, as libjpeg does: at a table's small values that rounding was
+ * most of the fast IDCT's error.) */
+#define AAN_SCALE(v, z)	((mul16(v, aanscale[z]) + 2048) >> 12)
+
+/*
+ * One block of component c into its plane at block bx, by. j->co is all
+ * zeros on the way in and out: the coefficients set are cleared after.
+ */
+static int block(struct jpeg *j, struct comp *c, int bx, int by)
+{
+	long *co = j->co, dc;
+	const unsigned short *q = j->qt[c->tq];
+	int qbig = j->qbig[c->tq];
+	const struct huff *ac = &j->ac[c->ta];
+	unsigned char set[64];		/* natural positions written */
+	int s, k, r, sym, n = 0, i, S = j->S;
+	unsigned int bits = j->bits;
+	int nbits = j->nbits;
+	unsigned char *o = c->plane + (size_t)by * S * (size_t)c->pw + (size_t)bx * S;
+
+	/* well past the end of the data: a truncated file, not a huge one
+	 * to decode out of zeros (the rows sent so far stay) */
+	if (j->pad > 64)
+		return IMG_BAD;
+	HUFF(&j->dc[c->td], sym);
+	if (sym < 0 || sym > 11)
+		return IMG_BAD;
+	if (sym) {
+		RECEIVE(sym, r);
+		c->pred += r;
+	}
+	dc = coef(qbig ? (long)c->pred * q[0] : mul16(c->pred, q[0]));
+	for (k = 1; k < 64; k++) {
+		HUFF(ac, sym);
+		if (sym < 0)
+			return IMG_BAD;
+		r = sym >> 4;
+		s = sym & 15;
+		if (s == 0) {
+			if (r != 15)
+				break;		/* end of block */
+			k += 15;
+			continue;
+		}
+		k += r;
+		if (k > 63)
+			return IMG_BAD;
+		RECEIVE(s, r);
+		if (S > 1) {
+			int z = zz[k];
+
+			co[z] = coef(qbig ? (long)r * q[k] : mul16(r, q[k]));
+			set[n++] = (unsigned char)z;
+		}
+	}
+	SYNC_OUT();
+	if (n == 0) {
+		/* the DC term alone (common): a flat block, at its mean */
+		unsigned char v = clamp(DESCALE(dc, 3) + 128);
+
+		for (i = 0; i < j->S; i++, o += c->pw) {
+			int x;
+
+			for (x = 0; x < j->S; x++)
+				o[x] = v;
+		}
+		return IMG_OK;
+	}
+	co[0] = dc;
+	if (j->S == 8) {
+		/* (the fast IDCT's scaling of the coefficients set: here,
+		 * not in the decoding loop, which has to fit the
+		 * instruction cache; and only here, the reduced IDCTs
+		 * being exact) */
+		co[0] = dc * 4;
+		for (i = 0; i < n; i++)
+			co[set[i]] = AAN_SCALE(co[set[i]], set[i]);
+		idct(co, o, c->pw);
+	} else if (j->S == 4)
+		idct4(co, o, c->pw);
+	else
+		idct2(co, o, c->pw);
+	co[0] = 0;
+	while (n > 0)
+		co[set[--n]] = 0;
+	return IMG_OK;
+}
+
 /* --- the IDCTs ---------------------------------------------------------- */
 
 /*
@@ -505,10 +610,6 @@ static int decode_long(struct jpeg *j, const struct huff *t)
  * time, and this one's inner loops are smaller too. The reduced IDCTs
  * below are exact, in the unscaled domain.
  */
-#define CONST_BITS	13
-#define PASS1_BITS	2
-#define DESCALE(x, n)	(((x) + (1L << ((n) - 1))) >> (n))
-/* (a negative value is multiplied up, not shifted: that is undefined) */
 
 #define AAN_1_414	362L		/* sqrt 2, in 8 fractional bits */
 #define AAN_1_847	473L		/* 2 c2 */
@@ -656,97 +757,6 @@ static void idct2(const long *in, unsigned char *out, int stride)
 	out[1] = clamp(DESCALE(mul16(a0, K_A) - mul16(b0, K_A), CONST_BITS + PASS1_BITS) + 128);
 	out[stride] = clamp(DESCALE(mul16(a1, K_A) + mul16(b1, K_A), CONST_BITS + PASS1_BITS) + 128);
 	out[stride + 1] = clamp(DESCALE(mul16(a1, K_A) - mul16(b1, K_A), CONST_BITS + PASS1_BITS) + 128);
-}
-
-/* a dequantized coefficient (within 12 bits) at natural position z,
- * scaled for the fast IDCT: by its frequency's factor, 14 bits, less the
- * 2 the IDCT's scaling folds in. (Not folded into the quantization
- * table, as libjpeg does: at a table's small values that rounding was
- * most of the fast IDCT's error.) */
-#define AAN_SCALE(v, z)	((mul16(v, aanscale[z]) + 2048) >> 12)
-
-/*
- * One block of component c into its plane at block bx, by. j->co is all
- * zeros on the way in and out: the coefficients set are cleared after.
- */
-static int block(struct jpeg *j, struct comp *c, int bx, int by)
-{
-	long *co = j->co, dc;
-	const unsigned short *q = j->qt[c->tq];
-	int qbig = j->qbig[c->tq];
-	const struct huff *ac = &j->ac[c->ta];
-	unsigned char set[64];		/* natural positions written */
-	int s, k, r, sym, n = 0, i, S = j->S;
-	unsigned int bits = j->bits;
-	int nbits = j->nbits;
-	unsigned char *o = c->plane + (size_t)by * S * (size_t)c->pw + (size_t)bx * S;
-
-	/* well past the end of the data: a truncated file, not a huge one
-	 * to decode out of zeros (the rows sent so far stay) */
-	if (j->pad > 64)
-		return IMG_BAD;
-	HUFF(&j->dc[c->td], sym);
-	if (sym < 0 || sym > 11)
-		return IMG_BAD;
-	if (sym) {
-		RECEIVE(sym, r);
-		c->pred += r;
-	}
-	dc = coef(qbig ? (long)c->pred * q[0] : mul16(c->pred, q[0]));
-	for (k = 1; k < 64; k++) {
-		HUFF(ac, sym);
-		if (sym < 0)
-			return IMG_BAD;
-		r = sym >> 4;
-		s = sym & 15;
-		if (s == 0) {
-			if (r != 15)
-				break;		/* end of block */
-			k += 15;
-			continue;
-		}
-		k += r;
-		if (k > 63)
-			return IMG_BAD;
-		RECEIVE(s, r);
-		if (S > 1) {
-			int z = zz[k];
-
-			co[z] = coef(qbig ? (long)r * q[k] : mul16(r, q[k]));
-			set[n++] = (unsigned char)z;
-		}
-	}
-	SYNC_OUT();
-	if (n == 0) {
-		/* the DC term alone (common): a flat block, at its mean */
-		unsigned char v = clamp(DESCALE(dc, 3) + 128);
-
-		for (i = 0; i < j->S; i++, o += c->pw) {
-			int x;
-
-			for (x = 0; x < j->S; x++)
-				o[x] = v;
-		}
-		return IMG_OK;
-	}
-	co[0] = dc;
-	if (j->S == 8) {
-		/* (the fast IDCT's scaling of the coefficients set: here,
-		 * not in the decoding loop, which has to fit the
-		 * instruction cache; and only here, the reduced IDCTs
-		 * being exact) */
-		co[0] = dc * 4;
-		for (i = 0; i < n; i++)
-			co[set[i]] = AAN_SCALE(co[set[i]], set[i]);
-		idct(co, o, c->pw);
-	} else if (j->S == 4)
-		idct4(co, o, c->pw);
-	else
-		idct2(co, o, c->pw);
-	co[0] = 0;
-	while (n > 0)
-		co[set[--n]] = 0;
-	return IMG_OK;
 }
 
 /*
