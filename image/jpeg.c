@@ -617,8 +617,11 @@ static int block(struct jpeg *j, struct comp *c, int bx, int by)
 			set[n++] = (unsigned char)z;
 		}
 	}
-	if (n == 0) {
-		/* the DC term alone (common): a flat block, at its mean */
+	if (nz == 0 || S == 1) {
+		/* the DC term alone (common): a flat block, at its mean.
+		 * (Not when the IDCT reads none of the coefficients there
+		 * are: it rounds its way, and the picture is to come out
+		 * the same whatever the loop kept.) */
 		unsigned char v = clamp(DESCALE(dc, 3) + 128);
 
 		for (i = 0; i < j->S; i++, o += c->pw) {
