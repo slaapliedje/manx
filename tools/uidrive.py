@@ -22,6 +22,8 @@ Environment: ROWS, COLS (default 24x80). --tt: ASV_HOST (default
 192.168.3.250), ASV_PORT (default 23; another for ASV in Hatari, behind
 slirp), ASV_TOOLS (where .asvpass lives, default
 ~/dev/OpenUA/data/work/asv; the password never leaves this machine),
+ASV_WORKDIR (where COMMAND runs, MANX_HOME its home/; default
+/work/dev/ub),
 TTCS (the MANX_CHARSET given to the program there, and what its output is
 read as; default latin1).
 --amix: AMIX_EMU (where .amixpass lives, default sp1's amix/work/emu);
@@ -98,7 +100,8 @@ def target(amix):
                            os.path.expanduser("~/dev/OpenUA/data/work/asv"))
     return (os.environ.get("ASV_HOST", "192.168.3.250"),
             int(os.environ.get("ASV_PORT", 23)),
-            os.path.join(tools, ".asvpass"), "/work/dev/ub")
+            os.path.join(tools, ".asvpass"),
+            os.environ.get("ASV_WORKDIR", "/work/dev/ub"))
 
 
 class Telnet:

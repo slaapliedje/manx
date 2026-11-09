@@ -1916,7 +1916,7 @@ int main(int argc, char **argv)
 	signal(SIGPIPE, SIG_IGN);
 	entropy_init(os_datapath(path, sizeof path, "seed"));
 	dns_cache_init(os_datapath(path, sizeof path, "dns"));
-	tls_init(config_str("cafile", NULL), note);
+	tls_init(config_str("cafile", tls_find_bundle()), note);
 	if (doc_init(&g_doc, 0) < 0 || scr_open(config_str("charset", NULL)) < 0) {
 		fprintf(stderr, "manxmail: needs %s\n", scr_needs);
 		return 1;

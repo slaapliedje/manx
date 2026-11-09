@@ -73,6 +73,11 @@ int tls_init(const char *pem_path, void (*note)(const char *msg));
  * -1. */
 int tls_build_roots(const char *pem_path);
 
+/* A PEM bundle of roots where systems keep one (atari-sysv-sp1's card
+ * image, Linux, the BSDs, IRIX's SGUG), for when none is configured; or
+ * NULL. */
+const char *tls_find_bundle(void);
+
 /* Verify every intermediate of a PEM bundle against the current anchors
  * and learn the good ones (for preloading). Returns the number learned. */
 int tls_learn_pem(const char *pem_path, void (*note)(const char *msg));

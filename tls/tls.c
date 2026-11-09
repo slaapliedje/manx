@@ -366,6 +366,26 @@ static int rebuild_all(void)
 	return 0;
 }
 
+const char *tls_find_bundle(void)
+{
+	static const char *const bundles[] = {
+		"/usr/local/share/manx/cacert.pem",	/* sp1's card image */
+		"/usr/share/manx/cacert.pem",
+		"/etc/ssl/certs/ca-certificates.crt",	/* Debian, Alpine */
+		"/etc/pki/tls/certs/ca-bundle.crt",	/* Fedora */
+		"/etc/ssl/cert.pem",			/* the BSDs, macOS */
+		"/usr/sgug/etc/pki/tls/certs/ca-bundle.crt",	/* IRIX */
+		NULL
+	};
+	long size, mtime;
+	int i;
+
+	for (i = 0; bundles[i]; i++)
+		if (os_file_info(bundles[i], &size, &mtime) == 0 && size > 0)
+			return bundles[i];
+	return NULL;
+}
+
 int tls_build_roots(const char *pem_path)
 {
 	struct anchors a;

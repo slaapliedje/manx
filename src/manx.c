@@ -120,6 +120,12 @@ struct hist {
 static struct hist g_hist[HIST_MAX];
 static int g_nhist, g_hpos = -1;
 
+/* the trusted roots' PEM bundle (the cafile setting, or one where the
+ * system keeps one), whether TLS has anchors, and whether this run has
+ * asked to set HTTPS up */
+static const char *g_cafile;
+static int g_tls_ok, g_https_asked;
+
 /* prompt_mask's flags */
 #define PM_MASK		1	/* show * for each character */
 #define PM_URL		2	/* in the window's URL field, if there is one */
@@ -127,6 +133,7 @@ static int g_nhist, g_hpos = -1;
 static int prompt(const char *label, char *buf, size_t n);
 static int prompt_mask(const char *label, char *buf, size_t n, int flags);
 static int confirm(const char *question);
+static void https_setup(void);
 static void refresh_plan(const char *content);
 static void feed_hint(int status);
 
@@ -1460,6 +1467,10 @@ static int load(const char *url_in, const struct fetch_opts *opts, int mode,
 		update_page(url);
 		return 0;
 	}
+	/* the first https page of a run without the trust store or the seed
+	 * offers to make them */
+	if (strncmp(url, "https:", 6) == 0)
+		https_setup();
 
 	/* the cache: a GET is kept under its URL (no fragment), a POST's
 	 * answer under the key it's given; local files aren't */
@@ -2543,20 +2554,118 @@ static void jump_link(int dir)
 
 /* --- prompt ----------------------------------------------------------- */
 
-/* a yes/no question on the status line */
+/* a yes/no question on the status line; a key answers it, not the mouse
+ * (in a window, the click that gives it the keyboard would say no) */
 static int confirm(const char *question)
 {
-	int r = scr_rows - 1, k;
+	int k;
 
 	draw(0);
-	scr_fill(r, 0, scr_cols, ' ', 0);
-	scr_put(r, 0, question, (int)strlen(question), CA_BOLD);
-	scr_cursor(r, (int)strlen(question) < scr_cols ?
-		(int)strlen(question) : scr_cols - 1);
-	scr_flush(0);
-	k = scr_getkey(-1);
+	do {
+		int r = scr_rows - 1;
+
+		scr_fill(r, 0, scr_cols, ' ', 0);
+		scr_put(r, 0, question, (int)strlen(question), CA_BOLD);
+		scr_cursor(r, (int)strlen(question) < scr_cols ?
+			(int)strlen(question) : scr_cols - 1);
+		scr_flush(0);
+		k = scr_getkey(-1);
+	} while (k < 0 || (k >= K_MOUSE && k != K_CLOSE));
 	scr_cursor(-1, -1);
 	return k == 'y' || k == 'Y';
+}
+
+/* --- setting up HTTPS ------------------------------------------------ */
+
+static int have_store(void)
+{
+	char path[600];
+	long size, mtime;
+
+	return os_datapath(path, sizeof path, "roots.bin") != NULL
+		&& os_file_info(path, &size, &mtime) == 0;
+}
+
+static void status_line(const char *s)
+{
+	int r = scr_rows - 1, n = (int)strlen(s);
+
+	scr_fill(r, 0, scr_cols, ' ', 0);
+	scr_put(r, 0, s, n < scr_cols ? n : scr_cols, CA_BOLD);
+	scr_flush(0);
+}
+
+/*
+ * The random seed from the timing of keys typed now, as `manxtrust seed`
+ * makes it: the gap before each key, two bits; none for a held key's
+ * repeats, which come evenly, or for keys read together (their timing is
+ * lost: over telnet one read can bring several, which is also why the
+ * screen's entropy_event, counting reads, isn't counted on). Esc stops.
+ */
+static void seed_keys(void)
+{
+	unsigned long t0, t;
+	int k, prev = -1, bits = 0, keys = 0;
+	char buf[120];
+
+	/* (keys typed while the store was built) */
+	while ((k = scr_getkey(0)) >= 0 && k != K_CLOSE)
+		;
+	t0 = os_usec();
+	while (bits < ENTROPY_NEEDED) {
+		int i, n;
+
+		n = snprintf(buf, sizeof buf, "Type random keys, unevenly: [");
+		for (i = 0; i < 30; i++)
+			buf[n++] = i < bits * 30 / ENTROPY_NEEDED ? '#' : '.';
+		snprintf(buf + n, sizeof buf - (size_t)n, "] %d  (Esc: stop)", keys);
+		status_line(buf);
+		k = scr_getkey(-1);
+		if (k == 27 || k == K_CLOSE)
+			break;
+		if (k < 0 || k >= K_MOUSE)	/* (the mouse, the window) */
+			continue;
+		t = os_usec() - t0;
+		t0 += t;
+		entropy_add(&k, sizeof k, 0);
+		if (t < 20000UL || (k == prev && t < 150000UL))
+			continue;
+		entropy_add(&t, sizeof t, 2);
+		bits += 2;
+		keys++;
+		prev = k;
+	}
+	if (bits >= ENTROPY_NEEDED) {
+		entropy_save();
+		/* keys still coming as the bar fills are typing, not commands
+		 * (a q would quit): they go by until a second and a half
+		 * passes without one */
+		status_line("Seeded: HTTPS is ready.");
+		while ((k = scr_getkey(1500)) >= 0 && k != K_CLOSE)
+			;
+	}
+}
+
+/* Asked once a run, at the first https page while the trust store or the
+ * random seed is missing: make them now? */
+static void https_setup(void)
+{
+	int roots = !g_tls_ok && g_cafile, seed = !entropy_ready();
+
+	if (g_https_asked || (!roots && !seed))
+		return;
+	g_https_asked = 1;
+	if (!confirm(roots && seed ? "Set up HTTPS now: the certificates, then a "
+			"seed from your typing? (y/n) " : roots ? "Build the "
+			"certificate store for HTTPS now? (y/n) " : "HTTPS needs a "
+			"random seed, once, from your typing. Make it now? (y/n) "))
+		return;
+	if (roots) {
+		status_line("Building the certificate store (a minute on a 68030)...");
+		g_tls_ok = tls_init(g_cafile, NULL) == 0;
+	}
+	if (seed)
+		seed_keys();
 }
 
 static int prompt(const char *label, char *buf, size_t n)
@@ -3255,10 +3364,18 @@ int main(int argc, char **argv)
 			config_long("cache_kb", 2048) * 1024L);
 	entropy_init(os_datapath(path, sizeof path, "seed"));
 	dns_cache_init(os_datapath(path, sizeof path, "dns"));
-	/* the first run builds the trust store: say so, it takes a minute */
-	tls_init(config_str("cafile", NULL), tls_note);
-	if (argc == 2 && strcmp(argv[1], "--update") == 0)
+	/* the trusted roots: the cafile setting, else a bundle where the
+	 * system keeps one. A store not built yet waits for the first https
+	 * page, which asks (it takes a minute on a 68030, and xmanx's window
+	 * isn't up yet); a changed bundle rebuilds it here. */
+	g_cafile = config_str("cafile", NULL);
+	if (g_cafile == NULL || !g_cafile[0])
+		g_cafile = tls_find_bundle();
+	if (argc == 2 && strcmp(argv[1], "--update") == 0) {
+		tls_init(g_cafile, tls_note);
 		return update_cli();
+	}
+	g_tls_ok = tls_init(have_store() ? g_cafile : NULL, tls_note) == 0;
 	/* (before the screen: the child has none of it) */
 	update_bg_start();
 	if (doc_init(&g_doc, 0) < 0 || scr_open(config_str("charset", NULL)) < 0) {

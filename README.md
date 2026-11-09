@@ -166,18 +166,24 @@ Copy `manx`, `xmanx`, `manxmail`, `manxtrust` and `ufetch` to the
 machine with `tools/install.sh`, and run `sh install.sh` there as root:
 `manx`, `manxmail`, `manxtrust` and `ufetch` go to `/usr/bin`, `xmanx` to `/usr/x11r6/bin`
 on Atari System V (`/usr/X/bin` on AMIX). From the build machine,
-`tools/tt/ttinstall` does all that for the TT. Then, once:
+`tools/tt/ttinstall` does all that for the TT. Then run `manx` (or
+`manx https://news.ycombinator.com/`). The first https page asks to set
+HTTPS up, once per user: the certificate store, built from the `cafile`
+setting or from a bundle where the system keeps one
+(`/usr/local/share/manx/cacert.pem` on sp1's card image,
+`/etc/ssl/certs/ca-certificates.crt` and the like elsewhere), and on SVR4,
+which has no `/dev/random`, a random seed from the timing of keys you
+type. `manxtrust` does the same by hand:
 
 ```sh
 manxtrust roots cacert.pem   # trusted roots, from any PEM bundle (e.g. curl's cacert.pem)
 manxtrust seed               # SVR4 has no /dev/random: type for a while to seed
-manx                         # or: manx https://news.ycombinator.com/
 ```
 
 On IRIX, put the programs anywhere on `PATH` (`/usr/local/bin`, or
-`~/bin`). SGUG's bundle will do for the roots (`manxtrust roots
-/usr/sgug/etc/pki/tls/certs/ca-bundle.crt`), and there is no need to seed:
-IRIX has `/dev/urandom`.
+`~/bin`). SGUG's bundle is found for the roots
+(`/usr/sgug/etc/pki/tls/certs/ca-bundle.crt`), and there is no need to
+seed: IRIX has `/dev/urandom`.
 
 `xmanx` is the same browser in an X11 window, with controls in the OPEN
 LOOK manner of both systems' desktops (Back, Forward, Reload and Stop
